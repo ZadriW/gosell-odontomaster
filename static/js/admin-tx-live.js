@@ -71,6 +71,7 @@
             if (shouldSkipRefresh()) return;
             root.innerHTML = html;
             restoreOpenRows(root, opened);
+            document.dispatchEvent(new CustomEvent('totem:admin-tx-live-updated', { detail: { root } }));
 
             const hashMatch = /^#tx-(\d+)$/i.exec(window.location.hash || '');
             if (hashMatch && opened.indexOf(hashMatch[1]) === -1) {

@@ -2162,6 +2162,15 @@ html.admin-theme--dark .admin-tx__delivery-check-all {
     background: var(--color-primary-light);
 }
 
+.admin-btn--success {
+    background: #0c8a4d;
+    color: #fff;
+}
+
+.admin-btn--success:hover:not(:disabled) {
+    background: #0a7340;
+}
+
 .admin-btn--ghost {
     background: var(--color-surface);
     color: var(--color-text);
@@ -5902,6 +5911,11 @@ html.admin-theme--dark .admin-mov__order-link:hover code {
     color: #dc2626;
 }
 
+.admin-confirm__icon--positive {
+    background: rgba(12, 138, 77, 0.12);
+    color: #0c8a4d;
+}
+
 .admin-confirm__message {
     margin: 0;
     width: 100%;
@@ -6894,6 +6908,20 @@ html.admin-theme--dark .admin-btn--icon-only:not(.admin-btn--danger):focus-visib
 html.admin-theme--dark .admin-confirm__icon--destructive {
     background: rgba(240, 113, 120, 0.14);
     color: var(--admin-danger);
+}
+
+html.admin-theme--dark .admin-confirm__icon--positive {
+    background: rgba(74, 222, 128, 0.12);
+    color: #4ade80;
+}
+
+html.admin-theme--dark .admin-btn--success {
+    background: #0c8a4d;
+    color: #fff;
+}
+
+html.admin-theme--dark .admin-btn--success:hover:not(:disabled) {
+    background: #0a7340;
 }
 
 html.admin-theme--dark .admin-btn--danger:hover {

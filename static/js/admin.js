@@ -82,6 +82,9 @@
             return;
         }
 
+        if (event.target.closest('.admin-tx__delivery')) return;
+        if (event.target.closest('input[type="checkbox"]')) return;
+
         const btn = event.target.closest('.admin-tx__row');
         if (!btn) return;
         if (event.target.closest('a')) return;
@@ -128,6 +131,9 @@
             triggerAdminTxCopyOrder(copyCtrl);
             return;
         }
+
+        if (event.target.closest('.admin-tx__delivery')) return;
+        if (event.target.closest('input[type="checkbox"]')) return;
 
         const btn = event.target.closest('.admin-tx__row');
         if (!btn || btn.tagName === 'BUTTON') return;
@@ -189,6 +195,23 @@
         };
     }
 
+    function readConfirmSecondOptions(el) {
+        return {
+            title: el.getAttribute('data-confirm-second-title') || 'Confirmação final',
+            confirmLabel: el.getAttribute('data-confirm-second-label') || 'Sim, confirmar',
+            destructive: el.getAttribute('data-confirm-second-destructive') !== 'false',
+            message: el.getAttribute('data-confirm-second') || 'Deseja realmente continuar?',
+        };
+    }
+
+    function runAdminConfirmFlow(el) {
+        return openAdminConfirm(readConfirmOptions(el)).then(ok => {
+            if (!ok) return false;
+            if (!el.hasAttribute('data-confirm-double')) return true;
+            return openAdminConfirm(readConfirmSecondOptions(el));
+        });
+    }
+
     function openAdminConfirm(options) {
         const message = options.message || 'Deseja continuar?';
         if (!confirmDialog || !confirmMessageEl || !confirmTitleEl) {
@@ -201,7 +224,7 @@
         if (confirmOkBtn) {
             confirmOkBtn.textContent = options.confirmLabel || 'Confirmar';
             confirmOkBtn.className = options.destructive === false
-                ? 'admin-btn admin-btn--primary'
+                ? 'admin-btn admin-btn--success'
                 : 'admin-btn admin-btn--danger-solid';
         }
 
@@ -209,6 +232,10 @@
             confirmIconWrap.classList.toggle(
                 'admin-confirm__icon--destructive',
                 options.destructive !== false
+            );
+            confirmIconWrap.classList.toggle(
+                'admin-confirm__icon--positive',
+                options.destructive === false
             );
         }
 
@@ -233,18 +260,18 @@
         if (event.target === confirmDialog) finishConfirmDialog(false);
     });
 
-    document.querySelectorAll('form[data-confirm]').forEach(form => {
-        form.addEventListener('submit', event => {
-            if (form.dataset.adminConfirmSubmitting === '1') {
-                delete form.dataset.adminConfirmSubmitting;
-                return;
-            }
-            event.preventDefault();
-            openAdminConfirm(readConfirmOptions(form)).then(ok => {
-                if (!ok) return;
-                form.dataset.adminConfirmSubmitting = '1';
-                form.requestSubmit();
-            });
+    document.querySelector('.admin-main')?.addEventListener('submit', event => {
+        const form = event.target.closest('form[data-confirm]');
+        if (!form) return;
+        if (form.dataset.adminConfirmSubmitting === '1') {
+            delete form.dataset.adminConfirmSubmitting;
+            return;
+        }
+        event.preventDefault();
+        runAdminConfirmFlow(form).then(ok => {
+            if (!ok) return;
+            form.dataset.adminConfirmSubmitting = '1';
+            form.requestSubmit();
         });
     });
 
@@ -281,8 +308,8 @@
     // --- 3b. Seleção em lote — itens aguardando retirada ---------------------
     function syncDeliveryPanel(panel) {
         if (!panel) return;
-        const items = panel.querySelectorAll('[data-delivery-item]');
-        const checkAll = panel.querySelector('[data-delivery-check-all]');
+        const items = panel.querySelectorAll('input[data-delivery-item]');
+        const checkAll = panel.querySelector('input[data-delivery-check-all]');
         const submitBtn = panel.querySelector('[data-delivery-batch-submit]');
         const countEl = panel.querySelector('[data-delivery-sel-count]');
         const batchForm = panel.querySelector('[data-delivery-batch]');
@@ -313,24 +340,41 @@
         }
     }
 
-    document.querySelectorAll('[data-delivery-panel]').forEach(panel => {
-        syncDeliveryPanel(panel);
-        panel.addEventListener('change', event => {
+    function initDeliveryPanels(root) {
+        const scope = root && typeof root.querySelectorAll === 'function' ? root : document;
+        if (scope.matches && scope.matches('[data-delivery-panel]')) {
+            syncDeliveryPanel(scope);
+            return;
+        }
+        scope.querySelectorAll('[data-delivery-panel]').forEach(syncDeliveryPanel);
+    }
+
+    const adminMain = document.querySelector('.admin-main');
+    if (adminMain) {
+        adminMain.addEventListener('change', event => {
             const target = event.target;
-            if (!(target instanceof HTMLInputElement)) return;
-            if (target.matches('[data-delivery-check-all]')) {
-                panel.querySelectorAll('[data-delivery-item]').forEach(el => {
+            if (!(target instanceof HTMLInputElement) || target.type !== 'checkbox') return;
+
+            const panel = target.closest('[data-delivery-panel]');
+            if (!panel) return;
+
+            if (target.hasAttribute('data-delivery-check-all')) {
+                panel.querySelectorAll('input[data-delivery-item]').forEach(el => {
                     el.checked = target.checked;
                 });
+            } else if (!target.hasAttribute('data-delivery-item')) {
+                return;
             }
-            if (
-                target.matches('[data-delivery-check-all]')
-                || target.matches('[data-delivery-item]')
-            ) {
-                syncDeliveryPanel(panel);
-            }
+
+            syncDeliveryPanel(panel);
         });
+    }
+
+    initDeliveryPanels();
+    document.addEventListener('totem:admin-tx-live-updated', event => {
+        initDeliveryPanels(event.detail?.root || document);
     });
+    window.TotemAdminDelivery = { initDeliveryPanels, syncDeliveryPanel };
 
     // --- 4. Altura real da admin-topbar — sticky do catálogo embutido (mobile + desktop) ---
     const adminShell = document.querySelector('.admin-shell');
