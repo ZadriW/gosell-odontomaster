@@ -342,6 +342,20 @@ html.admin-theme--dark .topbar__brand .admin-brand-logo--dark {
     font-size: 11px;
 }
 
+.product-card__backorder-info--blocked {
+    color: #b91c1c;
+}
+
+.product-card--backorder-blocked .product-card__button:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+}
+
+.product-card--backorder-blocked .product-card__counter-input:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
 .product-card__name {
     font-size: 15px;
     font-weight: 600;
@@ -581,6 +595,15 @@ html.admin-theme--dark .topbar__brand .admin-brand-logo--dark {
     font-weight: 600;
     line-height: 1.35;
     letter-spacing: 0.01em;
+}
+
+.catalog-toast--warn {
+    border-color: rgba(185, 28, 28, 0.25);
+}
+
+.catalog-toast--warn .catalog-toast__icon {
+    background: rgba(185, 28, 28, 0.12);
+    color: #b91c1c;
 }
 
 @media (max-width: 720px) {

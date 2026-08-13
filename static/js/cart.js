@@ -38,15 +38,56 @@
         window.dispatchEvent(new CustomEvent(EVENT_NAME, { detail: { items } }));
     }
 
-    function clampQty(qty, stock) {
+    function getBackorderLimit(productOrItem) {
+        const bl = Number(productOrItem?.backorder_limit);
+        return Number.isFinite(bl) ? bl : -1;
+    }
+
+    /** Quantidade máxima permitida (estoque ou ilimitado com backorder). */
+    function maxAllowedQty(stock, backorderLimit) {
+        const s = Math.max(0, Math.floor(Number(stock)) || 0);
+        if (!window.__SELLER_BACKORDER__) {
+            return s > 0 ? s : 0;
+        }
+        const bl = Number.isFinite(Number(backorderLimit)) ? Number(backorderLimit) : -1;
+        if (bl === 0) return s;
+        return Infinity;
+    }
+
+    function clampQty(qty, stock, backorderLimit) {
         let n = parseInt(String(qty), 10);
         if (!Number.isFinite(n)) n = 1;
+        const bl = backorderLimit !== undefined
+            ? backorderLimit
+            : (window.__SELLER_BACKORDER__ ? -1 : undefined);
+        const max = maxAllowedQty(stock, bl);
+        if (Number.isFinite(max)) {
+            if (max <= 0) return 0;
+            n = Math.max(1, n);
+            return Math.min(n, max);
+        }
         n = Math.max(1, n);
-        // Painel do vendedor: permite quantidade acima do estoque
-        // (item fica pendente de retirada; pagamento integral no AUT).
-        if (window.__SELLER_BACKORDER__) return n;
-        if (Number.isFinite(stock) && stock > 0) n = Math.min(n, stock);
+        if (!window.__SELLER_BACKORDER__ && Number.isFinite(stock) && stock > 0) {
+            n = Math.min(n, stock);
+        }
         return n;
+    }
+
+    function isBackorderBlockedProduct(productOrItem) {
+        if (!window.__SELLER_BACKORDER__) return false;
+        if (getBackorderLimit(productOrItem) !== 0) return false;
+        const stock = Math.max(0, Math.floor(Number(productOrItem?.estoque)) || 0);
+        return stock <= 0;
+    }
+
+    function getBackorderViolations(items) {
+        if (!window.__SELLER_BACKORDER__) return [];
+        const list = Array.isArray(items) ? items : [];
+        return list.filter(item => {
+            if (getBackorderLimit(item) !== 0) return false;
+            const stock = Math.max(0, Math.floor(Number(item.estoque)) || 0);
+            return (Number(item.quantidade) || 0) > stock;
+        });
     }
 
     function itemFromProduct(product, qty) {
@@ -62,6 +103,7 @@
             preco: Number(product.preco) || listPrice,
             imagem: product.imagem,
             estoque: Number.isFinite(product.estoque) ? product.estoque : undefined,
+            backorder_limit: getBackorderLimit(product),
             quantidade: qty,
             em_promocao: !!product.em_promocao,
             promo_tipo: promo ? promo.promo_tipo : '',
@@ -85,6 +127,7 @@
             categoria: product.categoria || item.categoria,
             imagem: product.imagem || item.imagem,
             estoque: Number.isFinite(product.estoque) ? product.estoque : item.estoque,
+            backorder_limit: getBackorderLimit(product),
             preco_lista: listPrice,
             em_promocao: !!product.em_promocao,
             promo_tipo: promo ? promo.promo_tipo : '',
@@ -115,9 +158,46 @@
             writeRaw(recalculateAll(Array.isArray(items) ? items : []));
         },
 
+        canAdd(product, qty = 1) {
+            if (!product || product.id === undefined || product.id === null) {
+                return { ok: false, reason: 'Produto indisponível.' };
+            }
+            if (isBackorderBlockedProduct(product)) {
+                return {
+                    ok: false,
+                    reason: 'Vendas futuras bloqueadas. Este produto não pode ser adicionado ao carrinho.',
+                };
+            }
+            const bl = getBackorderLimit(product);
+            const stock = Math.max(0, Math.floor(Number(product.estoque)) || 0);
+            const desired = clampQty(qty, product.estoque, bl);
+            if (desired <= 0) {
+                return {
+                    ok: false,
+                    reason: 'Sem estoque disponível para este produto.',
+                };
+            }
+            const items = recalculateAll(readRaw());
+            const existing = items.find(i => String(i.id) === String(product.id));
+            const nextQty = existing
+                ? clampQty(existing.quantidade + desired, product.estoque, bl)
+                : desired;
+            if (existing && nextQty <= existing.quantidade) {
+                return {
+                    ok: false,
+                    reason: bl === 0
+                        ? `Somente ${stock} un. em estoque. Vendas futuras bloqueadas.`
+                        : 'Não foi possível aumentar a quantidade.',
+                };
+            }
+            return { ok: true };
+        },
+
         add(product, qty = 1) {
-            if (!product || product.id === undefined || product.id === null) return;
-            const quantidade = clampQty(qty, product.estoque);
+            const check = this.canAdd(product, qty);
+            if (!check.ok) return false;
+            const bl = getBackorderLimit(product);
+            const quantidade = clampQty(qty, product.estoque, bl);
             const items = recalculateAll(readRaw());
             const idStr = String(product.id);
             const existing = items.find(i => String(i.id) === idStr);
@@ -125,12 +205,14 @@
                 existing.quantidade = clampQty(
                     existing.quantidade + quantidade,
                     product.estoque,
+                    bl,
                 );
                 Object.assign(existing, mergeProductMeta(existing, product));
             } else {
                 items.push(itemFromProduct(product, quantidade));
             }
             writeRaw(recalculateAll(items));
+            return true;
         },
 
         updateQty(id, qty) {
@@ -138,7 +220,7 @@
             const idStr = String(id);
             const item = items.find(i => String(i.id) === idStr);
             if (!item) return;
-            item.quantidade = clampQty(qty, item.estoque);
+            item.quantidade = clampQty(qty, item.estoque, getBackorderLimit(item));
             writeRaw(recalculateAll(items));
         },
 
@@ -147,7 +229,11 @@
             const idStr = String(id);
             const item = items.find(i => String(i.id) === idStr);
             if (!item) return;
-            item.quantidade = clampQty(item.quantidade + step, item.estoque);
+            item.quantidade = clampQty(
+                item.quantidade + step,
+                item.estoque,
+                getBackorderLimit(item),
+            );
             writeRaw(recalculateAll(items));
         },
 
@@ -160,7 +246,7 @@
             if (next <= 0) {
                 writeRaw(items.filter(i => String(i.id) !== idStr));
             } else {
-                item.quantidade = clampQty(next, item.estoque);
+                item.quantidade = clampQty(next, item.estoque, getBackorderLimit(item));
                 writeRaw(recalculateAll(items));
             }
         },
@@ -213,6 +299,14 @@
 
         isEmpty() {
             return readRaw().length === 0;
+        },
+
+        getBackorderViolations(items) {
+            return getBackorderViolations(items || recalculateAll(readRaw()));
+        },
+
+        hasBackorderViolations() {
+            return getBackorderViolations(recalculateAll(readRaw())).length > 0;
         },
 
         formatBRL(value) {

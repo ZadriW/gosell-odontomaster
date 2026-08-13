@@ -66,8 +66,10 @@
         {% endif %}
         {% set em_promo = product.em_promocao | default(false) %}
         {% set pending_n = product.pending_delivery_units or 0 %}
+        {% set bl = product.backorder_limit | default(-1) | int %}
+        {% set backorder_blocked = bl == 0 and q <= 0 %}
         <article
-            class="product-card{% if em_promo %} product-card--promo{% endif %}"
+            class="product-card{% if em_promo %} product-card--promo{% endif %}{% if backorder_blocked %} product-card--backorder-blocked{% endif %}"
             data-id="{{ product.id }}"
             data-category="{{ product.categoria }}"
             data-name="{{ product.nome|lower }}"
@@ -75,6 +77,7 @@
             data-estoque="{{ product.estoque }}"
             data-estoque-min="{{ sm }}"
             data-preco="{{ product.preco }}"
+            data-backorder-limit="{{ bl }}"
         >
             <div class="product-card__image">
                 <div class="product-card__promo-badge-slot" data-promo-badge-root>
@@ -109,11 +112,16 @@
                 {% else %}
                 <span class="product-card__stock product-card__stock--{{ stock_tone }} product-card__stock--alone" data-stock-display>{{ product.estoque }} no estoque.</span>
                 {% endif %}
-                {% set bl = product.backorder_limit | default(-1) | int %}
-                <span class="product-card__backorder-info" data-backorder-info
-                      {% if q > 0 or bl < 0 %}hidden{% endif %}>
-                    <i class="fa-solid fa-truck-clock" aria-hidden="true"></i>
-                    <span data-backorder-limit-value>{{ bl }}</span> vendas futuras disp.
+                <span class="product-card__backorder-info{% if bl == 0 %} product-card__backorder-info--blocked{% endif %}" data-backorder-info
+                      {% if bl < 0 %}hidden{% endif %}>
+                    <i class="fa-solid {% if bl == 0 %}fa-ban{% else %}fa-truck-clock{% endif %}" aria-hidden="true"></i>
+                    <span data-backorder-msg>
+                        {% if bl == 0 %}
+                        Vendas futuras bloqueadas
+                        {% else %}
+                        <span data-backorder-limit-value>{{ bl }}</span> vendas futuras disp.
+                        {% endif %}
+                    </span>
                 </span>
                 <div data-catalog-pricing>
                     {% set promo_tipo = product.promo_tipo | default('') %}
@@ -152,7 +160,7 @@
                         <span aria-hidden="true">+</span>
                     </button>
                 </div>
-                <button class="product-card__button" type="button" data-id="{{ product.id }}" aria-label="Adicionar ao carrinho">
+                <button class="product-card__button" type="button" data-id="{{ product.id }}" aria-label="Adicionar ao carrinho"{% if backorder_blocked %} disabled{% endif %}>
                     <i class="fa-solid fa-cart-plus" aria-hidden="true"></i>
                 </button>
             </div>
@@ -197,6 +205,10 @@
             </p>
         </div>
         <div class="cart-drawer__items" id="cartDrawerItems" hidden></div>
+        <div class="cart-drawer__warning" id="cartDrawerBackorderWarning" hidden role="alert">
+            <i class="fa-solid fa-triangle-exclamation" aria-hidden="true"></i>
+            <p>Remova os produtos com <strong>vendas futuras bloqueadas</strong> ou reduza a quantidade ao estoque disponível para finalizar a compra.</p>
+        </div>
     </div>
 
     <footer class="cart-drawer__footer">

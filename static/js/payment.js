@@ -104,9 +104,30 @@
         totalEl.textContent = Cart.formatBRL(totals.total);
     }
 
+    function backorderBlockedNoticeHtml(items) {
+        if (!window.__SELLER_BACKORDER__ || typeof Cart.getBackorderViolations !== 'function') {
+            return '';
+        }
+        const violations = Cart.getBackorderViolations(items);
+        if (!violations.length) return '';
+        const names = violations.map(i => i.nome).slice(0, 3).join(', ');
+        const extra = violations.length > 3 ? ` e mais ${violations.length - 3}` : '';
+        return `
+            <div class="payment-backorder-note payment-backorder-note--blocked" role="alert">
+                <i class="fa-solid fa-ban" aria-hidden="true"></i>
+                <div>
+                    <strong>Vendas futuras bloqueadas</strong>
+                    <p>Remova ou ajuste a quantidade dos itens: ${names}${extra}.</p>
+                </div>
+            </div>
+        `;
+    }
+
     function backorderNoticeHtml(items) {
         if (!window.__SELLER_BACKORDER__) return '';
         const hasBackorder = items.some(item => {
+            const bl = Number(item.backorder_limit);
+            if (Number.isFinite(bl) && bl === 0) return false;
             const stock = Number(item.estoque);
             return Number.isFinite(stock) && item.quantidade > Math.max(0, stock);
         });
@@ -127,8 +148,13 @@
             window.location.replace(CATALOG_URL);
             return;
         }
-        itemsEl.innerHTML = backorderNoticeHtml(items) + items.map(renderItem).join('');
+        itemsEl.innerHTML = backorderBlockedNoticeHtml(items) + backorderNoticeHtml(items) + items.map(renderItem).join('');
         updateSummaryTotals(Cart.getTotals());
+        if (continueBtn) {
+            const blocked = typeof Cart.hasBackorderViolations === 'function'
+                && Cart.hasBackorderViolations();
+            continueBtn.disabled = blocked;
+        }
     }
 
     async function syncServerQuote() {
@@ -164,6 +190,9 @@
 
     continueBtn.addEventListener('click', () => {
         if (Cart.isEmpty()) return;
+        if (typeof Cart.hasBackorderViolations === 'function' && Cart.hasBackorderViolations()) {
+            return;
+        }
         if (!window.PaymentForm || !window.PaymentForm.save()) {
             return;
         }

@@ -142,7 +142,8 @@
     >
         <div class="admin-table__head admin-stock__row" role="row">
             <span role="columnheader">Produto</span>
-            <span class="admin-table__col--num" role="columnheader">Preço</span>
+            <span class="admin-table__col--num" role="columnheader"
+                  title="{% if seller_event %}Suas unidades vendidas deste produto neste evento (pedidos confirmados){% else %}Suas unidades vendidas deste produto (pedidos confirmados){% endif %}">Vendas</span>
             <span class="admin-table__col--num" role="columnheader">Estoque</span>
             <span class="admin-table__col--num" role="columnheader">Mínimo</span>
             <span role="columnheader">Situação</span>
@@ -177,7 +178,8 @@
                         <small class="admin-stock__meta">ID: {{ p.id }} | SKU: <code class="admin-stock__sku-code">{{ p.sku or '—' }}</code></small>
                     </span>
                 </span>
-                <span class="admin-table__col--num">{{ p.preco | brl }}</span>
+                <span class="admin-table__col--num" data-stock-sales
+                      title="{% if seller_event %}Suas unidades vendidas neste evento (pedidos confirmados){% else %}Suas unidades vendidas (pedidos confirmados){% endif %}">{{ p.units_sold or 0 }}</span>
                 <span class="admin-table__col--num admin-stock__qty" data-stock-qty><strong>{{ p.estoque }}</strong></span>
                 <span class="admin-table__col--num">{{ p.estoque_minimo }}</span>
                 <span class="admin-stock__status-cell" data-stock-status>

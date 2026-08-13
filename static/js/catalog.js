@@ -53,13 +53,27 @@
         return Number.isFinite(n) && n >= 0 ? n : 999;
     }
 
+    function getBackorderLimitForCard(card) {
+        const raw = card.dataset.backorderLimit;
+        const n = parseInt(raw, 10);
+        if (Number.isFinite(n)) return n;
+        const p = productsById.get(String(card.dataset.id));
+        return p ? (Number(p.backorder_limit) ?? -1) : -1;
+    }
+
     function clampQty(card, raw) {
         const stock = getStock(card);
+        const bl = getBackorderLimitForCard(card);
         let n = parseInt(String(raw), 10);
         if (!Number.isFinite(n)) n = 1;
         n = Math.max(1, n);
-        // Painel do vendedor: sem teto de estoque (retirada posterior).
-        if (window.__SELLER_BACKORDER__) return n;
+        if (window.__SELLER_BACKORDER__) {
+            if (bl === 0) {
+                if (stock <= 0) return 1;
+                return Math.min(n, stock);
+            }
+            return n;
+        }
         if (stock > 0) n = Math.min(n, stock);
         return n;
     }
@@ -91,13 +105,50 @@
     function syncBackorderInfo(card, backorderLimit) {
         const el = card.querySelector('[data-backorder-info]');
         if (!el) return;
-        const stock = getStock(card);
         const limit = Number.isFinite(backorderLimit) ? backorderLimit : -1;
-        if (stock <= 0 && limit >= 0) {
-            el.querySelector('[data-backorder-limit-value]').textContent = String(limit);
+        card.dataset.backorderLimit = String(limit);
+
+        if (limit >= 0) {
+            el.classList.toggle('product-card__backorder-info--blocked', limit === 0);
+            const icon = el.querySelector('i');
+            if (icon) {
+                icon.className = limit === 0
+                    ? 'fa-solid fa-ban'
+                    : 'fa-solid fa-truck-clock';
+            }
+            const msgEl = el.querySelector('[data-backorder-msg]');
+            if (msgEl) {
+                if (limit === 0) {
+                    msgEl.textContent = 'Vendas futuras bloqueadas';
+                } else {
+                    msgEl.innerHTML = `<span data-backorder-limit-value>${limit}</span> vendas futuras disp.`;
+                }
+            }
             el.removeAttribute('hidden');
         } else {
             el.setAttribute('hidden', '');
+        }
+        syncBackorderBlockedUI(card, limit);
+    }
+
+    function syncBackorderBlockedUI(card, backorderLimit) {
+        const limit = Number.isFinite(backorderLimit)
+            ? backorderLimit
+            : getBackorderLimitForCard(card);
+        const stock = getStock(card);
+        const blocked = window.__SELLER_BACKORDER__ && limit === 0 && stock <= 0;
+        card.classList.toggle('product-card--backorder-blocked', blocked);
+
+        const btn = card.querySelector('.product-card__button');
+        if (btn) btn.disabled = blocked;
+
+        const input = card.querySelector('.product-card__counter-input');
+        if (input && window.__SELLER_BACKORDER__ && limit === 0) {
+            const maxStock = Math.max(0, stock);
+            input.setAttribute('max', String(maxStock > 0 ? maxStock : 1));
+            input.disabled = maxStock <= 0;
+        } else if (input) {
+            input.disabled = false;
         }
     }
 
@@ -262,6 +313,9 @@
                     if (p) syncCatalogBadges(card, p);
                 }
             });
+            if (Cart && typeof Cart.syncPricesFromProductMap === 'function') {
+                Cart.syncPricesFromProductMap(productsById);
+            }
         } catch (err) {
             const T = window.TotemApiErrors;
             const msg = T ? T.formatCatchMessage(err) : String(err.message || err);
@@ -341,15 +395,26 @@
     const addToast = document.getElementById('catalogAddToast');
     let addToastTimer = null;
 
-    function showAddToCartToast() {
+    function showAddToCartToast(message, variant = 'success') {
         if (!addToast) return;
+        const textEl = addToast.querySelector('.catalog-toast__text');
+        const iconEl = addToast.querySelector('.catalog-toast__icon i');
+        if (textEl && message) textEl.textContent = message;
+        if (iconEl) {
+            iconEl.className = variant === 'warn'
+                ? 'fa-solid fa-triangle-exclamation'
+                : 'fa-solid fa-circle-check';
+        }
+        addToast.classList.toggle('catalog-toast--warn', variant === 'warn');
         addToast.classList.add('is-visible');
         addToast.setAttribute('aria-hidden', 'false');
         clearTimeout(addToastTimer);
         addToastTimer = setTimeout(() => {
-            addToast.classList.remove('is-visible');
+            addToast.classList.remove('is-visible', 'catalog-toast--warn');
             addToast.setAttribute('aria-hidden', 'true');
-        }, 3200);
+            if (textEl) textEl.textContent = 'Produto adicionado ao carrinho!';
+            if (iconEl) iconEl.className = 'fa-solid fa-circle-check';
+        }, variant === 'warn' ? 4200 : 3200);
     }
 
     /* -------------------------------------------------------------------- */
@@ -366,9 +431,12 @@
             let val = clampQty(card, input.value);
 
             if (action === 'inc') {
-                val = (stock > 0 && !window.__SELLER_BACKORDER__)
-                    ? Math.min(val + 1, stock)
-                    : val + 1;
+                const bl = getBackorderLimitForCard(card);
+                if (window.__SELLER_BACKORDER__ && bl !== 0) {
+                    val = val + 1;
+                } else if (stock > 0) {
+                    val = Math.min(val + 1, stock);
+                }
             } else if (action === 'dec') {
                 val = Math.max(1, val - 1);
             }
@@ -386,8 +454,23 @@
         const id = button.dataset.id;
         const product = productsById.get(String(id));
         if (Cart && product) {
-            Cart.add(product, qty);
-            showAddToCartToast();
+            const check = typeof Cart.canAdd === 'function'
+                ? Cart.canAdd(product, qty)
+                : { ok: true };
+            if (!check.ok) {
+                showAddToCartToast(check.reason || 'Não foi possível adicionar ao carrinho.', 'warn');
+                return;
+            }
+            const added = Cart.add(product, qty);
+            if (added) {
+                showAddToCartToast();
+            } else {
+                showAddToCartToast(
+                    'Não foi possível adicionar. Verifique o estoque disponível.',
+                    'warn',
+                );
+                return;
+            }
         }
 
         input.value = '1';
@@ -426,6 +509,7 @@
     const drawerTotal = document.getElementById('cartDrawerTotal');
     const drawerCheckout = document.getElementById('cartDrawerCheckout');
     const drawerClear = document.getElementById('cartDrawerClear');
+    const drawerBackorderWarning = document.getElementById('cartDrawerBackorderWarning');
 
     function openDrawer() {
         if (!drawer) return;
@@ -456,9 +540,16 @@
             : '';
         const stock = Number(item.estoque);
         const missing = Number.isFinite(stock) ? item.quantidade - Math.max(0, stock) : 0;
-        const backorderHint = (window.__SELLER_BACKORDER__ && missing > 0)
-            ? `<p class="cart-item__backorder"><i class="fa-solid fa-box-open" aria-hidden="true"></i> ${missing} un. sem estoque — retirada posterior pelo cliente</p>`
-            : '';
+        const bl = Number(item.backorder_limit);
+        const backorderBlocked = window.__SELLER_BACKORDER__
+            && Number.isFinite(bl)
+            && bl === 0
+            && missing > 0;
+        const backorderHint = backorderBlocked
+            ? `<p class="cart-item__backorder cart-item__backorder--blocked"><i class="fa-solid fa-ban" aria-hidden="true"></i> Vendas futuras bloqueadas — remova ou reduza a quantidade ao estoque (${Math.max(0, stock)} un.)</p>`
+            : ((window.__SELLER_BACKORDER__ && missing > 0)
+                ? `<p class="cart-item__backorder"><i class="fa-solid fa-box-open" aria-hidden="true"></i> ${missing} un. sem estoque — retirada posterior pelo cliente</p>`
+                : '');
         return `
             <article class="cart-item" data-id="${item.id}">
                 <div class="cart-item__image">
@@ -499,7 +590,12 @@
 
         drawerCount.textContent = totals.count;
         drawerTotal.textContent = Cart.formatBRL(totals.total);
-        drawerCheckout.disabled = items.length === 0;
+        const violations = typeof Cart.getBackorderViolations === 'function'
+            ? Cart.getBackorderViolations(items)
+            : [];
+        const hasViolations = violations.length > 0;
+        if (drawerBackorderWarning) drawerBackorderWarning.hidden = !hasViolations;
+        drawerCheckout.disabled = items.length === 0 || hasViolations;
         if (drawerClear) drawerClear.disabled = items.length === 0;
 
         if (items.length === 0) {
@@ -538,6 +634,13 @@
     if (drawerCheckout) {
         drawerCheckout.addEventListener('click', () => {
             if (Cart.isEmpty()) return;
+            if (typeof Cart.hasBackorderViolations === 'function' && Cart.hasBackorderViolations()) {
+                showAddToCartToast(
+                    'Remova os produtos com vendas futuras bloqueadas para finalizar a compra.',
+                    'warn',
+                );
+                return;
+            }
             const payUrl = FLOW.payment || '/vendedor/pagamento';
             window.location.assign(payUrl);
         });
@@ -556,6 +659,9 @@
     /* -------------------------------------------------------------------- */
 
     if (Cart) {
+        if (typeof Cart.syncPricesFromProductMap === 'function') {
+            Cart.syncPricesFromProductMap(productsById);
+        }
         Cart.subscribe(() => {
             updateCartBadge();
             renderDrawer();
@@ -566,6 +672,7 @@
 
     applyFilters();
     updateCartBadge();
+    cards.forEach(card => syncBackorderBlockedUI(card, getBackorderLimitForCard(card)));
 
     if (PROMO_REFRESH_API) {
         fetchCatalogPromoRefresh();

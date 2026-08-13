@@ -127,6 +127,7 @@ from database import (
     normalize_event_badge_color,
     pending_delivery_units_by_product_for_event,
     units_sold_by_product_for_event,
+    units_sold_by_product_for_seller,
     refund_transaction,
     register_event_stock_adjustment,
     register_event_stock_entry,
@@ -1088,74 +1089,14 @@ def seller_dashboard():
     )
 
 
-@app.route("/vendedor/pedido/<int:tx_id>/itens/<int:item_id>/entregar", methods=["POST"])
-@seller_required
-def seller_confirm_item_delivery(tx_id: int, item_id: int):
-    """Confirma a retirada de um item pendente (baixa o estoque na entrega)."""
-    seller_id = _current_seller_id()
-    seller_ev = _get_seller_event()
-    row = get_seller(seller_id)
-    seller_name = (row or {}).get("name") or "Vendedor"
-    try:
-        result = confirm_item_delivery(
-            tx_id,
-            item_id,
-            seller_id=seller_id,
-            expected_event_id=int(seller_ev["id"]) if seller_ev else None,
-            created_by=f"vendedor:{seller_name}",
-        )
-        msg = (
-            f"Entrega confirmada: {result['delivered_now']} un. de "
-            f"'{result['product_name']}'."
-        )
-        if result["still_pending"] > 0:
-            msg += f" Ainda pendente: {result['still_pending']} un."
-        flash(msg, "success")
-    except ValueError as exc:
-        flash(str(exc), "error")
-    return redirect(request.referrer or url_for("seller_dashboard"))
-
-
-@app.route("/vendedor/pedido/<int:tx_id>/entregar", methods=["POST"])
-@seller_required
-def seller_confirm_items_delivery(tx_id: int):
-    """Confirma a retirada de vários itens pendentes de um pedido."""
-    seller_id = _current_seller_id()
-    seller_ev = _get_seller_event()
-    row = get_seller(seller_id)
-    seller_name = (row or {}).get("name") or "Vendedor"
-    item_ids = request.form.getlist("item_ids")
-    try:
-        result = confirm_items_delivery(
-            tx_id,
-            item_ids,
-            seller_id=seller_id,
-            expected_event_id=int(seller_ev["id"]) if seller_ev else None,
-            created_by=f"vendedor:{seller_name}",
-        )
-        msg = (
-            f"Entrega confirmada: {result['items_count']} produto(s), "
-            f"{result['units_delivered']} un."
-        )
-        if result.get("errors"):
-            msg += " Alguns itens não puderam ser entregues (verifique o estoque)."
-            flash(msg, "warning")
-            for err in result["errors"][:5]:
-                flash(err, "error")
-        else:
-            flash(msg, "success")
-    except ValueError as exc:
-        flash(str(exc), "error")
-    return redirect(request.referrer or url_for("seller_dashboard"))
-
-
 @app.route("/vendedor/estoque")
 @seller_required
 def seller_stock():
     seller_ev = _get_seller_event()
     if seller_ev:
         ev_id = seller_ev["id"]
-        products, filters, pagination = _seller_event_stock_page_view(ev_id)
+        seller_id = _current_seller_id()
+        products, filters, pagination = _seller_event_stock_page_view(ev_id, seller_id)
         ev_stats = get_event_stock_stats(ev_id)
         stock = {
             "products_count": ev_stats["products_count"],
@@ -1190,6 +1131,11 @@ def seller_stock():
             **_seller_shell_context(active_section="estoque"),
         )
     products, filters, pagination = _admin_stock_page_view()
+    seller_id = _current_seller_id()
+    product_ids = [int(p["id"]) for p in products]
+    sold_map = units_sold_by_product_for_seller(seller_id, product_ids=product_ids)
+    for p in products:
+        p["units_sold"] = int(sold_map.get(int(p["id"]), 0))
     return render_template(
         "seller/stock.html",
         products=products,
@@ -1347,7 +1293,13 @@ def seller_api_stock():
     seller_ev = _get_seller_event()
     if seller_ev:
         ev_id = seller_ev["id"]
+        seller_id = _current_seller_id()
         products = list_event_products_for_client(ev_id)
+        sold_map = units_sold_by_product_for_event(
+            ev_id, product_ids=[int(p["id"]) for p in products], seller_id=seller_id,
+        )
+        for p in products:
+            p["units_sold"] = int(sold_map.get(int(p["id"]), 0))
         ev_stats = get_event_stock_stats(ev_id)
         stock = {
             "products_count": ev_stats["products_count"],
@@ -1365,6 +1317,11 @@ def seller_api_stock():
             })} for p in products],
         })
     products, _filters, pagination = _admin_stock_page_view()
+    seller_id = _current_seller_id()
+    product_ids = [int(p["id"]) for p in products]
+    sold_map = units_sold_by_product_for_seller(seller_id, product_ids=product_ids)
+    for p in products:
+        p["units_sold"] = int(sold_map.get(int(p["id"]), 0))
     return jsonify({
         "stock": get_products_library_stats(),
         "pagination": {
@@ -1388,7 +1345,8 @@ def seller_api_event_stock():
     if seller_ev is None:
         return jsonify({"error": "Não associado a nenhum evento ativo."}), 404
     ev_id = seller_ev["id"]
-    products, _filters, pagination = _seller_event_stock_page_view(ev_id)
+    seller_id = _current_seller_id()
+    products, _filters, pagination = _seller_event_stock_page_view(ev_id, seller_id)
     ev_stats = get_event_stock_stats(ev_id)
     promo_ids = product_ids_with_active_promotions_for_event(ev_id)
     promo_tooltips = active_promotion_tooltip_by_product_id(ev_id)
@@ -2121,7 +2079,7 @@ def _admin_stock_page_view(*, ignore_status_filter: bool = False):
     return products, filters, pagination
 
 
-def _seller_event_stock_page_view(event_id: int):
+def _seller_event_stock_page_view(event_id: int, seller_id: int):
     """Lista paginada do estoque do evento no painel do vendedor (busca + situação, sem categoria)."""
     q_display, _category, status, per_page, page = _admin_stock_list_query_params()
     q_lower = q_display.lower() if q_display else ""
@@ -2141,6 +2099,14 @@ def _seller_event_stock_page_view(event_id: int):
         limit=per_page,
         offset=offset,
     )
+    product_ids = [int(p["id"]) for p in products]
+    sold_map = units_sold_by_product_for_event(
+        event_id,
+        product_ids=product_ids,
+        seller_id=seller_id,
+    )
+    for p in products:
+        p["units_sold"] = int(sold_map.get(int(p["id"]), 0))
 
     showing_from = offset + 1 if total > 0 else 0
     showing_to = min(offset + len(products), total) if total > 0 else 0

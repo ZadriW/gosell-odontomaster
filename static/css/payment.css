@@ -149,6 +149,17 @@ button.payment__back {
     margin-top: 2px;
 }
 
+.payment-backorder-note--blocked {
+    color: #991b1b;
+    background: rgba(220, 38, 38, 0.08);
+    border-color: rgba(220, 38, 38, 0.35);
+}
+
+.payment-backorder-note--blocked p {
+    margin: 4px 0 0;
+    font-weight: 600;
+}
+
 .payment-backorder-note ul {
     margin: 6px 0;
     padding-left: 18px;

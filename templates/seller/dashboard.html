@@ -5,7 +5,7 @@
 {% from "macros/admin_tx_status_badge.html" import admin_tx_status_badge %}
 {% from "macros/admin_tx_pending_actions.html" import admin_tx_pending_actions %}
 {% from "macros/admin_tx_item_cells.html" import admin_tx_item_cells, admin_tx_discount_summary %}
-{% from "macros/admin_tx_delivery.html" import admin_tx_delivery_badge, admin_tx_delivery_section %}
+{% from "macros/admin_tx_delivery.html" import admin_tx_delivery_badge %}
 
 {% block title %}Dashboard do vendedor - Vendedor | Dental Odonto Master{% endblock %}
 
@@ -70,7 +70,7 @@
             <span class="kpi__icon"><i class="fa-solid fa-box-open" aria-hidden="true"></i></span>
             <span class="kpi__label">Retiradas pendentes{% if seller_event %} no evento{% endif %}</span>
             <span class="kpi__value" data-dash-kpi="pending_delivery">{{ pending_delivery_count }}</span>
-            <span class="kpi__hint">Itens pagos aguardando entrega — toque para ver</span>
+            <span class="kpi__hint">Itens pagos aguardando retirada — consulte o administrador</span>
         </a>
     </div>
 </section>
@@ -97,7 +97,7 @@
                     {% endif %}
                 {% elif filters.entrega == 'parcial' %}
                     Pedidos pagos com itens ainda não entregues.
-                    Abra o pedido e confirme a entrega quando o cliente retirar o produto.
+                    A confirmação de retirada é feita pelo administrador no painel Admin.
                 {% elif seller_event %}
                 Pedidos registrados neste evento em seu nome. Toque em uma linha para ver itens e totais.
                 {% else %}
@@ -247,7 +247,6 @@
                             </div>
                             {% endfor %}
                         </div>
-                        {{ admin_tx_delivery_section(tx, 'seller_confirm_item_delivery', batch_endpoint='seller_confirm_items_delivery') }}
                         {{ admin_tx_client_section(tx) }}
                         <div class="admin-tx__summary">
                             <div class="admin-tx__summary-row">

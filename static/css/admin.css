@@ -3896,8 +3896,9 @@ html.admin-theme--dark .admin-mov__order-link:hover code {
         font-size: 14px;
         color: var(--color-text-muted);
     }
-    .admin-stock:not(.admin-stock--library):not([data-admin-event-stock]) .admin-stock__row > :nth-child(2)::before { content: "Preço"; }
-    [data-admin-event-stock] .admin-stock__row > :nth-child(2)::before { content: "Vendas"; }
+    .admin-stock:not(.admin-stock--library):not([data-admin-event-stock]):not([data-seller-stock-list]) .admin-stock__row > :nth-child(2)::before { content: "Preço"; }
+    [data-admin-event-stock] .admin-stock__row > :nth-child(2)::before,
+    [data-seller-stock-list] .admin-stock__row > :nth-child(2)::before { content: "Vendas"; }
     .admin-stock:not(.admin-stock--library) .admin-stock__row > :nth-child(4)::before { content: "Mín."; }
     .admin-stock:not(.admin-stock--library) .admin-stock__row > :nth-child(2)::before,
     .admin-stock:not(.admin-stock--library) .admin-stock__row > :nth-child(4)::before {

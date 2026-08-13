@@ -143,6 +143,8 @@
      */
     function backorderIndicatorHtml(item, articleClass) {
         if (!window.__SELLER_BACKORDER__) return '';
+        const bl = Number(item.backorder_limit);
+        if (Number.isFinite(bl) && bl === 0) return '';
         const stock = Number(item.estoque);
         if (!Number.isFinite(stock)) return '';
         const qty = Math.max(0, Number(item.quantidade) || 0);

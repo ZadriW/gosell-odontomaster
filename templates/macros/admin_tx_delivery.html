@@ -9,10 +9,11 @@
 {%- endmacro %}
 
 {# Lista itens pendentes de retirada com seleção em lote e confirmação individual.
+   Uso exclusivo do painel Admin (evento ou detalhe do vendedor).
    ``endpoint``: rota POST de um item (tx_id, item_id [, event_id | seller_id]).
    ``batch_endpoint``: rota POST de vários itens (tx_id [, event_id | seller_id]).
-   ``event_id``: rotas do admin no escopo do evento.
-   ``seller_id``: rotas do admin no escopo do vendedor (ou omitidos = rotas do painel do vendedor). #}
+   ``event_id``: rotas no escopo do evento.
+   ``seller_id``: rotas no escopo do vendedor (admin). #}
 {% macro admin_tx_delivery_section(tx, endpoint, event_id=None, seller_id=None, batch_endpoint=None) %}
 {% if (tx.status or '')|lower == 'confirmado' %}
 {% set pending_items = [] %}
@@ -40,10 +41,8 @@
           id="{{ batch_form_id }}"
           {% if event_id %}
           action="{{ url_for(batch_endpoint, event_id=event_id, tx_id=tx.id) }}"
-          {% elif seller_id %}
-          action="{{ url_for(batch_endpoint, seller_id=seller_id, tx_id=tx.id) }}"
           {% else %}
-          action="{{ url_for(batch_endpoint, tx_id=tx.id) }}"
+          action="{{ url_for(batch_endpoint, seller_id=seller_id, tx_id=tx.id) }}"
           {% endif %}
           class="admin-tx__delivery-batch"
           data-delivery-batch
@@ -94,10 +93,8 @@
         <form method="post"
               {% if event_id %}
               action="{{ url_for(endpoint, event_id=event_id, tx_id=tx.id, item_id=it.id) }}"
-              {% elif seller_id %}
-              action="{{ url_for(endpoint, seller_id=seller_id, tx_id=tx.id, item_id=it.id) }}"
               {% else %}
-              action="{{ url_for(endpoint, tx_id=tx.id, item_id=it.id) }}"
+              action="{{ url_for(endpoint, seller_id=seller_id, tx_id=tx.id, item_id=it.id) }}"
               {% endif %}
               class="admin-tx__delivery-form"
               data-confirm="Confirmar a entrega de {{ pending }} un. de '{{ it.product_name }}'? O estoque será baixado.">
