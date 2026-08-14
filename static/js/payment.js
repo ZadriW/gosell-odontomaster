@@ -41,14 +41,137 @@
     const countEl = document.getElementById('paymentCount');
     const subtotalEl = document.getElementById('paymentSubtotal');
     const totalEl = document.getElementById('paymentTotal');
-    const discountRow = document.getElementById('paymentDiscountRow');
+    const promoDiscountRow = document.getElementById('paymentPromoDiscountRow');
+    const promoDiscountEl = document.getElementById('paymentPromoDiscount');
     const discountEl = document.getElementById('paymentDiscount');
+    const discountPctEl = document.getElementById('paymentDiscountPct');
     const continueBtn = document.getElementById('paymentContinue');
     const cancelBtn = document.getElementById('paymentCancel');
 
     let quotePollTimer = null;
+    let lastBaseTotal = null;
+    let syncingAdjustInputs = false;
 
     const PAYMENT_ITEM_OPTIONS = { removable: true };
+
+    function roundMoney(n) {
+        const x = Number(n);
+        if (!Number.isFinite(x)) return 0;
+        return Math.round(x * 100) / 100;
+    }
+
+    function parseMoneyInput(raw) {
+        let s = String(raw || '').trim();
+        if (!s) return 0;
+        s = s.replace(/[^\d,.\-]/g, '');
+        if (s.includes(',') && s.includes('.')) {
+            s = s.replace(/\./g, '').replace(',', '.');
+        } else if (s.includes(',')) {
+            s = s.replace(',', '.');
+        }
+        const n = parseFloat(s);
+        return Number.isFinite(n) ? n : 0;
+    }
+
+    function formatMoneyInput(value) {
+        return roundMoney(value).toLocaleString('pt-BR', {
+            minimumFractionDigits: 2,
+            maximumFractionDigits: 2,
+        });
+    }
+
+    function cartBaseTotal() {
+        const totals = Cart.getTotals();
+        return roundMoney(totals.total);
+    }
+
+    function readAdjustState() {
+        const stored = window.PaymentForm && typeof window.PaymentForm.load === 'function'
+            ? window.PaymentForm.load()
+            : null;
+        const base = cartBaseTotal();
+        let discountReais = stored && stored.seller_discount_reais != null
+            ? roundMoney(stored.seller_discount_reais)
+            : 0;
+        if (discountReais < 0) discountReais = 0;
+        if (discountReais > base) discountReais = base;
+        const payable = roundMoney(base - discountReais);
+        const pct = base > 0 ? roundMoney((discountReais / base) * 100) : 0;
+        return { base, discountReais, discountPct: pct, payable };
+    }
+
+    function persistAdjustState(state) {
+        if (!window.PaymentForm || typeof window.PaymentForm.mergePartial !== 'function') {
+            try {
+                const key = 'totem_client_data_v1';
+                const raw = sessionStorage.getItem(key);
+                const data = raw ? JSON.parse(raw) : {};
+                data.seller_discount_reais = state.discountReais;
+                data.seller_discount_pct = state.discountPct;
+                data.seller_total = state.payable;
+                sessionStorage.setItem(key, JSON.stringify(data));
+            } catch (_) { /* noop */ }
+            return;
+        }
+        window.PaymentForm.mergePartial({
+            seller_discount_reais: state.discountReais,
+            seller_discount_pct: state.discountPct,
+            seller_total: state.payable,
+        });
+    }
+
+    function writeAdjustInputs(state, { force } = {}) {
+        const active = document.activeElement;
+        syncingAdjustInputs = true;
+        if (discountEl && (force || active !== discountEl)) {
+            discountEl.value = formatMoneyInput(state.discountReais);
+        }
+        if (discountPctEl && (force || active !== discountPctEl)) {
+            discountPctEl.value = formatMoneyInput(state.discountPct);
+        }
+        if (totalEl && (force || active !== totalEl)) {
+            totalEl.value = formatMoneyInput(state.payable);
+        }
+        syncingAdjustInputs = false;
+    }
+
+    function applyAdjustFrom(source, rawValue) {
+        const base = cartBaseTotal();
+        let discountReais = 0;
+        if (source === 'reais') {
+            discountReais = roundMoney(Math.min(Math.max(0, parseMoneyInput(rawValue)), base));
+        } else if (source === 'pct') {
+            const pct = Math.min(Math.max(0, parseMoneyInput(rawValue)), 100);
+            discountReais = roundMoney(base * (pct / 100));
+        } else if (source === 'total') {
+            const payable = roundMoney(Math.min(Math.max(0, parseMoneyInput(rawValue)), base));
+            discountReais = roundMoney(base - payable);
+        }
+        const payable = roundMoney(base - discountReais);
+        const discountPct = base > 0 ? roundMoney((discountReais / base) * 100) : 0;
+        const state = { base, discountReais, discountPct, payable };
+        persistAdjustState(state);
+        writeAdjustInputs(state, { force: source !== 'reais' && source !== 'pct' && source !== 'total' });
+        if (window.PaymentForm && typeof window.PaymentForm.syncInstallmentsFromCart === 'function') {
+            window.PaymentForm.syncInstallmentsFromCart();
+        }
+        return state;
+    }
+
+    window.SellerPaymentAdjust = {
+        getPayableTotal() {
+            return readAdjustState().payable;
+        },
+        getState() {
+            return readAdjustState();
+        },
+        refreshFromCart() {
+            const state = readAdjustState();
+            persistAdjustState(state);
+            writeAdjustInputs(state);
+            return state;
+        },
+    };
 
     function renderItem(item) {
         if (PromoPricing && typeof PromoPricing.renderLineItemHtml === 'function') {
@@ -91,17 +214,30 @@
 
     function updateSummaryTotals(totals) {
         countEl.textContent = totals.count;
-        const hasDiscount = totals.economiaTotal > 0.009;
-        if (discountRow) discountRow.hidden = !hasDiscount;
-        if (discountEl && hasDiscount) {
-            discountEl.textContent = `-${Cart.formatBRL(totals.economiaTotal)}`;
+        const promoDiscount = roundMoney(totals.economiaTotal);
+        if (promoDiscountRow) promoDiscountRow.hidden = promoDiscount <= 0.009;
+        if (promoDiscountEl && promoDiscount > 0.009) {
+            promoDiscountEl.textContent = `-${Cart.formatBRL(promoDiscount)}`;
         }
-        if (hasDiscount) {
+        if (promoDiscount > 0.009) {
             subtotalEl.textContent = Cart.formatBRL(totals.subtotalLista);
         } else {
             subtotalEl.textContent = Cart.formatBRL(totals.total);
         }
-        totalEl.textContent = Cart.formatBRL(totals.total);
+
+        const base = roundMoney(totals.total);
+        if (lastBaseTotal != null && Math.abs(base - lastBaseTotal) > 0.009) {
+            const state = readAdjustState();
+            persistAdjustState(state);
+            writeAdjustInputs(state);
+        } else if (lastBaseTotal == null) {
+            const state = readAdjustState();
+            persistAdjustState(state);
+            writeAdjustInputs(state);
+        } else {
+            writeAdjustInputs(readAdjustState());
+        }
+        lastBaseTotal = base;
     }
 
     function backorderBlockedNoticeHtml(items) {
@@ -155,6 +291,9 @@
                 && Cart.hasBackorderViolations();
             continueBtn.disabled = blocked;
         }
+        if (window.PaymentForm && typeof window.PaymentForm.syncInstallmentsFromCart === 'function') {
+            window.PaymentForm.syncInstallmentsFromCart();
+        }
     }
 
     async function syncServerQuote() {
@@ -187,6 +326,26 @@
             quotePollTimer = null;
         }
     }
+
+    function bindAdjustInput(el, source) {
+        if (!el) return;
+        el.addEventListener('input', () => {
+            if (syncingAdjustInputs) return;
+            applyAdjustFrom(source, el.value);
+        });
+        el.addEventListener('change', () => {
+            if (syncingAdjustInputs) return;
+            const state = applyAdjustFrom(source, el.value);
+            writeAdjustInputs(state, { force: true });
+        });
+        el.addEventListener('blur', () => {
+            writeAdjustInputs(readAdjustState(), { force: true });
+        });
+    }
+
+    bindAdjustInput(discountEl, 'reais');
+    bindAdjustInput(discountPctEl, 'pct');
+    bindAdjustInput(totalEl, 'total');
 
     continueBtn.addEventListener('click', () => {
         if (Cart.isEmpty()) return;

@@ -53,6 +53,10 @@
     }
 
     function cartTotal() {
+        if (window.SellerPaymentAdjust && typeof window.SellerPaymentAdjust.getPayableTotal === 'function') {
+            const t = Number(window.SellerPaymentAdjust.getPayableTotal());
+            return Number.isFinite(t) ? t : 0;
+        }
         if (!window.Cart || typeof window.Cart.total !== 'function') return 0;
         const t = Number(window.Cart.total());
         return Number.isFinite(t) ? t : 0;
@@ -79,6 +83,30 @@
                 + '#paymentForm input[name="payment_method"]:checked',
         );
         return !!(r && r.value === 'cartao');
+    }
+
+    function selectedPaymentMethod() {
+        const r = document.querySelector(
+            'input[name="payment_method"][form="paymentForm"]:checked, '
+                + '#paymentForm input[name="payment_method"]:checked',
+        );
+        return r ? String(r.value || 'cartao').toLowerCase() : 'cartao';
+    }
+
+    function syncPaymentMethodHint() {
+        const hint = document.getElementById('paymentMethodHint');
+        if (!hint) return;
+        const pm = selectedPaymentMethod();
+        if (pm === 'dinheiro') {
+            hint.textContent =
+                'Pagamento em espécie: confirme o recebimento do valor na próxima etapa (sem maquininha).';
+        } else if (pm === 'pix') {
+            hint.textContent =
+                'PIX selecionado — o valor será processado na maquininha na próxima etapa.';
+        } else {
+            hint.textContent =
+                'Cartão selecionado — o valor será processado na maquininha na próxima etapa.';
+        }
     }
 
     function rebuildInstallmentsOptions(preferred) {
@@ -143,6 +171,13 @@
         load,
         clear,
         syncInstallmentsFromCart,
+        mergePartial(partial) {
+            if (!partial || typeof partial !== 'object') return;
+            const current = load() || {};
+            try {
+                sessionStorage.setItem(STORAGE_KEY, JSON.stringify({ ...current, ...partial }));
+            } catch (_) {}
+        },
         isValid() {
             return false;
         },
@@ -328,6 +363,16 @@
             if (installmentsSelect) installmentsSelect.setCustomValidity('');
         }
 
+        let sellerTotal = cartTotal();
+        let sellerDiscountReais = 0;
+        let sellerDiscountPct = 0;
+        if (window.SellerPaymentAdjust && typeof window.SellerPaymentAdjust.getState === 'function') {
+            const adj = window.SellerPaymentAdjust.getState();
+            sellerTotal = adj.payable;
+            sellerDiscountReais = adj.discountReais;
+            sellerDiscountPct = adj.discountPct;
+        }
+
         return {
             name: (data.get('name') || '').trim(),
             cpf: (data.get('cpf') || '').trim(),
@@ -343,6 +388,9 @@
             state: (data.get('state') || '').trim(),
             payment_method: pmNorm,
             installments,
+            seller_total: sellerTotal,
+            seller_discount_reais: sellerDiscountReais,
+            seller_discount_pct: sellerDiscountPct,
         };
     };
 
@@ -384,7 +432,7 @@
         const stateEl = form.querySelector('[name="state"]');
         if (stored.state && stateEl) stateEl.value = stored.state;
         const pm = (stored.payment_method || 'cartao').toLowerCase();
-        const pmVal = pm === 'pix' ? 'pix' : 'cartao';
+        const pmVal = ['pix', 'cartao', 'dinheiro'].includes(pm) ? pm : 'cartao';
         const pmRadio = document.querySelector(
             `input[name="payment_method"][value="${pmVal}"][form="paymentForm"], #paymentForm input[name="payment_method"][value="${pmVal}"]`,
         );
@@ -394,9 +442,11 @@
     document.querySelector('.payment__section--method-flow')?.addEventListener('change', event => {
         const t = event.target;
         if (t && t.name === 'payment_method') {
+            syncPaymentMethodHint();
             syncInstallmentsFromCart();
         }
     });
 
+    syncPaymentMethodHint();
     syncInstallmentsFromCart();
 })();

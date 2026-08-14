@@ -153,8 +153,7 @@ import wake_api
 
 app = Flask(__name__)
 
-# SECRET_KEY: usar variável de ambiente em produção.
-# Fallback para chave aleatória por processo (sessões não persistem entre restarts).
+# SECRET_KEY persistida em totem.env (totem_env.ensure_persistent_secret_key).
 app.secret_key = os.environ.get("TOTEM_SECRET_KEY") or secrets.token_hex(32)
 
 # CSRF (Flask-WTF): mesma chave da sessão; sem limite de tempo para o token na sessão atual.
@@ -236,7 +235,7 @@ def _seller_pending_cancel_url(tx_id: int) -> str:
 
 def _normalize_payment_method_for_db(value) -> str:
     v = (value or "").strip().lower()
-    if v in ("pix", "cartao"):
+    if v in ("pix", "cartao", "dinheiro"):
         return v
     return "cartao"
 
@@ -245,6 +244,8 @@ def _payment_method_label(value, card_installments=None) -> str:
     v = (value or "").strip().lower()
     if v == "pix":
         return "PIX"
+    if v == "dinheiro":
+        return "Dinheiro"
     if v == "cartao":
         try:
             n = int(card_installments)
@@ -325,14 +326,15 @@ app.add_template_filter(_parcelas_cartao_filter, "parcelas_cartao")
 # Inicializa o schema e popula o catálogo inicial (se vazio).
 init_db()
 
-# Garante uma conta inicial para o painel de vendedores.
+# Conta inicial só se o e-mail padrão ainda não existir — nunca regrava senha.
 try:
-    ensure_seller_account(
-        SELLER_DEFAULT_NAME,
-        SELLER_DEFAULT_EMAIL,
-        generate_password_hash(SELLER_DEFAULT_PASSWORD),
-        pin_hash=None,
-    )
+    if get_seller_by_email(SELLER_DEFAULT_EMAIL) is None:
+        ensure_seller_account(
+            SELLER_DEFAULT_NAME,
+            SELLER_DEFAULT_EMAIL,
+            generate_password_hash(SELLER_DEFAULT_PASSWORD),
+            pin_hash=None,
+        )
 except Exception as exc:
     app.logger.warning("Conta inicial de vendedor indisponivel: %s", exc)
 
@@ -508,6 +510,19 @@ def payment_waiting():
 # API pública (consumida pelo front do totem)
 # ---------------------------------------------------------------------------
 
+def _parse_seller_total(payload: dict, client: dict):
+    """Total negociado pelo vendedor (desconto manual). None = usar total calculado."""
+    raw = payload.get("seller_total")
+    if raw is None:
+        raw = client.get("seller_total")
+    if raw is None or raw == "":
+        return None
+    try:
+        return round(float(raw), 2)
+    except (TypeError, ValueError):
+        raise ValueError("Valor total informado é inválido.") from None
+
+
 @app.route("/api/produtos")
 def api_products():
     category = request.args.get("categoria", "").strip()
@@ -579,6 +594,7 @@ def api_create_transaction():
             card_installments=card_installments,
             client_cro_uf=cro_uf or None,
             client_cro_numero=cro_numero or None,
+            seller_total=_parse_seller_total(payload, client),
         )
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
@@ -642,6 +658,7 @@ def api_update_pending_transaction(tx_id: int):
             card_installments=card_installments,
             client_cro_uf=cro_uf or None,
             client_cro_numero=cro_numero or None,
+            seller_total=_parse_seller_total(payload, client),
         )
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400

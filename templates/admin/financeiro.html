@@ -265,6 +265,8 @@
                     <i class="fa-brands fa-pix" aria-hidden="true"></i>
                     {% elif pm.method == 'cartao' %}
                     <i class="fa-solid fa-credit-card" aria-hidden="true"></i>
+                    {% elif pm.method == 'dinheiro' %}
+                    <i class="fa-solid fa-money-bill-wave" aria-hidden="true"></i>
                     {% endif %}
                     {{ pm.method | paymethod(None) }}
                 </span>

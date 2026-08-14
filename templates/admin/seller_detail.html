@@ -174,8 +174,9 @@
                         name="password"
                         minlength="6"
                         placeholder="Deixe em branco para manter"
-                        value="{{ v_password }}"
+                        value=""
                         autocomplete="new-password"
+                        data-lpignore="true"
                         {% if fe.password %}aria-invalid="true" aria-describedby="detail-seller-password-err"{% endif %}
                     >
                     <button

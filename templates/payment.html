@@ -270,8 +270,8 @@
                     <i class="fa-solid fa-money-bill-wave" aria-hidden="true"></i>
                     Forma de pagamento
                 </h2>
-                <p class="payment-method__hint payment-method__hint--sidebar">
-                    Escolha PIX ou cartão antes de continuar — o valor será processado na maquininha na próxima etapa.
+                <p class="payment-method__hint payment-method__hint--sidebar" id="paymentMethodHint">
+                    Escolha a forma de pagamento antes de continuar. PIX e cartão são processados na maquininha; dinheiro é confirmado na próxima etapa.
                 </p>
                 <fieldset class="payment-method" form="paymentForm">
                     <legend class="payment-method__legend">Opção <span class="payment-field__required">*</span></legend>
@@ -288,6 +288,13 @@
                             <span class="payment-method__box">
                                 <i class="fa-solid fa-credit-card" aria-hidden="true"></i>
                                 <span class="payment-method__label">Cartão</span>
+                            </span>
+                        </label>
+                        <label class="payment-method__choice">
+                            <input type="radio" name="payment_method" form="paymentForm" value="dinheiro">
+                            <span class="payment-method__box">
+                                <i class="fa-solid fa-money-bill-wave" aria-hidden="true"></i>
+                                <span class="payment-method__label">Dinheiro</span>
                             </span>
                         </label>
                     </div>
@@ -330,24 +337,67 @@
                         <span>Subtotal</span>
                         <strong id="paymentSubtotal">R$ 0,00</strong>
                     </div>
-                    <div class="payment__summary-row payment__summary-row--discount" id="paymentDiscountRow" hidden>
-                        <span>Descontos</span>
-                        <strong id="paymentDiscount">-R$ 0,00</strong>
+                    <div class="payment__summary-row payment__summary-row--discount" id="paymentPromoDiscountRow" hidden>
+                        <span>Promoções</span>
+                        <strong id="paymentPromoDiscount">-R$ 0,00</strong>
+                    </div>
+                    <div class="payment__summary-row payment__summary-row--discount" id="paymentDiscountRow">
+                        <label class="payment__summary-label" for="paymentDiscount">Desconto (R$)</label>
+                        <div class="payment__summary-field">
+                            <span class="payment__summary-affix" aria-hidden="true">R$</span>
+                            <input
+                                id="paymentDiscount"
+                                class="payment__summary-input"
+                                type="text"
+                                inputmode="decimal"
+                                autocomplete="off"
+                                spellcheck="false"
+                                aria-label="Desconto em reais"
+                                value="0,00"
+                            >
+                        </div>
+                    </div>
+                    <div class="payment__summary-row payment__summary-row--discount" id="paymentDiscountPctRow">
+                        <label class="payment__summary-label" for="paymentDiscountPct">Desconto (%)</label>
+                        <div class="payment__summary-field">
+                            <input
+                                id="paymentDiscountPct"
+                                class="payment__summary-input"
+                                type="text"
+                                inputmode="decimal"
+                                autocomplete="off"
+                                spellcheck="false"
+                                aria-label="Desconto em porcentagem"
+                                value="0,00"
+                            >
+                            <span class="payment__summary-affix" aria-hidden="true">%</span>
+                        </div>
                     </div>
                 </div>
 
                 <div class="payment__summary-total">
-                    <span class="payment__summary-total-label">Total</span>
-                    <span class="payment__summary-total-value" id="paymentTotal">R$ 0,00</span>
+                    <label class="payment__summary-total-label" for="paymentTotal">Total</label>
+                    <div class="payment__summary-field payment__summary-field--total">
+                        <span class="payment__summary-affix payment__summary-affix--total" aria-hidden="true">R$</span>
+                        <input
+                            id="paymentTotal"
+                            class="payment__summary-total-value"
+                            type="text"
+                            inputmode="decimal"
+                            autocomplete="off"
+                            spellcheck="false"
+                            aria-label="Valor total da compra"
+                            value="0,00"
+                        >
+                    </div>
                 </div>
 
                 <div class="payment__instructions">
                     <i class="fa-solid fa-circle-info" aria-hidden="true"></i>
                     <div>
                         <strong>Próximo passo</strong>
-                        Revise os itens, os dados e a forma de pagamento (PIX ou cartão). Em seguida você será direcionado à tela
-                        <em>Aguardando pagamento</em>, onde poderá usar a maquininha e confirmar
-                        quando o pagamento for concluído.
+                        Revise os itens, os dados e a forma de pagamento. Em seguida você será direcionado à tela
+                        <em>Aguardando pagamento</em>, onde confirma o recebimento (maquininha, PIX/cartão, ou dinheiro em espécie).
                     </div>
                 </div>
 

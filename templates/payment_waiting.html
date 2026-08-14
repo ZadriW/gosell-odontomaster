@@ -25,8 +25,8 @@
             <div class="payment-wait__pulse" aria-hidden="true">
                 <i class="fa-solid fa-credit-card"></i>
             </div>
-            <h1 class="payment-wait__title">Aguardando pagamento</h1>
-            <p class="payment-wait__lead">
+            <h1 class="payment-wait__title" id="waitingTitle">Aguardando pagamento</h1>
+            <p class="payment-wait__lead" id="waitingLead">
                 Utilize a <strong>maquininha</strong> ao lado do totem para concluir o pagamento
                 (<strong>PIX</strong> ou <strong>cartão</strong>, conforme selecionado no passo anterior).
                 Quando a operação for aprovada na maquininha, toque no botão abaixo para registrar
@@ -56,7 +56,7 @@
         <div class="payment-wait__actions">
             <button type="button" class="payment__btn payment__btn--primary" id="waitingConfirm">
                 <i class="fa-solid fa-check" aria-hidden="true"></i>
-                Pagamento realizado
+                <span id="waitingConfirmLabel">Pagamento realizado</span>
             </button>
         </div>
     </main>

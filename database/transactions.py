@@ -135,6 +135,27 @@ def _public_items_from_normalized(
     return out
 
 
+def _coerce_seller_total(computed_total: float, seller_total: Optional[object]) -> float:
+    """Aplica desconto manual do vendedor ao total já calculado (itens + promoções).
+
+    O valor informado não pode ser negativo nem maior que o subtotal do pedido.
+    """
+    computed = round(float(computed_total), 2)
+    if seller_total is None or seller_total == "":
+        return computed
+    try:
+        requested = round(float(seller_total), 2)
+    except (TypeError, ValueError):
+        raise ValueError("Valor total informado é inválido.") from None
+    if requested < 0:
+        raise ValueError("O valor total não pode ser negativo.")
+    if requested > computed + 0.009:
+        raise ValueError(
+            "O valor total não pode ser maior que o subtotal do pedido."
+        )
+    return requested
+
+
 def create_transaction(
     items: Iterable[Dict],
     *,
@@ -156,6 +177,7 @@ def create_transaction(
     card_installments: Optional[int] = None,
     client_cro_uf: Optional[str] = None,
     client_cro_numero: Optional[str] = None,
+    seller_total: Optional[float] = None,
 ) -> Dict:
     """Registra um pedido **pendente** com seus itens (sem baixar estoque).
 
@@ -280,6 +302,7 @@ def create_transaction(
 
         # Recalcula total e items_count após promoções.
         total = round(sum(i["subtotal"] for i in normalized), 2)
+        total = _coerce_seller_total(total, seller_total)
         items_count = sum(i["quantity"] for i in normalized)
         card_installments_store = _normalize_card_installments_for_db(
             payment_method, total, card_installments if card_installments is not None else 1,
@@ -415,6 +438,7 @@ def update_pending_transaction(
     card_installments: Optional[int] = None,
     client_cro_uf: Optional[str] = None,
     client_cro_numero: Optional[str] = None,
+    seller_total: Optional[float] = None,
 ) -> Dict:
     """Atualiza um pedido **pendente** (itens, totais, cliente e pagamento) sem baixar estoque.
 
@@ -577,6 +601,7 @@ def update_pending_transaction(
             normalized = apply_promotions_to_items_in_conn(conn, event_id, normalized)
 
         total = round(sum(i["subtotal"] for i in normalized), 2)
+        total = _coerce_seller_total(total, seller_total)
         items_count = sum(i["quantity"] for i in normalized)
         card_installments_store = _normalize_card_installments_for_db(
             payment_method, total,
@@ -799,8 +824,6 @@ def confirm_transaction_with_aut(tx_id: int, aut: str, *, created_by: str = "tot
     ou o AUT for inválido.
     """
     aut_clean = (aut or "").strip()
-    if not aut_clean:
-        raise ValueError("O código AUT não pode estar vazio.")
 
     with get_conn() as conn:
         row = conn.execute(
@@ -812,6 +835,12 @@ def confirm_transaction_with_aut(tx_id: int, aut: str, *, created_by: str = "tot
             raise ValueError("Esta transação já foi processada e não pode ser alterada.")
 
         tx_row = dict(row)
+        pm = (tx_row.get("payment_method") or "").strip().lower()
+        if not aut_clean:
+            if pm == "dinheiro":
+                aut_clean = "DINHEIRO"
+            else:
+                raise ValueError("O código AUT não pode estar vazio.")
 
         # Itens gravados (linha a linha, para controlar entrega por item).
         items_rows = conn.execute(
@@ -1850,7 +1879,7 @@ def get_pending_transaction_restore_payload(tx_id: int, seller_id: int) -> Optio
             cart_items.append(entry)
 
     pm = (tx.get("payment_method") or "cartao").strip().lower()
-    if pm not in ("pix", "cartao"):
+    if pm not in ("pix", "cartao", "dinheiro"):
         pm = "cartao"
     installments_raw = tx.get("card_installments")
     try:

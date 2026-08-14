@@ -88,8 +88,9 @@
                         name="password"
                         minlength="6"
                         required
-                        value="{{ sf.password | default('', true) }}"
+                        value=""
                         autocomplete="new-password"
+                        data-lpignore="true"
                         {% if fe.password %}aria-invalid="true" aria-describedby="seller-password-err"{% endif %}
                     >
                     <button

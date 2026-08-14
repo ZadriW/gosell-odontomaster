@@ -296,6 +296,8 @@ button.payment__back {
 .payment__summary-row {
     display: flex;
     justify-content: space-between;
+    align-items: center;
+    gap: 12px;
     font-size: 15px;
     color: var(--color-text-muted);
     font-variant-numeric: tabular-nums;
@@ -308,6 +310,75 @@ button.payment__back {
 
 .payment__summary-row--discount strong {
     color: #0d7a4a;
+}
+
+.payment__summary-label {
+    font-size: 14px;
+    color: var(--color-text-muted);
+}
+
+.payment__summary-field {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    max-width: 160px;
+    padding: 4px 8px;
+    border: 1.5px solid var(--color-border);
+    border-radius: 10px;
+    background: var(--color-bg, #fff);
+}
+
+.payment__summary-field:focus-within {
+    border-color: var(--color-primary);
+    box-shadow: 0 0 0 3px rgba(14, 22, 122, 0.12);
+}
+
+.payment__summary-affix {
+    font-size: 13px;
+    font-weight: 700;
+    color: #0d7a4a;
+    white-space: nowrap;
+}
+
+.payment__summary-input {
+    width: 100%;
+    min-width: 0;
+    border: 0;
+    outline: none;
+    background: transparent;
+    font: inherit;
+    font-size: 15px;
+    font-weight: 700;
+    color: #0d7a4a;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+}
+
+.payment__summary-field--total {
+    max-width: min(240px, 70%);
+    padding: 6px 10px;
+    border-color: rgba(14, 22, 122, 0.28);
+}
+
+.payment__summary-affix--total {
+    color: var(--color-primary);
+    font-size: 18px;
+}
+
+.payment__summary-total-value {
+    width: 100%;
+    min-width: 0;
+    border: 0;
+    outline: none;
+    background: transparent;
+    font-size: 32px;
+    font-weight: 800;
+    color: var(--color-primary);
+    letter-spacing: -0.02em;
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+    padding: 0;
 }
 
 .line-item__price-original {
@@ -993,7 +1064,7 @@ button.payment__back {
 .payment-method__choice {
     position: relative;
     cursor: pointer;
-    flex: 1 1 140px;
+    flex: 1 1 120px;
     min-width: 0;
 }
 
