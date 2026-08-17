@@ -97,6 +97,25 @@
 
         {% block seller_body %}{% endblock %}
     </main>
+
+    {# ── Navegação inferior mobile (≤767px); no desktop usa admin-nav na topbar ── #}
+    <nav class="admin-bottom-nav admin-bottom-nav--seller" aria-label="Seções do painel do vendedor">
+        <a class="admin-bottom-nav__item {% if active_section == 'venda' %}is-active{% endif %}"
+           href="{{ seller_venda_url|default('/vendedor/venda', true) }}" title="Catálogo">
+            <i class="fa-solid fa-cart-shopping" aria-hidden="true"></i>
+            <span class="admin-bottom-nav__badge">Catálogo</span>
+        </a>
+        <a class="admin-bottom-nav__item {% if active_section == 'dashboard' %}is-active{% endif %}"
+           href="{{ url_for('seller_dashboard') }}" title="Minhas vendas">
+            <i class="fa-solid fa-gauge-high" aria-hidden="true"></i>
+            <span class="admin-bottom-nav__badge">Vendas</span>
+        </a>
+        <a class="admin-bottom-nav__item {% if active_section == 'estoque' %}is-active{% endif %}"
+           href="{{ url_for('seller_stock') }}" title="Estoque">
+            <i class="fa-solid fa-boxes-stacked" aria-hidden="true"></i>
+            <span class="admin-bottom-nav__badge">Estoque</span>
+        </a>
+    </nav>
 </div>
 
 {% include 'partials/admin_confirm_dialog.html' %}

@@ -4936,6 +4936,14 @@ html.admin-theme--dark .admin-mov__order-link:hover code {
     .admin-main.admin-main--catalog-embed .admin-flashes {
         padding: 16px 16px 0;
     }
+    @media (max-width: 767px) {
+        .admin-main {
+            padding-bottom: calc(72px + env(safe-area-inset-bottom, 0px));
+        }
+        .admin-main.admin-main--catalog-embed {
+            padding-bottom: calc(72px + env(safe-area-inset-bottom, 0px));
+        }
+    }
     /* Catálogo embutido: logo duplicada — mantém admin-topbar__brand, oculta topbar__brand ao lado da busca */
     .admin-main.admin-main--catalog-embed .topbar__brand {
         display: none;
