@@ -315,6 +315,19 @@ def update_event_product_backorder_limit(
         )
 
 
+def _with_resolved_product_image(row: Dict) -> Dict:
+    """Prefere a cópia em ``/static/product-images`` quando o arquivo existir."""
+    pid = row.get("product_id")
+    if pid is None:
+        pid = row.get("id")
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return row
+    row["image"] = product_images.resolve_image_url(pid, row.get("image"))
+    return row
+
+
 def list_event_products(event_id: int) -> List[Dict]:
     """Lista produtos de um evento com dados do catálogo (JOIN com products)."""
     with get_conn() as conn:
@@ -341,7 +354,7 @@ def list_event_products(event_id: int) -> List[Dict]:
             """,
             (event_id,),
         ).fetchall()
-        return [dict(r) for r in rows]
+        return [_with_resolved_product_image(dict(r)) for r in rows]
 
 
 _EVENT_PRODUCTS_ADMIN_FROM = """
@@ -465,7 +478,7 @@ def list_event_products_slice(
             sql,
             (event_id, *params, limit, offset),
         ).fetchall()
-        return [dict(r) for r in rows]
+        return [_with_resolved_product_image(dict(r)) for r in rows]
 
 
 def _event_products_slice_row_to_client(row: Dict) -> Dict:

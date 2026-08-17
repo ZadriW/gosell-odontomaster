@@ -1290,6 +1290,10 @@ button.payment__back {
     cursor: not-allowed;
 }
 
+.payment-field__cep-btn--offline:disabled {
+    opacity: 0.28;
+}
+
 .payment-field__loading {
     display: flex;
     gap: 8px;

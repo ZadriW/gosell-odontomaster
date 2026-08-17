@@ -287,6 +287,82 @@
     }
 
     /* -------------------------------------------------------------------- */
+    /* Disponibilidade da busca (ViaCEP exige internet)                     */
+    /* -------------------------------------------------------------------- */
+    let cepLookupOnline = false;
+    let cepConnectivityKnown = false;
+    let cepLookupBusy = false;
+
+    function zipDigits() {
+        return zipInput ? zipInput.value.replace(/\D/g, '') : '';
+    }
+
+    function browserReportsOffline() {
+        return typeof navigator !== 'undefined' && navigator.onLine === false;
+    }
+
+    function cepLookupAvailable() {
+        return cepLookupOnline && !browserReportsOffline();
+    }
+
+    function syncCepButton() {
+        if (!searchCepBtn) return;
+        const complete = zipDigits().length === 8;
+        const available = cepLookupAvailable();
+        const offlineLook = cepConnectivityKnown ? !available : browserReportsOffline();
+        searchCepBtn.disabled = cepLookupBusy || !available || !complete;
+        searchCepBtn.classList.toggle('payment-field__cep-btn--offline', offlineLook);
+        if (offlineLook) {
+            searchCepBtn.title = 'Consulta de CEP indisponível sem internet.';
+            searchCepBtn.setAttribute('aria-label', 'Buscar CEP indisponível sem internet');
+        } else if (!cepConnectivityKnown) {
+            searchCepBtn.title = 'Verificando se a consulta de CEP está disponível…';
+            searchCepBtn.setAttribute('aria-label', 'Buscar CEP');
+        } else if (!complete) {
+            searchCepBtn.title = 'Informe um CEP com 8 dígitos';
+            searchCepBtn.setAttribute('aria-label', 'Buscar CEP');
+        } else {
+            searchCepBtn.title = 'Buscar endereço pelo CEP';
+            searchCepBtn.setAttribute('aria-label', 'Buscar CEP');
+        }
+    }
+
+    async function refreshCepConnectivity() {
+        if (browserReportsOffline()) {
+            cepLookupOnline = false;
+            cepConnectivityKnown = true;
+            syncCepButton();
+            return;
+        }
+        try {
+            const ctrl = new AbortController();
+            const timer = setTimeout(() => ctrl.abort(), 3500);
+            const res = await fetch('https://viacep.com.br/ws/00000000/json/', {
+                method: 'GET',
+                cache: 'no-store',
+                signal: ctrl.signal,
+            });
+            clearTimeout(timer);
+            cepLookupOnline = Boolean(res);
+        } catch (_) {
+            cepLookupOnline = false;
+        }
+        cepConnectivityKnown = true;
+        syncCepButton();
+    }
+
+    window.addEventListener('offline', () => {
+        cepLookupOnline = false;
+        cepConnectivityKnown = true;
+        syncCepButton();
+    });
+    window.addEventListener('online', () => {
+        cepConnectivityKnown = false;
+        syncCepButton();
+        refreshCepConnectivity();
+    });
+
+    /* -------------------------------------------------------------------- */
     /* Listeners                                                            */
     /* -------------------------------------------------------------------- */
     form.addEventListener('input', event => {
@@ -301,14 +377,18 @@
             input.value = maskPhone(input.value);
         } else if (input.name === 'zipcode') {
             input.value = maskCEP(input.value);
-            const digits = input.value.replace(/\D/g, '');
-            if (searchCepBtn) searchCepBtn.disabled = digits.length !== 8;
+            syncCepButton();
         }
     });
 
     if (searchCepBtn && zipInput && cepLoading) {
         searchCepBtn.addEventListener('click', async () => {
-            searchCepBtn.disabled = true;
+            if (!cepLookupAvailable()) {
+                syncCepButton();
+                return;
+            }
+            cepLookupBusy = true;
+            syncCepButton();
             cepLoading.hidden = false;
             try {
                 const data = await searchCEP(zipInput.value);
@@ -316,18 +396,18 @@
             } catch (err) {
                 console.warn('Erro ao buscar CEP:', err);
                 alert(`Não foi possível buscar o CEP: ${err.message || 'erro desconhecido'}`);
+                if (browserReportsOffline()) cepLookupOnline = false;
             } finally {
+                cepLookupBusy = false;
                 cepLoading.hidden = true;
-                const digits = zipInput.value.replace(/\D/g, '');
-                searchCepBtn.disabled = digits.length !== 8;
+                syncCepButton();
             }
         });
 
         zipInput.addEventListener('keydown', event => {
             if (event.key === 'Enter') {
                 event.preventDefault();
-                const digits = zipInput.value.replace(/\D/g, '');
-                if (digits.length === 8 && !searchCepBtn.disabled) {
+                if (zipDigits().length === 8 && !searchCepBtn.disabled) {
                     searchCepBtn.click();
                 }
             }
@@ -438,6 +518,9 @@
         );
         if (pmRadio) pmRadio.checked = true;
     }
+
+    syncCepButton();
+    refreshCepConnectivity();
 
     document.querySelector('.payment__section--method-flow')?.addEventListener('change', event => {
         const t = event.target;
