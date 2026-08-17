@@ -12,6 +12,14 @@
                 {{ stock.units_in_stock }} unidades nos eventos
             </p>
         </div>
+        <form method="post" action="{{ url_for('admin_products_cache_images') }}">
+            {% include 'partials/csrf_field.html' %}
+            <button type="submit" class="admin-btn admin-btn--ghost"
+                    title="Baixa as fotos da Wake para este computador. Use com internet antes do evento.">
+                <i class="fa-solid fa-images" aria-hidden="true"></i>
+                Salvar imagens (offline)
+            </button>
+        </form>
     </header>
 
     <form class="admin-filters" method="get" action="{{ url_for('admin_products') }}">

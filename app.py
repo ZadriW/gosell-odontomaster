@@ -144,6 +144,7 @@ from database import (
     update_seller_account,
     update_seller_last_login,
 )
+import product_images
 import wake_api
 
 
@@ -3241,6 +3242,15 @@ def _find_or_fetch_product(sku_or_id: str) -> tuple[dict | None, bool, str | Non
         "Variante Wake importada on-demand: SKU=%s id=%s nome=%s",
         saved.get("sku"), saved.get("id"), saved.get("name"),
     )
+    try:
+        product_images.cache_product_if_remote(
+            int(saved["id"]), saved.get("imagem") or saved.get("image"),
+        )
+        refreshed = find_product_by_sku_or_id(str(saved["id"]))
+        if refreshed is not None:
+            saved = refreshed
+    except Exception:
+        app.logger.exception("Não foi possível copiar a imagem local da variante %s", saved.get("id"))
     return saved, True, None
 
 
@@ -3269,6 +3279,61 @@ def admin_event_add_product(event_id: int):
     except ValueError as exc:
         flash(str(exc), "error")
     return redirect(_url_for_admin_event_stock_list(event_id, preserved, page_override=1))
+
+
+def _flash_image_cache_stats(stats: dict) -> None:
+    ok = int(stats.get("ok") or 0)
+    skip = int(stats.get("skip") or 0)
+    fail = int(stats.get("fail") or 0)
+    if ok:
+        flash(
+            f"{ok} imagem(ns) salva(s) neste computador. "
+            f"{skip} já estavam locais. {fail} falha(s).",
+            "success" if fail == 0 else "error",
+        )
+    elif fail:
+        flash(
+            f"Nenhuma imagem nova foi salva ({fail} falha(s)). "
+            "Verifique a internet e as URLs da Wake.",
+            "error",
+        )
+    else:
+        flash(
+            f"Todas as imagens já estavam salvas neste computador ({skip} produto(s)).",
+            "success",
+        )
+
+
+@app.route("/admin/eventos/<int:event_id>/produtos/baixar-imagens", methods=["POST"])
+@admin_required
+def admin_event_cache_product_images(event_id: int):
+    """Copia as fotos da Wake para disco, para o catálogo funcionar sem internet."""
+    event = _event_or_404(event_id)
+    preserved = _event_stock_return_filters_from_form()
+    if event is None:
+        return redirect(url_for("admin_events"))
+    try:
+        stats = product_images.cache_images_for_event(event_id)
+    except Exception:
+        app.logger.exception("Falha ao baixar imagens do evento %s", event_id)
+        flash("Não foi possível baixar as imagens. Tente novamente com internet.", "error")
+        return redirect(_url_for_admin_event_stock_list(event_id, preserved))
+    _flash_image_cache_stats(stats)
+    return redirect(_url_for_admin_event_stock_list(event_id, preserved))
+
+
+@app.route("/admin/produtos/baixar-imagens", methods=["POST"])
+@admin_required
+def admin_products_cache_images():
+    """Copia as fotos de toda a biblioteca para disco (preparação do evento)."""
+    try:
+        stats = product_images.cache_images_for_catalog()
+    except Exception:
+        app.logger.exception("Falha ao baixar imagens da biblioteca")
+        flash("Não foi possível baixar as imagens. Tente novamente com internet.", "error")
+        return redirect(url_for("admin_products"))
+    _flash_image_cache_stats(stats)
+    return redirect(url_for("admin_products"))
 
 
 _XLS_HEADER_NAMES_COL_A = frozenset({

@@ -27,12 +27,23 @@
                 &middot; valor: {{ stats.stock_value | brl }}
             </p>
         </div>
-        <a class="admin-btn admin-btn--ghost"
-           href="{{ url_for('admin_event_stock_export_csv', event_id=event.id, q=filters.q, categoria=filters.categoria, status=filters.status, entrega=filters.entrega) }}"
-           title="Exportar a lista de estoque filtrada em CSV">
-            <i class="fa-solid fa-file-csv" aria-hidden="true"></i>
-            Exportar CSV
-        </a>
+        <div class="admin-section__header-actions" style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;">
+            <form method="post" action="{{ url_for('admin_event_cache_product_images', event_id=event.id) }}">
+                {% include 'partials/csrf_field.html' %}
+                {{ event_stock_preserved_filters(filters, pagination) }}
+                <button type="submit" class="admin-btn admin-btn--ghost"
+                        title="Baixa as fotos da Wake para este computador. Use com internet antes do evento.">
+                    <i class="fa-solid fa-images" aria-hidden="true"></i>
+                    Salvar imagens (offline)
+                </button>
+            </form>
+            <a class="admin-btn admin-btn--ghost"
+               href="{{ url_for('admin_event_stock_export_csv', event_id=event.id, q=filters.q, categoria=filters.categoria, status=filters.status, entrega=filters.entrega) }}"
+               title="Exportar a lista de estoque filtrada em CSV">
+                <i class="fa-solid fa-file-csv" aria-hidden="true"></i>
+                Exportar CSV
+            </a>
+        </div>
     </header>
 
     <form class="admin-filters" method="get" action="{{ url_for('admin_event_stock', event_id=event.id) }}">
