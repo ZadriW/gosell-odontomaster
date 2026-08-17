@@ -12,6 +12,7 @@ from .sku_helpers import (
     _is_generated_fallback_sku,
     _is_placeholder_product_name,
 )
+import product_images
 
 log = logging.getLogger(__name__)
 
@@ -283,7 +284,7 @@ def _product_row_to_client(row: sqlite3.Row) -> Dict:
         "categoria": row["category"],
         "descricao": row["description"] or "",
         "preco": float(row["price"] or 0),
-        "imagem": row["image"],
+        "imagem": product_images.resolve_image_url(pid, row["image"]),
         "estoque": int(row["stock"] or 0),
         "estoque_minimo": int(row["min_stock"] or 0),
         "ativo": bool(row["active"]),

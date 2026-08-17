@@ -3242,15 +3242,6 @@ def _find_or_fetch_product(sku_or_id: str) -> tuple[dict | None, bool, str | Non
         "Variante Wake importada on-demand: SKU=%s id=%s nome=%s",
         saved.get("sku"), saved.get("id"), saved.get("name"),
     )
-    try:
-        product_images.cache_product_if_remote(
-            int(saved["id"]), saved.get("imagem") or saved.get("image"),
-        )
-        refreshed = find_product_by_sku_or_id(str(saved["id"]))
-        if refreshed is not None:
-            saved = refreshed
-    except Exception:
-        app.logger.exception("Não foi possível copiar a imagem local da variante %s", saved.get("id"))
     return saved, True, None
 
 

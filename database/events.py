@@ -9,6 +9,7 @@ from .connection import DEFAULT_MIN_STOCK, _now_iso, get_conn
 from .event_stock import _apply_event_movement
 from .products import _product_row_to_client
 from .sku_helpers import _default_sku_for_id
+import product_images
 
 def create_event(
     name: str,
@@ -483,7 +484,7 @@ def _event_products_slice_row_to_client(row: Dict) -> Dict:
         "categoria": row["category"],
         "descricao": (row.get("description") or ""),
         "preco": float(row["price"] or 0),
-        "imagem": row["image"],
+        "imagem": product_images.resolve_image_url(pid, row["image"]),
         "estoque": estoque,
         "estoque_minimo": estoque_minimo,
         "ativo": bool(row["product_active"]),

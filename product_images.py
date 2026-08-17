@@ -1,9 +1,11 @@
-"""Cópia local das imagens de produto (Wake) para operação offline.
+"""Cache local de imagens de produto (Wake) para operação offline.
 
-Com internet, baixa a URL remota gravada em ``products.image`` para
-``static/product-images/<id>.<ext>`` e atualiza o campo para um caminho
-servido pelo Flask (``/static/product-images/...``). No evento, o catálogo
-e o estoque passam a usar o arquivo do disco, sem acessar a Wake.
+Estratégia:
+- A coluna ``products.image`` sempre guarda a URL remota original da Wake.
+- Ao baixar para offline, o arquivo é salvo em ``static/product-images/<id>.<ext>``.
+- ``resolve_image_url()`` verifica se existe cópia local; se sim retorna o path
+  local, senão retorna a URL remota original.
+- O admin dispara o download manualmente pelo botão "Salvar imagens (offline)".
 """
 from __future__ import annotations
 
@@ -15,7 +17,7 @@ from urllib.parse import urlparse
 
 import requests
 
-from database.connection import _now_iso, get_conn
+from database.connection import get_conn
 
 log = logging.getLogger(__name__)
 
@@ -33,10 +35,8 @@ _EXT_BY_TYPE = {
 }
 
 
-def is_local_product_image(url: Optional[str]) -> bool:
+def is_local_path(url: Optional[str]) -> bool:
     u = (url or "").strip()
-    if not u:
-        return False
     return u.startswith(LOCAL_URL_PREFIX) or "/static/product-images/" in u
 
 
@@ -56,18 +56,32 @@ def _ext_from_url_and_type(url: str, content_type: str) -> str:
     return ".jpg"
 
 
-def _safe_filename(product_id: int, ext: str) -> str:
-    return f"{int(product_id)}{ext}"
+def _local_file_for_product(product_id: int) -> Optional[str]:
+    """Retorna o path absoluto do arquivo local se existir, None caso contrário."""
+    prefix = os.path.join(IMAGES_DIR, str(int(product_id)))
+    for ext in (".jpg", ".png", ".webp", ".gif", ".svg"):
+        candidate = prefix + ext
+        if os.path.isfile(candidate) and os.path.getsize(candidate) > 32:
+            return candidate
+    return None
 
 
-def cache_remote_image(product_id: int, remote_url: str, *, timeout: int = 20) -> Optional[str]:
-    """Baixa a imagem remota e devolve a URL local, ou None em caso de falha."""
+def resolve_image_url(product_id: int, remote_url: Optional[str]) -> str:
+    """Retorna a URL para exibição: local se cacheada, remota caso contrário."""
+    pid = int(product_id)
+    local = _local_file_for_product(pid)
+    if local:
+        filename = os.path.basename(local)
+        return f"{LOCAL_URL_PREFIX}{filename}"
+    return (remote_url or "").strip()
+
+
+def download_image(product_id: int, remote_url: str, *, timeout: int = 20) -> Optional[str]:
+    """Baixa a imagem remota para disco. Retorna path local ou None se falhar."""
     url = (remote_url or "").strip()
     pid = int(product_id)
     if pid <= 0 or not url:
         return None
-    if is_local_product_image(url):
-        return url
     if not url.startswith("http://") and not url.startswith("https://"):
         return None
 
@@ -85,7 +99,7 @@ def cache_remote_image(product_id: int, remote_url: str, *, timeout: int = 20) -
         return None
 
     ext = _ext_from_url_and_type(url, ctype)
-    filename = _safe_filename(pid, ext)
+    filename = f"{pid}{ext}"
     dest = os.path.join(IMAGES_DIR, filename)
     try:
         with open(dest, "wb") as fh:
@@ -99,41 +113,46 @@ def cache_remote_image(product_id: int, remote_url: str, *, timeout: int = 20) -
         log.warning("Não foi possível gravar imagem do produto %s: %s", pid, exc)
         return None
 
-    local_url = f"{LOCAL_URL_PREFIX}{filename}"
-    try:
-        with get_conn() as conn:
-            conn.execute(
-                "UPDATE products SET image = ?, updated_at = ? WHERE id = ?",
-                (local_url, _now_iso(), pid),
-            )
-    except Exception as exc:
-        log.warning("Imagem salva, mas falhou atualizar o banco do produto %s: %s", pid, exc)
-        return local_url
-    return local_url
+    return f"{LOCAL_URL_PREFIX}{filename}"
 
 
-def cache_product_if_remote(product_id: int, image_url: Optional[str] = None) -> Tuple[str, Optional[str]]:
-    """``ok`` | ``skip`` | ``fail``. Segundo valor é a URL local quando ``ok``."""
+def cache_product(product_id: int, image_url: Optional[str] = None) -> Tuple[str, Optional[str]]:
+    """Tenta baixar imagem de um produto. Retorna (status, local_url).
+
+    status: 'ok' | 'skip' | 'fail'
+    """
     pid = int(product_id)
     url = (image_url or "").strip()
+
     if not url:
         with get_conn() as conn:
             row = conn.execute("SELECT image FROM products WHERE id = ?", (pid,)).fetchone()
         url = (row["image"] if row else "") or ""
+
     if not url:
         return "skip", None
-    if is_local_product_image(url) and os.path.isfile(
-        os.path.join(_ROOT, url.lstrip("/").replace("/", os.sep))
-    ):
-        return "skip", url
-    local = cache_remote_image(pid, url)
+
+    if is_local_path(url):
+        url = ""
+        with get_conn() as conn:
+            row = conn.execute("SELECT image FROM products WHERE id = ?", (pid,)).fetchone()
+        url = (row["image"] if row else "") or ""
+        if not url or is_local_path(url):
+            if _local_file_for_product(pid):
+                return "skip", None
+            return "fail", None
+
+    if _local_file_for_product(pid):
+        return "skip", None
+
+    local = download_image(pid, url)
     if local:
         return "ok", local
     return "fail", None
 
 
 def cache_images_for_products(rows: Iterable[Dict]) -> Dict[str, int]:
-    """Baixa imagens remotas de uma lista com ``id``/``product_id`` e ``image``/``imagem``."""
+    """Baixa imagens remotas de uma lista de produtos."""
     stats = {"ok": 0, "skip": 0, "fail": 0}
     for row in rows:
         pid = row.get("product_id") if row.get("product_id") is not None else row.get("id")
@@ -143,7 +162,7 @@ def cache_images_for_products(rows: Iterable[Dict]) -> Dict[str, int]:
             stats["fail"] += 1
             continue
         url = row.get("image") or row.get("imagem") or ""
-        status, _ = cache_product_if_remote(pid, url)
+        status, _ = cache_product(pid, url)
         stats[status] = stats.get(status, 0) + 1
     return stats
 
