@@ -25,15 +25,15 @@
         {% endif %}
 
         <label class="admin-field">
-            <span class="admin-field__label">E-mail</span>
+            <span class="admin-field__label">Usuário</span>
             <span class="admin-field__wrap">
-                <i class="fa-solid fa-envelope admin-field__icon" aria-hidden="true"></i>
+                <i class="fa-solid fa-user admin-field__icon" aria-hidden="true"></i>
                 <input
                     class="admin-field__input"
-                    type="email"
-                    name="email"
-                    value="{{ email or '' }}"
-                    autocomplete="email"
+                    type="text"
+                    name="username"
+                    value="{{ username or '' }}"
+                    autocomplete="username"
                     required
                     autofocus
                 >

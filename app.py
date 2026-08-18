@@ -95,6 +95,7 @@ from database import (
     get_seller,
     get_seller_admin_event_selection_id,
     get_seller_by_email,
+    get_seller_by_username,
     get_stats,
     get_transaction_by_order_number,
     init_db,
@@ -144,6 +145,7 @@ from database import (
     update_event_product_stock,
     update_seller_account,
     update_seller_last_login,
+    validate_seller_username,
 )
 import product_images
 import wake_api
@@ -190,6 +192,7 @@ ADMIN_PASSWORD = os.environ.get("TOTEM_ADMIN_PASS", "adminmaster430@")
 
 # Conta inicial do painel de vendedores. Em produção, sobrescreva por ambiente.
 SELLER_DEFAULT_NAME = os.environ.get("TOTEM_SELLER_NAME", "Vendedor")
+SELLER_DEFAULT_USERNAME = os.environ.get("TOTEM_SELLER_USER", "vendedor")
 SELLER_DEFAULT_EMAIL = os.environ.get("TOTEM_SELLER_EMAIL", "vendedor@odontomaster.local")
 SELLER_DEFAULT_PASSWORD = os.environ.get("TOTEM_SELLER_PASS", "vendedor123")
 ADMIN_AUTH_COOKIE = "totem_admin_auth"
@@ -328,12 +331,15 @@ app.add_template_filter(_parcelas_cartao_filter, "parcelas_cartao")
 # Inicializa o schema e popula o catálogo inicial (se vazio).
 init_db()
 
-# Conta inicial só se o e-mail padrão ainda não existir — nunca regrava senha.
+# Conta inicial só se o usuário padrão ainda não existir — nunca regrava senha.
 try:
-    if get_seller_by_email(SELLER_DEFAULT_EMAIL) is None:
+    if (
+        get_seller_by_username(SELLER_DEFAULT_USERNAME) is None
+        and get_seller_by_email(SELLER_DEFAULT_EMAIL) is None
+    ):
         ensure_seller_account(
             SELLER_DEFAULT_NAME,
-            SELLER_DEFAULT_EMAIL,
+            SELLER_DEFAULT_USERNAME,
             generate_password_hash(SELLER_DEFAULT_PASSWORD),
             pin_hash=None,
         )
@@ -403,7 +409,7 @@ def _seller_auth() -> dict | None:
                 "is_seller": True,
                 "seller_id": sid,
                 "seller_name": session.get("seller_name", "Vendedor"),
-                "seller_email": session.get("seller_email", ""),
+                "seller_username": session.get("seller_username") or session.get("seller_email", ""),
             }
     return None
 
@@ -444,7 +450,7 @@ def _clear_admin_session() -> None:
 
 def _clear_seller_session() -> None:
     """Remove apenas credenciais do painel do vendedor (preserva admin na mesma sessão)."""
-    for key in ("is_seller", "seller_id", "seller_name", "seller_email"):
+    for key in ("is_seller", "seller_id", "seller_name", "seller_email", "seller_username"):
         session.pop(key, None)
 
 
@@ -772,11 +778,11 @@ def seller_login():
         return redirect(_seller_home_url())
 
     error = None
-    email = ""
+    username = ""
     if request.method == "POST":
-        email = (request.form.get("email") or "").strip().lower()
+        username = (request.form.get("username") or request.form.get("email") or "").strip()
         password = request.form.get("password") or ""
-        seller = get_seller_by_email(email)
+        seller = get_seller_by_username(username)
         if seller and seller.get("active") and check_password_hash(
             seller["password_hash"], password
         ):
@@ -784,6 +790,7 @@ def seller_login():
             next_url = request.args.get("next") or _seller_home_url()
             if not next_url.startswith("/vendedor"):
                 next_url = _seller_home_url()
+            login_id = seller.get("username") or seller.get("email") or username
             response = redirect(next_url)
             return _set_auth_cookie(
                 response,
@@ -793,12 +800,13 @@ def seller_login():
                     "is_seller": True,
                     "seller_id": int(seller["id"]),
                     "seller_name": seller["name"],
-                    "seller_email": seller["email"],
+                    "seller_username": login_id,
+                    "seller_email": login_id,
                 },
             )
-        error = "E-mail ou senha inválidos."
+        error = "Usuário ou senha inválidos."
 
-    return render_template("seller/login.html", error=error, email=email)
+    return render_template("seller/login.html", error=error, username=username)
 
 
 @app.route("/vendedor/logout", methods=["POST", "GET"])
@@ -824,7 +832,7 @@ def _seller_shell_context(**extra):
     )
     ctx = {
         "seller_name": auth.get("seller_name", "Vendedor"),
-        "seller_email": auth.get("seller_email", ""),
+        "seller_username": auth.get("seller_username") or auth.get("seller_email", ""),
         "now": datetime.now(),
         "seller_event": seller_event,
         "seller_pending_cancel_url": _seller_pending_cancel_url,
@@ -1495,7 +1503,7 @@ def seller_api_dashboard():
 # Painel administrativo — vendedores
 # ---------------------------------------------------------------------------
 
-_SELLER_FORM_FIELD_ORDER = ("name", "email", "event_id", "password")
+_SELLER_FORM_FIELD_ORDER = ("name", "username", "event_id", "password")
 
 
 def _first_seller_form_error_message(errors: dict[str, str]) -> str:
@@ -1508,7 +1516,7 @@ def _first_seller_form_error_message(errors: dict[str, str]) -> str:
 def _parse_new_seller_post(form) -> tuple[dict[str, str], dict[str, str]]:
     """Validação do cadastro de vendedor. Retorna (erros_por_campo, valores_para_reexibir)."""
     name = (form.get("name") or "").strip()
-    email = (form.get("email") or "").strip().lower()
+    username = (form.get("username") or form.get("email") or "").strip().lower()
     password = form.get("password") or ""
     event_id_raw = (form.get("event_id") or "").strip()
     event_id = _parse_int(event_id_raw, 0)
@@ -1516,10 +1524,10 @@ def _parse_new_seller_post(form) -> tuple[dict[str, str], dict[str, str]]:
     errors: dict[str, str] = {}
     if not name:
         errors["name"] = "Nome do vendedor é obrigatório."
-    if not email:
-        errors["email"] = "E-mail do vendedor é obrigatório."
-    elif "@" not in email:
-        errors["email"] = "Informe um e-mail válido."
+    try:
+        username = validate_seller_username(username)
+    except ValueError as exc:
+        errors["username"] = str(exc)
 
     if len(password) < 6:
         errors["password"] = "A senha deve ter pelo menos 6 caracteres."
@@ -1529,15 +1537,15 @@ def _parse_new_seller_post(form) -> tuple[dict[str, str], dict[str, str]]:
     elif get_event(event_id) is None:
         errors["event_id"] = "Evento não encontrado."
 
-    if "email" not in errors and email and get_seller_by_email(email):
-        errors["email"] = "Já existe um vendedor com este e-mail."
+    if "username" not in errors and username and get_seller_by_username(username):
+        errors["username"] = "Já existe um vendedor com este usuário."
 
     def keep(field: str, value: str) -> str:
         return "" if field in errors else value
 
     repop = {
         "name": keep("name", name),
-        "email": keep("email", email),
+        "username": keep("username", username),
         "password": keep("password", password),
         "event_id": "" if "event_id" in errors else event_id_raw,
     }
@@ -1547,7 +1555,7 @@ def _parse_new_seller_post(form) -> tuple[dict[str, str], dict[str, str]]:
 def _parse_edit_seller_post(form, _seller_id: int) -> tuple[dict[str, str], dict]:
     """Validação da edição de vendedor. Retorna (erros_por_campo, valores_para_reexibir)."""
     name = (form.get("name") or "").strip()
-    email = (form.get("email") or "").strip().lower()
+    username = (form.get("username") or form.get("email") or "").strip().lower()
     active = form.get("active") == "1"
     password = form.get("password") or ""
     event_id_raw = (form.get("event_id") or "").strip()
@@ -1555,10 +1563,10 @@ def _parse_edit_seller_post(form, _seller_id: int) -> tuple[dict[str, str], dict
     errors: dict[str, str] = {}
     if not name:
         errors["name"] = "Nome do vendedor é obrigatório."
-    if not email:
-        errors["email"] = "E-mail do vendedor é obrigatório."
-    elif "@" not in email:
-        errors["email"] = "Informe um e-mail válido."
+    try:
+        username = validate_seller_username(username)
+    except ValueError as exc:
+        errors["username"] = str(exc)
 
     if password and len(password) < 6:
         errors["password"] = "A nova senha deve ter pelo menos 6 caracteres."
@@ -1574,7 +1582,7 @@ def _parse_edit_seller_post(form, _seller_id: int) -> tuple[dict[str, str], dict
 
     repop = {
         "name": "" if "name" in errors else name,
-        "email": "" if "email" in errors else email,
+        "username": "" if "username" in errors else username,
         "active": active,
         "password": "" if "password" in errors else password,
         "event_id": "" if "event_id" in errors else event_id_raw,
@@ -1594,7 +1602,7 @@ def admin_sellers():
                 event_id = _parse_int(request.form.get("event_id") or "", 0)
                 seller = create_seller_account(
                     (request.form.get("name") or "").strip(),
-                    (request.form.get("email") or "").strip().lower(),
+                    (request.form.get("username") or request.form.get("email") or "").strip().lower(),
                     generate_password_hash(request.form.get("password") or ""),
                     pin_hash=None,
                 )
@@ -1608,10 +1616,10 @@ def admin_sellers():
                 return redirect(url_for("admin_seller_detail", seller_id=seller["id"]))
             except ValueError as exc:
                 msg = str(exc)
-                if "e-mail" in msg.lower() and ("já" in msg.lower() or "existente" in msg.lower()):
-                    seller_form_errors = {"email": msg}
+                if "usuário" in msg.lower() and ("já" in msg.lower() or "existente" in msg.lower()):
+                    seller_form_errors = {"username": msg}
                     seller_form = _parse_new_seller_post(request.form)[1]
-                    seller_form["email"] = ""
+                    seller_form["username"] = ""
                 else:
                     flash(msg, "error")
                     seller_form = _parse_new_seller_post(request.form)[1]
@@ -1754,7 +1762,7 @@ def admin_seller_update(seller_id: int):
         )
 
     name = (request.form.get("name") or "").strip()
-    email = (request.form.get("email") or "").strip().lower()
+    username = (request.form.get("username") or request.form.get("email") or "").strip().lower()
     active = request.form.get("active") == "1"
     password = request.form.get("password") or ""
     event_raw = (request.form.get("event_id") or "").strip()
@@ -1766,7 +1774,7 @@ def admin_seller_update(seller_id: int):
         seller = update_seller_account(
             seller_id,
             name=name,
-            email=email,
+            username=username,
             active=active,
             password_hash=password_hash,
             clear_pin_hash=True,
@@ -1774,13 +1782,13 @@ def admin_seller_update(seller_id: int):
     except ValueError as exc:
         msg = str(exc)
         seller_form_errors: dict[str, str] = {}
-        if "e-mail" in msg.lower() or "email" in msg.lower():
-            seller_form_errors["email"] = msg
+        if "usuário" in msg.lower() or "usuario" in msg.lower():
+            seller_form_errors["username"] = msg
         else:
             flash(msg, "error")
             return redirect(url_for("admin_seller_detail", seller_id=seller_id))
         seller_form = _parse_edit_seller_post(request.form, seller_id)[1]
-        seller_form["email"] = ""
+        seller_form["username"] = ""
         flash(_first_seller_form_error_message(seller_form_errors), "error")
         stats = get_stats(seller_id=seller_id)
         transactions, filters, pagination = _admin_seller_transactions_view(seller_id)

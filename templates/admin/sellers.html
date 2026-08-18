@@ -38,18 +38,19 @@
                 {% if fe.name %}<p class="admin-field__error" id="seller-name-err">{{ fe.name }}</p>{% endif %}
             </div>
             <div class="admin-field">
-                <label class="admin-field__label" for="seller-email">E-mail</label>
+                <label class="admin-field__label" for="seller-username">Usuário</label>
                 <input
-                    id="seller-email"
-                    class="admin-field__input{% if fe.email %} admin-field__input--invalid{% endif %}"
-                    type="email"
-                    name="email"
-                    maxlength="160"
+                    id="seller-username"
+                    class="admin-field__input{% if fe.username %} admin-field__input--invalid{% endif %}"
+                    type="text"
+                    name="username"
+                    maxlength="40"
                     required
-                    value="{{ sf.email | default('', true) }}"
-                    {% if fe.email %}aria-invalid="true" aria-describedby="seller-email-err"{% endif %}
+                    autocomplete="username"
+                    value="{{ sf.username | default('', true) }}"
+                    {% if fe.username %}aria-invalid="true" aria-describedby="seller-username-err"{% endif %}
                 >
-                {% if fe.email %}<p class="admin-field__error" id="seller-email-err">{{ fe.email }}</p>{% endif %}
+                {% if fe.username %}<p class="admin-field__error" id="seller-username-err">{{ fe.username }}</p>{% endif %}
             </div>
             <div class="admin-field">
                 <label class="admin-field__label" for="seller-event-id">Evento <span aria-hidden="true">*</span></label>
@@ -140,7 +141,7 @@
             <div class="admin-sellers__row" role="row">
                 <span class="admin-sellers__person">
                     <strong>{{ seller.name }}</strong>
-                    <small>{{ seller.email }}</small>
+                    <small>{{ seller.username or seller.email }}</small>
                 </span>
                 <span class="admin-sellers__events-cell">
                     {% if seller.assigned_events %}

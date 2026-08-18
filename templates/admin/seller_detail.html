@@ -19,7 +19,7 @@
             </a>
             <h1 class="admin-section__title">{{ seller.name }}</h1>
             <p class="admin-section__subtitle">
-                {{ seller.email }} &middot;
+                {{ seller.username or seller.email }} &middot;
                 {% if seller.active %}Conta ativa{% else %}Conta inativa{% endif %} &middot;
                 Último login: {{ seller.last_login_at | datahora }}
             </p>
@@ -86,13 +86,13 @@
     {% set fe = seller_form_errors or {} %}
     {% if seller_form is not none %}
         {% set v_name = seller_form.name %}
-        {% set v_email = seller_form.email %}
+        {% set v_username = seller_form.username %}
         {% set v_active = seller_form.active %}
         {% set v_password = seller_form.password %}
         {% set v_event_id = seller_form.event_id %}
     {% else %}
         {% set v_name = seller.name %}
-        {% set v_email = seller.email %}
+        {% set v_username = seller.username or seller.email %}
         {% set v_active = seller.active %}
         {% set v_password = '' %}
         {% set v_event_id = seller_primary_event_id|string if seller_primary_event_id else '' %}
@@ -120,18 +120,19 @@
                 {% if fe.name %}<p class="admin-field__error" id="detail-seller-name-err">{{ fe.name }}</p>{% endif %}
             </div>
             <div class="admin-field">
-                <label class="admin-field__label" for="seller-email">E-mail</label>
+                <label class="admin-field__label" for="seller-username">Usuário</label>
                 <input
-                    id="seller-email"
-                    class="admin-field__input{% if fe.email %} admin-field__input--invalid{% endif %}"
-                    type="email"
-                    name="email"
-                    value="{{ v_email }}"
-                    maxlength="160"
+                    id="seller-username"
+                    class="admin-field__input{% if fe.username %} admin-field__input--invalid{% endif %}"
+                    type="text"
+                    name="username"
+                    value="{{ v_username }}"
+                    maxlength="40"
                     required
-                    {% if fe.email %}aria-invalid="true" aria-describedby="detail-seller-email-err"{% endif %}
+                    autocomplete="username"
+                    {% if fe.username %}aria-invalid="true" aria-describedby="detail-seller-username-err"{% endif %}
                 >
-                {% if fe.email %}<p class="admin-field__error" id="detail-seller-email-err">{{ fe.email }}</p>{% endif %}
+                {% if fe.username %}<p class="admin-field__error" id="detail-seller-username-err">{{ fe.username }}</p>{% endif %}
             </div>
             <div class="admin-field">
                 <label class="admin-field__label" for="seller-active">Status</label>

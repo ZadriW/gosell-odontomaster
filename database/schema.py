@@ -79,6 +79,7 @@ CREATE TABLE IF NOT EXISTS sellers (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
     name           TEXT    NOT NULL,
     email          TEXT    UNIQUE NOT NULL,
+    username       TEXT    UNIQUE,
     password_hash  TEXT    NOT NULL,
     pin_hash       TEXT,
     active         INTEGER NOT NULL DEFAULT 1,
@@ -457,6 +458,7 @@ def _ensure_sellers_columns(conn: sqlite3.Connection) -> None:
     for field, ddl in {
         "name": "TEXT NOT NULL DEFAULT 'Vendedor'",
         "email": "TEXT",
+        "username": "TEXT",
         "password_hash": "TEXT",
         "pin_hash": "TEXT",
         "active": "INTEGER NOT NULL DEFAULT 1",
@@ -466,7 +468,31 @@ def _ensure_sellers_columns(conn: sqlite3.Connection) -> None:
     }.items():
         if field not in cols:
             conn.execute(f"ALTER TABLE sellers ADD COLUMN {field} {ddl}")
+    used: set[str] = set()
+    rows = conn.execute("SELECT id, email, username FROM sellers").fetchall()
+    for row in rows:
+        current = (row["username"] or "").strip().lower()
+        if current:
+            used.add(current)
+            continue
+        email = (row["email"] or "").strip().lower()
+        base = email.split("@", 1)[0] if "@" in email else email
+        base = "".join(ch for ch in base if ch.isalnum() or ch in "._-") or f"vendedor{int(row['id'])}"
+        if len(base) < 3:
+            base = f"{base}{int(row['id'])}"
+        candidate = base[:40]
+        n = 2
+        while candidate in used:
+            suffix = str(n)
+            candidate = f"{base[: max(1, 40 - len(suffix))]}{suffix}"
+            n += 1
+        used.add(candidate)
+        conn.execute(
+            "UPDATE sellers SET username = ? WHERE id = ?",
+            (candidate, int(row["id"])),
+        )
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_sellers_email ON sellers(email)")
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_sellers_username ON sellers(username)")
 
 
 def _ensure_products_wake_columns(conn: sqlite3.Connection) -> None:

@@ -105,10 +105,12 @@ from .sellers import (
     ensure_seller_account,
     get_seller,
     get_seller_by_email,
+    get_seller_by_username,
     list_seller_pin_hashes,
     list_sellers,
     update_seller_account,
     update_seller_last_login,
+    validate_seller_username,
 )
 from .stock import (
     count_stock_movements,
@@ -212,6 +214,7 @@ __all__ = [
     "get_seller",
     "get_seller_admin_event_selection_id",
     "get_seller_by_email",
+    "get_seller_by_username",
     "get_stats",
     "get_stock_stats",
     "get_transaction",
@@ -266,5 +269,6 @@ __all__ = [
     "update_product_price",
     "update_seller_account",
     "update_seller_last_login",
+    "validate_seller_username",
 ]
 
