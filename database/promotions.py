@@ -460,16 +460,30 @@ def apply_promotions_to_items_in_conn(
 def apply_list_prices_to_normalized_items(
     conn: sqlite3.Connection,
     items: List[Dict],
+    event_id: Optional[int] = None,
 ) -> None:
-    """Substitui ``unit_price`` pelo preço de lista do catálogo antes de aplicar promoções."""
+    """Substitui ``unit_price`` pelo preço de lista (evento, senão biblioteca) antes das promoções."""
     pids = {int(i["product_id"]) for i in items if i.get("product_id") is not None}
     if not pids:
         return
     placeholders = ",".join("?" * len(pids))
-    rows = conn.execute(
-        f"SELECT id, price FROM products WHERE id IN ({placeholders})",
-        list(pids),
-    ).fetchall()
+    pid_list = list(pids)
+    if event_id is not None:
+        rows = conn.execute(
+            f"""
+            SELECT p.id, COALESCE(ep.price, p.price) AS price
+              FROM products p
+              LEFT JOIN event_products ep
+                ON ep.product_id = p.id AND ep.event_id = ?
+             WHERE p.id IN ({placeholders})
+            """,
+            [int(event_id), *pid_list],
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            f"SELECT id, price FROM products WHERE id IN ({placeholders})",
+            pid_list,
+        ).fetchall()
     prices = {int(r["id"]): float(r["price"] or 0) for r in rows}
     for item in items:
         pid = item.get("product_id")
@@ -521,7 +535,7 @@ def quote_cart_items_for_event(event_id: int, cart_items: List[Dict]) -> Dict:
 
     promo_names: Dict[int, str] = {}
     with get_conn() as conn:
-        apply_list_prices_to_normalized_items(conn, normalized)
+        apply_list_prices_to_normalized_items(conn, normalized, event_id=int(event_id))
         subtotal_lista = round(sum(i["subtotal"] for i in normalized), 2)
         priced = apply_promotions_to_items_in_conn(conn, int(event_id), normalized)
         promo_ids = {int(i["promotion_id"]) for i in priced if i.get("promotion_id")}

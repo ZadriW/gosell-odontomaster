@@ -44,7 +44,10 @@
                     <dt>SKU</dt>
                     <dd><code>{{ product.sku }}</code></dd>
                 </div>
-                {% include 'partials/admin_product_price_form.html' %}
+                <div>
+                    <dt>Preço-base</dt>
+                    <dd>{{ product.preco | brl }}</dd>
+                </div>
                 <div>
                     <dt>Estoque atual</dt>
                     <dd data-product-stock><strong>{{ product.estoque }}</strong> un.</dd>

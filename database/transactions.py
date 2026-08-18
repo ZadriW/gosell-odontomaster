@@ -297,7 +297,7 @@ def create_transaction(
 
         # Preço de lista do catálogo + promoções ativas do evento.
         if event_id is not None:
-            apply_list_prices_to_normalized_items(conn, normalized)
+            apply_list_prices_to_normalized_items(conn, normalized, event_id=event_id)
             normalized = apply_promotions_to_items_in_conn(conn, event_id, normalized)
 
         # Recalcula total e items_count após promoções.
@@ -597,7 +597,7 @@ def update_pending_transaction(
 
         # Preço de lista do catálogo + promoções ativas do evento.
         if event_id is not None:
-            apply_list_prices_to_normalized_items(conn, normalized)
+            apply_list_prices_to_normalized_items(conn, normalized, event_id=event_id)
             normalized = apply_promotions_to_items_in_conn(conn, event_id, normalized)
 
         total = round(sum(i["subtotal"] for i in normalized), 2)

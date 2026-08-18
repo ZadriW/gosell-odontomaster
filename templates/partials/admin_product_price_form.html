@@ -1,8 +1,8 @@
 <div class="admin-product__meta-price">
-    <dt>Preço</dt>
+    <dt>Preço neste evento</dt>
     <dd>
         <form method="post"
-              action="{{ url_for('admin_product_update_price', product_id=product.id) }}"
+              action="{{ url_for('admin_event_stock_price', event_id=event.id, product_id=product.id) }}"
               class="admin-product__price-form"
               data-live-stock-form>
             {% include 'partials/csrf_field.html' %}
@@ -14,14 +14,27 @@
                        value="{{ '%.2f' | format(product.preco) | replace('.', ',') }}"
                        inputmode="decimal"
                        autocomplete="off"
-                       aria-label="Preço do produto">
+                       aria-label="Preço do produto neste evento">
                 <button type="submit"
                         class="admin-btn admin-btn--sm admin-product__price-save"
-                        title="Salvar preço">
+                        title="Salvar preço neste evento">
                     <i class="fa-solid fa-check" aria-hidden="true"></i>
                     Salvar
                 </button>
             </div>
+            <p class="admin-product__price-hint">
+                Preço-base da biblioteca:
+                <strong>{{ (product.preco_biblioteca if product.preco_biblioteca is defined else product.preco) | brl }}</strong>
+            </p>
+            {% if product.preco_evento_override %}
+            <button type="submit"
+                    name="restore_base"
+                    value="1"
+                    class="admin-btn admin-btn--ghost admin-btn--sm admin-product__price-restore"
+                    title="Voltar a usar o preço da biblioteca neste evento">
+                Usar preço da biblioteca
+            </button>
+            {% endif %}
         </form>
     </dd>
 </div>

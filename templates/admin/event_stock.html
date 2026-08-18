@@ -151,9 +151,12 @@
             Importar produtos via planilha
         </h2>
         <p class="admin-card__subtitle">
-            Planilha <strong>.xls</strong> de estoque:
-            coluna <strong>A</strong> = SKU, coluna <strong>E</strong> = quantidade.
-            Duplicatas são somadas; O resultado mostra o que foi importado ou não encontrado.
+            Planilha <strong>.xls</strong> ou <strong>.xlsx</strong> de estoque:
+            coluna <strong>A</strong> = SKU, coluna <strong>C</strong> = preço unitário (opcional),
+            coluna <strong>E</strong> = quantidade (opcional).
+            Cabeçalhos como <strong>CODIGO</strong> e <strong>VALOR UNIDADE</strong> também são reconhecidos.
+            Sem preço, usa o preço-base da biblioteca. Sem quantidade, sobe com estoque 0.
+            Duplicatas são somadas.
         </p>
         <form method="post"
               action="{{ url_for('admin_event_import_xls', event_id=event.id) }}"
@@ -163,9 +166,9 @@
             {% include 'partials/csrf_field.html' %}
             {{ event_stock_preserved_filters(filters, pagination) }}
             <div class="admin-field">
-                <label class="admin-field__label" for="xls-upload">Arquivo de planilha (.xls)</label>
+                <label class="admin-field__label" for="xls-upload">Arquivo de planilha (.xls ou .xlsx)</label>
                 <div class="admin-import-xls__drop-zone" id="xlsDropZone" role="button" tabindex="0"
-                     aria-label="Clique ou arraste uma planilha .xls aqui">
+                     aria-label="Clique ou arraste uma planilha .xls ou .xlsx aqui">
                     <input id="xls-upload" type="file" name="xls_file"
                            accept=".xls,.xlsx"
                            class="admin-import-xls__input"
@@ -174,11 +177,11 @@
                     <div class="admin-import-xls__drop-content" id="xlsDropContent">
                         <i class="fa-solid fa-file-arrow-up admin-import-xls__icon" aria-hidden="true"></i>
                         <span class="admin-import-xls__label">Arraste a planilha aqui ou <strong>clique para selecionar</strong></span>
-                        <span class="admin-import-xls__hint" id="xlsFileHint">Aceito: .xls</span>
+                        <span class="admin-import-xls__hint" id="xlsFileHint">Aceito: .xls e .xlsx</span>
                     </div>
                 </div>
                 <span id="hint-xls-upload" class="admin-filter__hint">
-                    Coluna A = SKU/código · Coluna E = Qtd. Disponível · Máx. 5 MB.
+                    Coluna A = SKU/código · Coluna C = Preço unitário (opcional) · Coluna E = Qtd. Disponível (opcional) · Também aceita .xlsx · Máx. 5 MB.
                 </span>
             </div>
             <div class="admin-card__actions">
@@ -461,7 +464,7 @@
             hint.textContent = '📄 ' + name;
             zone.classList.add('admin-import-xls__drop-zone--has-file');
         } else {
-            hint.textContent = 'Aceito: .xls';
+            hint.textContent = 'Aceito: .xls e .xlsx';
             zone.classList.remove('admin-import-xls__drop-zone--has-file');
         }
     }
@@ -493,7 +496,7 @@
         var file = files[0];
         var lower = file.name.toLowerCase();
         if (!lower.endsWith('.xls') && !lower.endsWith('.xlsx')) {
-            hint.textContent = '⚠ Formato inválido. Envie um arquivo .xls';
+            hint.textContent = '⚠ Formato inválido. Envie um arquivo .xls ou .xlsx';
             zone.classList.remove('admin-import-xls__drop-zone--has-file');
             return;
         }

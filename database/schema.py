@@ -105,6 +105,7 @@ CREATE TABLE IF NOT EXISTS event_products (
     stock            INTEGER NOT NULL DEFAULT 0,
     min_stock        INTEGER NOT NULL DEFAULT 5,
     backorder_limit  INTEGER NOT NULL DEFAULT -1,
+    price            REAL,
     created_at       TEXT    NOT NULL,
     updated_at       TEXT    NOT NULL,
     UNIQUE (event_id, product_id),
@@ -255,6 +256,7 @@ def _ensure_events_tables(conn: sqlite3.Connection) -> None:
             stock            INTEGER NOT NULL DEFAULT 0,
             min_stock        INTEGER NOT NULL DEFAULT 5,
             backorder_limit  INTEGER NOT NULL DEFAULT -1,
+            price            REAL,
             created_at       TEXT    NOT NULL,
             updated_at       TEXT    NOT NULL,
             UNIQUE (event_id, product_id),
@@ -271,6 +273,13 @@ def _ensure_events_badge_color(conn: sqlite3.Connection) -> None:
     if "badge_color" in _table_columns(conn, "events"):
         return
     conn.execute("ALTER TABLE events ADD COLUMN badge_color TEXT")
+
+
+def _ensure_event_products_price(conn: sqlite3.Connection) -> None:
+    """Preço de venda do produto no evento. ``NULL`` herda ``products.price``."""
+    if "price" in _table_columns(conn, "event_products"):
+        return
+    conn.execute("ALTER TABLE event_products ADD COLUMN price REAL")
 
 
 def _ensure_event_products_backorder_limit(conn: sqlite3.Connection) -> None:
@@ -291,6 +300,21 @@ def _ensure_event_products_backorder_limit(conn: sqlite3.Connection) -> None:
     # A coluna foi introduzida com ``0`` significando "sem limite"; agora ``0``
     # passa a significar "bloqueado", então valores antigos de ``0`` precisam
     # ser convertidos para o novo sentinel de "sem limite" (``-1``).
+    conn.execute("UPDATE event_products SET backorder_limit = -1 WHERE backorder_limit = 0")
+    _mark_migration_applied(conn, migration_name)
+
+
+def _ensure_event_products_backorder_omit_insert_unlimited(conn: sqlite3.Connection) -> None:
+    """INSERTs antigos omitiam ``backorder_limit`` e o SQLite usava DEFAULT 0.
+
+    Nesta base a coluna foi criada com ``DEFAULT 0`` (quando 0 ainda significava
+    'sem limite'). Depois 0 passou a bloquear vendas futuras, então produtos
+    importados por planilha (estoque 0 + limite 0) apareciam como bloqueados.
+    """
+    _ensure_schema_migrations_table(conn)
+    migration_name = "event_products_backorder_omit_insert_unlimited"
+    if _migration_applied(conn, migration_name):
+        return
     conn.execute("UPDATE event_products SET backorder_limit = -1 WHERE backorder_limit = 0")
     _mark_migration_applied(conn, migration_name)
 
@@ -645,6 +669,8 @@ def init_db() -> None:
         _ensure_events_badge_color(conn)
         _ensure_event_extensions(conn)
         _ensure_event_products_backorder_limit(conn)
+        _ensure_event_products_backorder_omit_insert_unlimited(conn)
+        _ensure_event_products_price(conn)
         _ensure_transaction_items_promo_columns(conn)
         _ensure_delivery_columns(conn)
         _ensure_transactions_handover_status(conn)

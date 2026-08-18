@@ -14,17 +14,44 @@ import io
 import os
 import re
 import secrets
+import subprocess
+import sys
 
 import totem_env  # noqa: F401 — carrega .env / totem.env antes da integração Wake
 from receipt_tokens import sign_receipt_token, verify_receipt_token
 from functools import wraps
-from datetime import datetime
+from datetime import date, datetime
 
 try:
     import xlrd as _xlrd  # .xls legacy (BIFF)
     _XLRD_AVAILABLE = True
 except ImportError:
+    _xlrd = None
     _XLRD_AVAILABLE = False
+
+
+def _pip_install(package: str) -> None:
+    subprocess.check_call(
+        [sys.executable, "-m", "pip", "install", package],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+
+def _load_xlsx_workbook(file_bytes: bytes):
+    """Abre um .xlsx com openpyxl, instalando a lib neste Python se ainda faltar."""
+    try:
+        from openpyxl import load_workbook
+    except ImportError:
+        try:
+            _pip_install("openpyxl>=3.1.0,<4")
+            from openpyxl import load_workbook
+        except Exception as exc:
+            raise RuntimeError(
+                "Não foi possível usar o openpyxl neste Python. "
+                f"Execute: {sys.executable} -m pip install openpyxl"
+            ) from exc
+    return load_workbook(io.BytesIO(file_bytes), data_only=True, read_only=True)
 
 from flask import (
     Flask,
@@ -138,10 +165,10 @@ from database import (
     reset_totem_to_default_state,
     restore_event,
     set_product_active,
-    update_product_price,
     upsert_wake_variant,
     update_event,
     update_event_product_backorder_limit,
+    update_event_product_price,
     update_event_product_stock,
     update_seller_account,
     update_seller_last_login,
@@ -2549,32 +2576,6 @@ def admin_product_toggle_active(product_id: int):
     return redirect(request.referrer or url_for("admin_product_detail", product_id=product_id))
 
 
-@app.route("/admin/produtos/<int:product_id>/preco", methods=["POST"])
-@admin_required
-def admin_product_update_price(product_id: int):
-    raw = (request.form.get("price") or "").strip().replace(",", ".")
-    try:
-        price = round(float(raw), 2)
-        if price < 0:
-            raise ValueError("negativo")
-    except (TypeError, ValueError):
-        if _wants_json_response():
-            return jsonify({"error": "Informe um valor numérico válido para o preço."}), 400
-        flash("Informe um valor numérico válido para o preço.", "error")
-        return redirect(request.referrer or url_for("admin_product_detail", product_id=product_id))
-
-    if update_product_price(product_id, price):
-        message = f"Preço atualizado para R$ {price:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-        if _wants_json_response():
-            return _json_products_library_success(message, product_id)
-        flash(message, "success")
-    else:
-        if _wants_json_response():
-            return jsonify({"error": "Não foi possível atualizar o preço."}), 400
-        flash("Não foi possível atualizar o preço.", "error")
-    return redirect(request.referrer or url_for("admin_product_detail", product_id=product_id))
-
-
 def _admin_api_products_list_payload():
     products, _filters, pagination = _admin_stock_page_view(ignore_status_filter=True)
     return jsonify({
@@ -3362,7 +3363,7 @@ def admin_products_cache_images():
     return redirect(url_for("admin_products"))
 
 
-_XLS_HEADER_NAMES_COL_A = frozenset({
+_XLS_SKU_COL_NAMES = frozenset({
     "produto", "cód. produto", "cod. produto", "codigo", "código",
     "sku", "cod produto", "cód produto", "item", "ref", "referência",
     "referencia", "cod.", "cód.",
@@ -3374,118 +3375,218 @@ _XLS_STOCK_COL_NAMES = frozenset({
     "disponível", "saldo", "qty", "stock",
 })
 
-
-def _cell_to_str(cell) -> str:
-    """Converte uma célula xlrd para string limpa, sem '.0' em inteiros."""
-    if cell.ctype == 2:  # XL_CELL_NUMBER
-        v = cell.value
-        return str(int(v)) if v == int(v) else str(v)
-    if cell.ctype == 1:  # XL_CELL_TEXT
-        return str(cell.value).strip()
-    return ""
+_XLS_PRICE_COL_NAMES = frozenset({
+    "preço", "preco", "preço unitário", "preco unitario", "preço unit.",
+    "preco unit.", "vlr. unitário", "vlr unitário", "vlr. unitario",
+    "vlr unitario", "valor", "valor unitário", "valor unitario",
+    "valor unidade", "vlr unidade", "vlr. unidade",
+    "price", "unit_price", "unit price",
+})
 
 
-def _cell_to_int(cell) -> int:
-    """Converte célula de quantidade para inteiro (>=0). Retorna 0 em caso de falha."""
-    if cell.ctype == 2:
-        return max(0, int(cell.value))
-    if cell.ctype == 1:
+def _spreadsheet_kind(file_bytes: bytes, filename: str = "") -> str:
+    name = (filename or "").lower()
+    if file_bytes.startswith(b"PK"):
+        return "xlsx"
+    if file_bytes.startswith(b"\xd0\xcf\x11\xe0"):
+        return "xls"
+    if name.endswith(".xlsx"):
+        return "xlsx"
+    return "xls"
+
+
+def _grid_cell(rows: list[list], r: int, c: int):
+    if r < 0 or r >= len(rows) or c < 0:
+        return None
+    row = rows[r]
+    if c >= len(row):
+        return None
+    return row[c]
+
+
+def _is_numeric_value(value) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _header_text(value) -> str:
+    if value is None or isinstance(value, (datetime, date)):
+        return ""
+    return str(value).strip().lower()
+
+
+def _value_to_str(value) -> str:
+    """Converte célula para SKU/texto limpo, sem '.0' em inteiros."""
+    if value is None or isinstance(value, (datetime, date, bool)):
+        return ""
+    if _is_numeric_value(value):
+        return str(int(value)) if float(value) == int(value) else str(value)
+    return str(value).strip()
+
+
+def _value_to_int(value) -> int:
+    """Converte célula de quantidade para inteiro (>=0). Retorna 0 se vazia/inválida."""
+    if _is_numeric_value(value):
+        return max(0, int(value))
+    if isinstance(value, str):
         try:
-            return max(0, int(float(str(cell.value).strip().replace(",", "."))))
+            return max(0, int(float(value.strip().replace(",", "."))))
         except (ValueError, TypeError):
             return 0
     return 0
 
 
-def _detect_xls_header_row(sh) -> tuple[int | None, int]:
-    """Retorna (header_row, stock_col_index).
-
-    Varre as primeiras 15 linhas procurando uma cujo valor da coluna A seja
-    um dos nomes canônicos de cabeçalho (ex.: 'Cód. Produto', 'Produto').
-    Ao encontrar, tenta identificar a coluna de estoque pelo nome de alguma
-    célula da mesma linha; usa o índice 4 (col E) como fallback.
-    """
-    for r in range(min(15, sh.nrows)):
-        cell_a = sh.cell(r, 0)
-        if cell_a.ctype != 1:
-            continue
-        v = str(cell_a.value).strip().lower()
-        if v in _XLS_HEADER_NAMES_COL_A:
-            # Identifica coluna de estoque pela mesma linha de cabeçalho
-            stock_col = 4  # fallback: col E
-            for c in range(sh.ncols):
-                h = str(sh.cell(r, c).value).strip().lower()
-                if h in _XLS_STOCK_COL_NAMES:
-                    stock_col = c
-                    break
-            return r, stock_col
-    return None, 4
+def _value_to_float_or_none(value) -> float | None:
+    """Converte célula de preço. Retorna None se vazia, zero ou inválida."""
+    if _is_numeric_value(value) and value:
+        v = round(float(value), 2)
+        return v if v > 0 else None
+    if isinstance(value, str):
+        raw = value.strip().replace(",", ".")
+        if not raw:
+            return None
+        try:
+            v = round(float(raw), 2)
+            return v if v > 0 else None
+        except (ValueError, TypeError):
+            return None
+    return None
 
 
-def _parse_xls_sku_stock(file_bytes: bytes) -> list[tuple[str, int]]:
-    """Lê uma planilha .xls e retorna lista de (sku, stock_qty).
-
-    Lógica de detecção do início dos dados:
-    1. Procura linha de cabeçalho com nome canônico na coluna A
-       (ex.: 'Cód. Produto', 'Produto') → dados começam na linha seguinte.
-       Coluna de estoque identificada pelo nome na mesma linha; padrão: col E.
-    2. Fallback (sem cabeçalho textual): primeira linha com valor NUMÉRICO na
-       col A + col E como estoque.
-
-    SKUs duplicados têm seus estoques SOMADOS (ex.: mesmo produto em duas
-    linhas com 3 e 1 unidades → estoque 4 no evento).
-
-    Retorna lista na ordem de primeira aparição de cada SKU.
-    """
+def _load_spreadsheet_grids(file_bytes: bytes, filename: str = "") -> list[list[list]]:
+    """Carrega cada aba como grade de valores Python (linhas × colunas)."""
+    kind = _spreadsheet_kind(file_bytes, filename)
+    grids: list[list[list]] = []
+    if kind == "xlsx":
+        wb = _load_xlsx_workbook(file_bytes)
+        try:
+            for ws in wb.worksheets:
+                rows = [list(row) for row in ws.iter_rows(values_only=True)]
+                if rows:
+                    grids.append(rows)
+        finally:
+            wb.close()
+        return grids
     if not _XLRD_AVAILABLE:
-        raise RuntimeError("Biblioteca xlrd não instalada. Execute: pip install xlrd")
-
+        try:
+            _pip_install("xlrd>=2.0.1,<3")
+            import xlrd as _xlrd_mod
+            globals()["_xlrd"] = _xlrd_mod
+            globals()["_XLRD_AVAILABLE"] = True
+        except Exception as exc:
+            raise RuntimeError(
+                "Biblioteca xlrd não instalada. "
+                f"Execute: {sys.executable} -m pip install xlrd"
+            ) from exc
     wb = _xlrd.open_workbook(file_contents=file_bytes)
-    # {sku: stock_total} preservando ordem de inserção
-    result: dict[str, int] = {}
-
     for sheet_idx in range(wb.nsheets):
         sh = wb.sheet_by_index(sheet_idx)
-        if sh.nrows < 2:
-            continue
+        rows = []
+        for r in range(sh.nrows):
+            rows.append([sh.cell_value(r, c) if sh.cell_type(r, c) not in (0, 6) else None
+                         for c in range(sh.ncols)])
+        if rows:
+            grids.append(rows)
+    return grids
 
-        header_row, stock_col = _detect_xls_header_row(sh)
+
+def _detect_spreadsheet_header(rows: list[list]) -> tuple[int | None, int, int | None, int | None]:
+    """Retorna (header_row, sku_col, price_col_or_none, stock_col_or_none).
+
+    Procura nas primeiras 15 linhas um cabeçalho de SKU/código em qualquer coluna.
+    Preço e estoque só são usados se o nome da coluna bater; senão:
+    - layout legado (SKU na coluna A): preço = C, estoque = E;
+    - outros layouts (ex.: código na B): preço/estoque só pelos nomes.
+    """
+    nrows = len(rows)
+    ncols = max((len(row) for row in rows), default=0)
+    for r in range(min(15, nrows)):
+        sku_col = None
+        price_col = None
+        stock_col = None
+        for c in range(ncols):
+            h = _header_text(_grid_cell(rows, r, c))
+            if not h:
+                continue
+            if sku_col is None and h in _XLS_SKU_COL_NAMES:
+                sku_col = c
+            if h in _XLS_PRICE_COL_NAMES:
+                price_col = c
+            if h in _XLS_STOCK_COL_NAMES:
+                stock_col = c
+        if sku_col is not None:
+            if sku_col == 0:
+                if price_col is None:
+                    price_col = 2
+                if stock_col is None:
+                    stock_col = 4
+            return r, sku_col, price_col, stock_col
+    return None, 0, 2, 4
+
+
+def _parse_xls_sku_stock(
+    file_bytes: bytes,
+    filename: str = "",
+) -> list[tuple[str, float | None, int]]:
+    """Lê planilha .xls/.xlsx e retorna lista de (sku, unit_price_or_none, stock_qty).
+
+    1. Procura cabeçalho de código/SKU em qualquer coluna das primeiras 15 linhas.
+       Preço: coluna nomeada (ex. 'Valor Unidade') ou, no layout legado, coluna C.
+       Quantidade: coluna nomeada de estoque ou, no layout legado, coluna E.
+       Sem quantidade reconhecida, o produto sobe com estoque 0.
+    2. Sem cabeçalho: primeira linha numérica na coluna A; preço C; estoque E.
+
+    SKUs duplicados somam estoque; o preço é o da primeira aparição.
+    """
+    grids = _load_spreadsheet_grids(file_bytes, filename)
+    result_qty: dict[str, int] = {}
+    result_price: dict[str, float | None] = {}
+
+    for rows in grids:
+        if len(rows) < 2:
+            continue
+        ncols = max((len(row) for row in rows), default=0)
+        header_row, sku_col, price_col, stock_col = _detect_spreadsheet_header(rows)
 
         if header_row is not None:
             data_start = header_row + 1
         else:
-            # Fallback: primeira linha numérica na col A
             data_start = None
-            for r in range(sh.nrows):
-                cell = sh.cell(r, 0)
-                if cell.ctype == 2 and cell.value:
+            for r in range(len(rows)):
+                if _is_numeric_value(_grid_cell(rows, r, 0)):
                     data_start = r
                     break
             if data_start is None:
                 continue
 
-        for r in range(data_start, sh.nrows):
-            sku = _cell_to_str(sh.cell(r, 0))
-            if not sku:
+        for r in range(data_start, len(rows)):
+            sku = _value_to_str(_grid_cell(rows, r, sku_col))
+            if not sku or " " in sku or not re.search(r"\d", sku):
                 continue
-            qty = _cell_to_int(sh.cell(r, stock_col)) if sh.ncols > stock_col else 0
-            if sku in result:
-                result[sku] += qty  # agrega duplicatas somando estoque
+            qty = 0
+            if stock_col is not None and stock_col < ncols:
+                qty = _value_to_int(_grid_cell(rows, r, stock_col))
+            price = None
+            if price_col is not None and price_col < ncols:
+                price = _value_to_float_or_none(_grid_cell(rows, r, price_col))
+            if sku in result_qty:
+                result_qty[sku] += qty
             else:
-                result[sku] = qty
+                result_qty[sku] = qty
+                result_price[sku] = price
 
-    return list(result.items())
+    return [(sku, result_price.get(sku), qty) for sku, qty in result_qty.items()]
 
 
 @app.route("/admin/eventos/<int:event_id>/produtos/importar-xls", methods=["POST"])
 @admin_required
 def admin_event_import_xls(event_id: int):
-    """Importa produtos em lote para o evento a partir de planilha .xls.
+    """Importa produtos em lote para o evento a partir de planilha .xls ou .xlsx.
 
-    Lê coluna A (SKU/código) e coluna E (Qtd. Disponível) de cada linha de dados.
+    Lê o código/SKU (coluna A no layout legado, ou a coluna do cabeçalho CODIGO),
+    o preço unitário (coluna C ou 'Valor Unidade') e a quantidade (coluna E, se houver).
+    Sem preço reconhecido, herda o preço-base da biblioteca.
+    Sem quantidade reconhecida, adiciona o produto com estoque 0.
     SKUs duplicados têm seus estoques somados antes da importação.
-    Cada produto é adicionado com movimentação tipo ``entrada`` e motivo
-    ``Importação por Planilha``, já com o estoque lido da planilha.
     """
     event = _event_or_404(event_id)
     preserved = _event_stock_return_filters_from_form()
@@ -3494,12 +3595,12 @@ def admin_event_import_xls(event_id: int):
 
     uploaded = request.files.get("xls_file")
     if not uploaded or not uploaded.filename:
-        flash("Selecione uma planilha (.xls) para importar.", "error")
+        flash("Selecione uma planilha (.xls ou .xlsx) para importar.", "error")
         return redirect(_url_for_admin_event_stock_list(event_id, preserved))
 
     fname = (uploaded.filename or "").lower()
     if not (fname.endswith(".xls") or fname.endswith(".xlsx")):
-        flash("Formato inválido. Envie um arquivo .xls (Excel legado).", "error")
+        flash("Formato inválido. Envie um arquivo .xls ou .xlsx.", "error")
         return redirect(_url_for_admin_event_stock_list(event_id, preserved))
 
     try:
@@ -3507,7 +3608,7 @@ def admin_event_import_xls(event_id: int):
         if len(file_bytes) > 5 * 1024 * 1024:
             flash("Arquivo muito grande (máx. 5 MB).", "error")
             return redirect(_url_for_admin_event_stock_list(event_id, preserved))
-        sku_stock_pairs = _parse_xls_sku_stock(file_bytes)
+        sku_stock_pairs = _parse_xls_sku_stock(file_bytes, uploaded.filename or "")
     except RuntimeError as exc:
         flash(str(exc), "error")
         return redirect(_url_for_admin_event_stock_list(event_id, preserved))
@@ -3526,7 +3627,9 @@ def admin_event_import_xls(event_id: int):
     import_actor = _current_admin_user()
     total_units_imported = 0
 
-    for sku, qty in sku_stock_pairs:
+    price_set_count = 0
+
+    for sku, unit_price, qty in sku_stock_pairs:
         product, from_wake, lookup_err = _find_or_fetch_product(sku)
         if lookup_err == "wake_token":
             flash(_wake_token_help_message(), "error")
@@ -3545,8 +3648,12 @@ def admin_event_import_xls(event_id: int):
                 link_audit_reference=None,
                 created_by=import_actor,
             )
+            if unit_price is not None:
+                update_event_product_price(event_id, int(product["id"]), unit_price)
+                price_set_count += 1
             qty_label = f" ({qty} un.)" if qty > 0 else ""
-            added.append(f"{product['name']}{qty_label}")
+            price_label = f" · R$ {unit_price:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".") if unit_price is not None else ""
+            added.append(f"{product['name']}{qty_label}{price_label}")
             total_units_imported += qty
         except ValueError:
             already.append(product["name"])
@@ -3555,7 +3662,8 @@ def admin_event_import_xls(event_id: int):
     parts: list[str] = []
     if added:
         units_txt = f" · {total_units_imported} unidade(s) em estoque" if total_units_imported > 0 else ""
-        parts.append(f"{len(added)} produto(s) adicionado(s) com sucesso{units_txt}")
+        price_txt = f" · {price_set_count} preço(s) definido(s)" if price_set_count > 0 else ""
+        parts.append(f"{len(added)} produto(s) adicionado(s) com sucesso{units_txt}{price_txt}")
     if wake_fetched:
         parts.append(
             f"{len(wake_fetched)} variante(s) importada(s) da Wake e adicionada(s) ao catálogo: "
@@ -3726,6 +3834,42 @@ def admin_event_stock_adjust(event_id: int, product_id: int):
         if _wants_json_response():
             return jsonify({"error": str(exc)}), 400
         flash(str(exc), "error")
+    return redirect(request.referrer or fallback)
+
+
+@app.route("/admin/eventos/<int:event_id>/produtos/<int:product_id>/preco", methods=["POST"])
+@admin_required
+def admin_event_stock_price(event_id: int, product_id: int):
+    if _event_or_404(event_id) is None:
+        return redirect(url_for("admin_events"))
+    fallback = url_for("admin_event_stock_product", event_id=event_id, product_id=product_id)
+    restore = (request.form.get("restore_base") or "").strip() in {"1", "true", "on"}
+    if restore:
+        stored = None
+        message = "Preço do evento restaurado para o valor da biblioteca."
+    else:
+        raw = (request.form.get("price") or "").strip().replace(",", ".")
+        try:
+            stored = round(float(raw), 2)
+            if stored < 0:
+                raise ValueError("negativo")
+        except (TypeError, ValueError):
+            if _wants_json_response():
+                return jsonify({"error": "Informe um valor numérico válido para o preço."}), 400
+            flash("Informe um valor numérico válido para o preço.", "error")
+            return redirect(request.referrer or fallback)
+        message = (
+            f"Preço do evento atualizado para R$ {stored:,.2f}"
+            .replace(",", "X").replace(".", ",").replace("X", ".")
+        )
+    if update_event_product_price(event_id, product_id, stored):
+        if _wants_json_response():
+            return _json_event_stock_success(message, event_id, product_id)
+        flash(message, "success")
+    else:
+        if _wants_json_response():
+            return jsonify({"error": "Não foi possível atualizar o preço neste evento."}), 400
+        flash("Não foi possível atualizar o preço neste evento.", "error")
     return redirect(request.referrer or fallback)
 
 

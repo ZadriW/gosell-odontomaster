@@ -3172,6 +3172,20 @@ html.admin-theme--dark .admin-stock__delivery-count {
     transform: translateY(-1px);
 }
 
+.admin-product__price-hint {
+    margin: 6px 0 0;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--color-text-muted);
+    text-align: right;
+}
+
+.admin-product__price-restore {
+    margin-top: 8px;
+    width: 100%;
+    justify-content: center;
+}
+
 .admin-product__toggle {
     margin: 0;
 }

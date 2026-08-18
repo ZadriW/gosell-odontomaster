@@ -219,8 +219,8 @@ def add_product_to_event(
             conn.execute(
                 """
                 INSERT INTO event_products
-                    (event_id, product_id, stock, min_stock, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?)
+                    (event_id, product_id, stock, min_stock, backorder_limit, created_at, updated_at)
+                VALUES (?, ?, ?, ?, -1, ?, ?)
                 """,
                 (event_id, product_id, stock_i, min_i, now, now),
             )
@@ -246,8 +246,8 @@ def add_product_to_event(
         conn.execute(
             """
             INSERT INTO event_products
-                (event_id, product_id, stock, min_stock, created_at, updated_at)
-            VALUES (?, ?, 0, ?, ?, ?)
+                (event_id, product_id, stock, min_stock, backorder_limit, created_at, updated_at)
+            VALUES (?, ?, 0, ?, -1, ?, ?)
             """,
             (event_id, product_id, min_i, now, now),
         )
@@ -315,6 +315,32 @@ def update_event_product_backorder_limit(
         )
 
 
+def update_event_product_price(
+    event_id: int,
+    product_id: int,
+    price: Optional[float],
+) -> bool:
+    """Define o preço de venda no evento. ``None`` herda o preço-base da biblioteca."""
+    now = _now_iso()
+    stored: Optional[float]
+    if price is None:
+        stored = None
+    else:
+        stored = round(float(price), 2)
+        if stored < 0:
+            return False
+    with get_conn() as conn:
+        cur = conn.execute(
+            """
+            UPDATE event_products
+               SET price = ?, updated_at = ?
+             WHERE event_id = ? AND product_id = ?
+            """,
+            (stored, now, int(event_id), int(product_id)),
+        )
+        return cur.rowcount > 0
+
+
 def _with_resolved_product_image(row: Dict) -> Dict:
     """Prefere a cópia em ``/static/product-images`` quando o arquivo existir."""
     pid = row.get("product_id")
@@ -345,7 +371,8 @@ def list_event_products(event_id: int) -> List[Dict]:
                 p.sku,
                 p.category,
                 p.image,
-                p.price,
+                p.price          AS library_price,
+                COALESCE(ep.price, p.price) AS price,
                 p.active         AS product_active
             FROM event_products ep
             JOIN products p ON p.id = ep.product_id
@@ -466,7 +493,8 @@ def list_event_products_slice(
                 p.category,
                 p.description,
                 p.image,
-                p.price,
+                p.price          AS library_price,
+                COALESCE(ep.price, p.price) AS price,
                 p.active         AS product_active
             {_EVENT_PRODUCTS_ADMIN_FROM}
             {extra}
@@ -497,6 +525,7 @@ def _event_products_slice_row_to_client(row: Dict) -> Dict:
         "categoria": row["category"],
         "descricao": (row.get("description") or ""),
         "preco": float(row["price"] or 0),
+        "preco_biblioteca": float(row.get("library_price") or row["price"] or 0),
         "imagem": product_images.resolve_image_url(pid, row["image"]),
         "estoque": estoque,
         "estoque_minimo": estoque_minimo,
@@ -552,7 +581,7 @@ def get_event_stock_stats(event_id: int) -> Dict:
             SELECT
                 COUNT(ep.id)                                                                           AS products_count,
                 COALESCE(SUM(ep.stock), 0)                                                             AS units_in_stock,
-                COALESCE(SUM(ep.stock * p.price), 0)                                                   AS stock_value,
+                COALESCE(SUM(ep.stock * COALESCE(ep.price, p.price)), 0)                               AS stock_value,
                 COALESCE(SUM(CASE WHEN ep.stock = 0 THEN 1 ELSE 0 END), 0)                            AS sem_estoque,
                 COALESCE(SUM(CASE WHEN ep.stock > 0 AND ep.stock < ep.min_stock THEN 1 ELSE 0 END), 0) AS below_min
             FROM event_products ep
@@ -905,7 +934,7 @@ def get_event_financial_report(
         # Valor do estoque e alertas (sempre estado atual, sem filtro de data)
         sv_row = conn.execute(
             "SELECT COUNT(ep.id) AS products_count, "
-            "COALESCE(SUM(ep.stock * p.price),0) AS stock_value, "
+            "COALESCE(SUM(ep.stock * COALESCE(ep.price, p.price)),0) AS stock_value, "
             "COALESCE(SUM(CASE WHEN ep.stock=0 THEN 1 ELSE 0 END),0) AS sem_estoque, "
             "COALESCE(SUM(CASE WHEN ep.stock>0 AND ep.stock<ep.min_stock THEN 1 ELSE 0 END),0) AS below_min "
             "FROM event_products ep JOIN products p ON p.id = ep.product_id "
@@ -1177,7 +1206,9 @@ def list_event_products_for_client(event_id: int) -> List[Dict]:
         rows = conn.execute(
             """
             SELECT p.*, ep.stock AS event_stock, ep.min_stock AS event_min_stock,
-                   ep.backorder_limit AS event_backorder_limit
+                   ep.backorder_limit AS event_backorder_limit,
+                   p.price AS library_price,
+                   COALESCE(ep.price, p.price) AS event_unit_price
               FROM event_products ep
               JOIN products p ON p.id = ep.product_id
              WHERE ep.event_id = ? AND p.active = 1
@@ -1188,6 +1219,8 @@ def list_event_products_for_client(event_id: int) -> List[Dict]:
     result = []
     for r in rows:
         d = _product_row_to_client(r)
+        d["preco_biblioteca"] = float(r["library_price"] or 0)
+        d["preco"] = float(r["event_unit_price"] if r["event_unit_price"] is not None else d["preco"])
         d["estoque"] = int(r["event_stock"] or 0)
         d["estoque_minimo"] = int(r["event_min_stock"] or 0)
         d["backorder_limit"] = int(r["event_backorder_limit"] if r["event_backorder_limit"] is not None else -1)
