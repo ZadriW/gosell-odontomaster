@@ -22,6 +22,26 @@ RULE_TYPE_LABELS = {
 # Helpers internos
 # ---------------------------------------------------------------------------
 
+def _pack_groups_and_extra(qty: int, pack_qty: int) -> tuple[int, int]:
+    """Quantos pacotes completos e quantas unidades avulsas.
+
+    Ex.: pack_qty=5, qty=6 → (1 pacote, 1 avulsa). qty=10 → (2, 0).
+    """
+    pack = max(2, int(pack_qty))
+    q = max(0, int(qty))
+    return q // pack, q % pack
+
+
+def _pack_subtotal(qty: int, pack_qty: int, pack_total: float, list_price: float) -> float:
+    """Pacotes completos pelo valor da promoção; o resto pelo preço de lista.
+
+    Ex.: 5 un. a R$ 15 (lista R$ 75) com kit de 5 por R$ 50 → R$ 50.
+    6 un. → R$ 50 + 1×R$ 15 = R$ 65. 10 un. → 2 kits = R$ 100.
+    """
+    groups, extra = _pack_groups_and_extra(qty, pack_qty)
+    return round(groups * max(0.0, float(pack_total)) + extra * float(list_price), 2)
+
+
 def _compute_effective_subtotal(
     rule_type: str,
     rule_value: float,
@@ -51,23 +71,20 @@ def _compute_effective_subtotal(
         # "A partir de min_qty unidades": exige atingir o mínimo; cada grupo completo
         # de min_qty paga rule_value; unidades excedentes pagam preço de lista.
         min_q = max(2, int(min_qty))
-        bundle_total = max(0.0, float(rule_value))
         if qty < min_q:
             return round(list_price * qty, 2)
-        groups = qty // min_q
-        extra = qty % min_q
-        eff = round(groups * bundle_total + extra * list_price, 2)
+        eff = _pack_subtotal(qty, min_q, rule_value, list_price)
         if eff >= round(list_price * qty, 2):  # conjunto mais caro → sem desconto
             return round(list_price * qty, 2)
         return eff
     if rule_type == "exact_bundle":
-        # "Na compra de min_qty": cada grupo completo paga rule_value; extras pagam lista.
-        # Abaixo de min_qty (sem grupo completo) → preço de lista.
+        # "Na compra de min_qty": só pacotes completos usam o valor da promoção.
+        # Unidades além do múltiplo (ex.: 6ª de um kit de 5) pagam preço de lista.
         min_q = max(2, int(min_qty))
-        bundle_total = max(0.0, float(rule_value))
-        groups = qty // min_q
-        extra = qty % min_q
-        eff = round(groups * bundle_total + extra * list_price, 2)
+        groups, _extra = _pack_groups_and_extra(qty, min_q)
+        if groups <= 0:
+            return round(list_price * qty, 2)
+        eff = _pack_subtotal(qty, min_q, rule_value, list_price)
         if eff >= round(list_price * qty, 2):  # kit mais caro → sem desconto
             return round(list_price * qty, 2)
         return eff
@@ -329,7 +346,7 @@ def _format_promo_tooltip_line(promo: Dict) -> str:
         return f"{name}: a partir de {min_q} un. por R$ {brv}"
     if rt == "exact_bundle":
         brv = f"{rv:.2f}".replace(".", ",")
-        return f"{name}: kit de {min_q} un. por R$ {brv}"
+        return f"{name}: kit de {min_q} un. por R$ {brv} (extras no preço normal)"
     return name
 
 
@@ -640,8 +657,7 @@ def enrich_product_with_promo(product: Dict, promo_map: Dict[int, Dict]) -> Dict
         else:
             p["promo_badge"] = ""
     elif rule == "exact_bundle":
-        # Kit exato: cada grupo completo de min_qty custa val; extras pagam preço normal.
-        # Preço de catálogo inalterado — desconto só ao atingir múltiplo do kit.
+        # Kit: cada grupo completo de min_qty custa val; o restante fica no preço de lista.
         p["preco"] = list_price
         if min_q >= 2 and val > 0:
             val_fmt = f"{val:.2f}".replace(".", ",")

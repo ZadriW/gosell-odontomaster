@@ -137,6 +137,7 @@ from database import (
     reset_totem_to_default_state,
     restore_event,
     set_product_active,
+    update_product_price,
     upsert_wake_variant,
     update_event,
     update_event_product_backorder_limit,
@@ -2537,6 +2538,32 @@ def admin_product_toggle_active(product_id: int):
         if _wants_json_response():
             return jsonify({"error": "Não foi possível atualizar o produto."}), 400
         flash("Não foi possível atualizar o produto.", "error")
+    return redirect(request.referrer or url_for("admin_product_detail", product_id=product_id))
+
+
+@app.route("/admin/produtos/<int:product_id>/preco", methods=["POST"])
+@admin_required
+def admin_product_update_price(product_id: int):
+    raw = (request.form.get("price") or "").strip().replace(",", ".")
+    try:
+        price = round(float(raw), 2)
+        if price < 0:
+            raise ValueError("negativo")
+    except (TypeError, ValueError):
+        if _wants_json_response():
+            return jsonify({"error": "Informe um valor numérico válido para o preço."}), 400
+        flash("Informe um valor numérico válido para o preço.", "error")
+        return redirect(request.referrer or url_for("admin_product_detail", product_id=product_id))
+
+    if update_product_price(product_id, price):
+        message = f"Preço atualizado para R$ {price:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+        if _wants_json_response():
+            return _json_products_library_success(message, product_id)
+        flash(message, "success")
+    else:
+        if _wants_json_response():
+            return jsonify({"error": "Não foi possível atualizar o preço."}), 400
+        flash("Não foi possível atualizar o preço.", "error")
     return redirect(request.referrer or url_for("admin_product_detail", product_id=product_id))
 
 

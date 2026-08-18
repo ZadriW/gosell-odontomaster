@@ -528,10 +528,13 @@
     }
 
     function renderCartItem(item) {
+        const bundleMeta = window.PromoPricing && typeof window.PromoPricing.formatBundleQtyMeta === 'function'
+            ? window.PromoPricing.formatBundleQtyMeta(item, Cart.formatBRL.bind(Cart))
+            : '';
         const subtotal = Cart.formatBRL(item.subtotal != null ? item.subtotal : item.preco * item.quantidade);
         const unit = Cart.formatBRL(item.preco);
         const listUnit = Number(item.preco_lista) || Number(item.preco) || 0;
-        const showOriginal = item.promo_aplicada && listUnit > Number(item.preco) + 0.001;
+        const showOriginal = !bundleMeta && item.promo_aplicada && listUnit > Number(item.preco) + 0.001;
         const unitLine = showOriginal
             ? `<span class="line-item__price-original">${Cart.formatBRL(listUnit)}</span> ${unit}`
             : unit;
@@ -560,7 +563,9 @@
                     <h3 class="cart-item__name">${item.nome}</h3>
                     ${item.sku ? `<p class="cart-item__sku">SKU ${item.sku}</p>` : ''}
                     <p class="cart-item__price">
-                        ${unitLine} un. &middot; <strong>${subtotal}</strong>
+                        ${bundleMeta
+                            ? `${bundleMeta} &middot; <strong>${subtotal}</strong>`
+                            : `${unitLine} un. &middot; <strong>${subtotal}</strong>`}
                     </p>
                     ${promoHint}
                     ${backorderHint}

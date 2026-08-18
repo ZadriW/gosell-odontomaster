@@ -196,6 +196,7 @@
     font-size: 15px;
     color: var(--color-text-muted);
     margin-top: 4px;
+    line-height: 1.35;
 }
 
 /* Aviso de item acima do estoque (painel do vendedor — retirada posterior) */

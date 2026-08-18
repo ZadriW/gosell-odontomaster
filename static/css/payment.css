@@ -252,6 +252,7 @@ button.payment__back {
     font-size: 13px;
     color: var(--color-text-muted);
     margin-top: 4px;
+    line-height: 1.35;
 }
 
 .payment-item__side {

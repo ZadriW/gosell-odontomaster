@@ -321,7 +321,7 @@
                 : `Informe a quantidade mínima e o valor total do conjunto`;
         } else if (type === 'exact_bundle') {
             bundleSummary.textContent = val > 0
-                ? `Kit de ${qty} unidades por R$ ${valFmt} — unidades excedentes pagam preço normal`
+                ? `Kit de ${qty} unidades por R$ ${valFmt}. Unidades além do pacote (ex.: a 6ª de um kit de 5) pagam o preço normal; outro kit só com +${qty} un.`
                 : `Informe a quantidade exata e o valor total do kit`;
         }
     }

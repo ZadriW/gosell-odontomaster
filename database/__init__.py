@@ -95,6 +95,7 @@ from .products import (
     set_product_active,
     sync_products_from_wake,
     update_product_min_stock,
+    update_product_price,
     upsert_wake_variant,
 )
 from .schema import init_db
@@ -262,6 +263,7 @@ __all__ = [
     "update_event_product_stock",
     "update_pending_transaction",
     "update_product_min_stock",
+    "update_product_price",
     "update_seller_account",
     "update_seller_last_login",
 ]

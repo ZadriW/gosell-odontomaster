@@ -605,6 +605,18 @@ def update_product_min_stock(product_id: int, min_stock: int) -> bool:
         return cur.rowcount > 0
 
 
+def update_product_price(product_id: int, price: float) -> bool:
+    p = round(float(price), 2)
+    if p < 0:
+        return False
+    with get_conn() as conn:
+        cur = conn.execute(
+            "UPDATE products SET price = ?, updated_at = ? WHERE id = ?",
+            (p, _now_iso(), int(product_id)),
+        )
+        return cur.rowcount > 0
+
+
 def set_product_active(product_id: int, active: bool) -> bool:
     with get_conn() as conn:
         cur = conn.execute(

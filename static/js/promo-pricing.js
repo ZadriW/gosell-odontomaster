@@ -8,6 +8,17 @@
         return Math.round((Number(n) + Number.EPSILON) * 100) / 100;
     }
 
+    function packGroupsAndExtra(qty, packQty) {
+        const pack = Math.max(2, parseInt(String(packQty), 10) || 2);
+        const q = Math.max(0, parseInt(String(qty), 10) || 0);
+        return { groups: Math.floor(q / pack), extra: q % pack, pack };
+    }
+
+    function packSubtotal(qty, packQty, packTotal, listPrice) {
+        const { groups, extra } = packGroupsAndExtra(qty, packQty);
+        return round2(groups * Math.max(0, Number(packTotal) || 0) + extra * (Number(listPrice) || 0));
+    }
+
     function computeEffectiveSubtotal(ruleType, ruleValue, minQty, freeQty, listPrice, qty) {
         const list = Number(listPrice) || 0;
         const q = Math.max(0, parseInt(String(qty), 10) || 0);
@@ -33,30 +44,42 @@
             return round2(list * paid);
         }
         if (rt === 'min_bundle') {
-            // "A partir de minQ": exige atingir o mínimo; cada grupo completo de minQ
-            // custa bundleTotal; unidades excedentes pagam preço de lista.
             const minQ = Math.max(2, parseInt(String(minQty), 10) || 2);
-            const bundleTotal = Math.max(0, Number(ruleValue) || 0);
             if (q < minQ) return round2(list * q);
-            const groups = Math.floor(q / minQ);
-            const extra = q % minQ;
-            const eff = round2(groups * bundleTotal + extra * list);
+            const eff = packSubtotal(q, minQ, ruleValue, list);
             if (eff >= round2(list * q)) return round2(list * q);
             return eff;
         }
         if (rt === 'exact_bundle') {
-            // "Na compra de minQ": cada grupo completo de minQ custa bundleTotal; extras = lista.
-            // Abaixo de minQ → preço de lista (nenhum grupo completo).
+            // Kit de minQ por ruleValue; unidades além do pacote (ex.: 6ª) no preço de lista.
             const minQ = Math.max(2, parseInt(String(minQty), 10) || 2);
-            const bundleTotal = Math.max(0, Number(ruleValue) || 0);
-            const groups = Math.floor(q / minQ);
-            const extra = q % minQ;
-            const eff = round2(groups * bundleTotal + extra * list);
-            // Se o resultado for igual ou maior que o preço de lista, não há desconto.
+            const { groups } = packGroupsAndExtra(q, minQ);
+            if (groups <= 0) return round2(list * q);
+            const eff = packSubtotal(q, minQ, ruleValue, list);
             if (eff >= round2(list * q)) return round2(list * q);
             return eff;
         }
         return round2(list * q);
+    }
+
+    function formatBundleQtyMeta(item, formatBRL) {
+        const tipo = String(item && item.promo_tipo ? item.promo_tipo : '');
+        if (tipo !== 'exact_bundle' && tipo !== 'min_bundle') return '';
+        if (!item || !item.promo_aplicada) return '';
+        const minQ = Math.max(2, parseInt(String(item.promo_min_qty), 10) || 2);
+        const qty = Math.max(0, parseInt(String(item.quantidade), 10) || 0);
+        const bundleTotal = Math.max(0, Number(item.promo_rule_value) || 0);
+        const listUnit = Number(item.preco_lista) || Number(item.preco) || 0;
+        const { groups, extra } = packGroupsAndExtra(qty, minQ);
+        if (groups <= 0) return '';
+        const packBit = groups === 1
+            ? `1 pacote de ${minQ} un. por ${formatBRL(bundleTotal)}`
+            : `${groups} pacotes de ${minQ} un. por ${formatBRL(bundleTotal)} cada`;
+        if (extra <= 0) return packBit;
+        const extraBit = extra === 1
+            ? `1 un. a ${formatBRL(listUnit)}`
+            : `${extra} un. a ${formatBRL(listUnit)}`;
+        return `${packBit} + ${extraBit}`;
     }
 
     function promoMetaFromProduct(product) {
@@ -98,9 +121,18 @@
         const hasDiscount = effSubtotal < listSubtotal - 0.001;
         if (hasDiscount) {
             next.subtotal = effSubtotal;
-            next.preco = qty > 0 ? round2(effSubtotal / qty) : listPrice;
             next.economia = round2(listSubtotal - effSubtotal);
             next.promo_aplicada = true;
+            const isPack = next.promo_tipo === 'exact_bundle' || next.promo_tipo === 'min_bundle';
+            if (isPack) {
+                const { extra } = packGroupsAndExtra(qty, next.promo_min_qty);
+                // Não diluir o preço do kit nas unidades avulsas (6ª un. permanece no preço de lista).
+                next.preco = extra > 0
+                    ? listPrice
+                    : (qty > 0 ? round2(effSubtotal / qty) : listPrice);
+            } else {
+                next.preco = qty > 0 ? round2(effSubtotal / qty) : listPrice;
+            }
         } else {
             // Regra não atingida (ex.: qty < min_qty) ou bundle mais caro → preço de lista.
             next.subtotal = listSubtotal;
@@ -169,13 +201,15 @@
      */
     function renderLineItemHtml(item, formatBRL, articleClass, options = {}) {
         const qty = Number(item.quantidade) || 0;
+        const bundleMeta = formatBundleQtyMeta(item, formatBRL);
         const unit = formatBRL(item.preco);
         const subtotal = formatBRL(item.subtotal != null ? item.subtotal : item.preco * qty);
         const listUnit = Number(item.preco_lista) || Number(item.preco) || 0;
-        const showOriginal = item.promo_aplicada && listUnit > Number(item.preco) + 0.001;
+        const showOriginal = !bundleMeta && item.promo_aplicada && listUnit > Number(item.preco) + 0.001;
         const unitHtml = showOriginal
             ? `<span class="line-item__price-original">${formatBRL(listUnit)}</span> ${unit}`
             : unit;
+        const qtyMeta = bundleMeta || `${qty} × ${unitHtml}`;
         const promoHint = item.promo_aplicada && item.promo_nome
             ? `<p class="line-item__promo"><i class="fa-solid fa-tag" aria-hidden="true"></i> ${escapeHtml(item.promo_nome)}</p>`
             : '';
@@ -209,7 +243,7 @@
                         ${backorderIcon}
                     </div>
                     ${item.sku ? `<p class="${articleClass}__sku">SKU ${escapeHtml(item.sku)}</p>` : ''}
-                    <p class="${articleClass}__meta">${qty} × ${unitHtml}</p>
+                    <p class="${articleClass}__meta">${qtyMeta}</p>
                     ${promoHint || badge}
                 </div>
                 ${totalCol}
@@ -219,6 +253,7 @@
 
     window.PromoPricing = {
         computeEffectiveSubtotal,
+        formatBundleQtyMeta,
         promoMetaFromProduct,
         applyPromoToItem,
         recalculateItems,

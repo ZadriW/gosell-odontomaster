@@ -3094,6 +3094,84 @@ html.admin-theme--dark .admin-stock__delivery-count {
     height: 42px;
 }
 
+.admin-product__meta-price {
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.admin-product__meta-price dt {
+    flex: 0 0 auto;
+}
+
+.admin-product__meta-price dd {
+    margin: 0;
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.admin-product__price-form {
+    margin: 0;
+    width: 100%;
+}
+
+.admin-product__price-wrap {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 6px;
+}
+
+.admin-product__price-prefix {
+    font-weight: 700;
+    font-size: 14px;
+    color: var(--color-text-muted);
+    flex-shrink: 0;
+}
+
+.admin-product__price-input {
+    width: 110px;
+    height: 36px;
+    padding: 4px 10px;
+    font-size: 15px;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    background: var(--color-surface);
+    color: var(--color-text);
+    transition: border-color var(--transition);
+}
+
+.admin-product__price-input:focus {
+    border-color: var(--color-primary);
+    outline: none;
+    box-shadow: 0 0 0 3px rgba(14, 22, 122, 0.10);
+}
+
+.admin-product__price-save {
+    flex-shrink: 0;
+    min-width: 36px;
+    height: 36px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 0 10px;
+    border-radius: var(--radius-sm);
+    background: var(--color-primary);
+    color: white;
+    border: none;
+    cursor: pointer;
+    transition: background var(--transition), transform 0.1s;
+}
+
+.admin-product__price-save:hover {
+    background: #0a1160;
+    transform: translateY(-1px);
+}
+
 .admin-product__toggle {
     margin: 0;
 }
