@@ -1,7 +1,7 @@
 (() => {
     'use strict';
 
-    const DEFAULT_POLL_MS = 30000;
+    const DEFAULT_POLL_MS = 20000;
 
     const root = document.querySelector('[data-admin-event-tx-live]');
     if (!root) return;

@@ -1,7 +1,8 @@
 (() => {
     'use strict';
 
-    const POLL_MS = 5000;
+    const PRODUCT_POLL_MS = 5000;
+    const LIST_POLL_MS = 15000;
     const PROMO_ICON_FALLBACK_TITLE = 'Produto com promoção ativa neste evento';
 
     function escapeHtml(value) {
@@ -415,7 +416,7 @@
             });
         });
 
-        setInterval(refreshProduct, POLL_MS);
+        setInterval(refreshProduct, PRODUCT_POLL_MS);
     }
 
     async function refreshStockList() {
@@ -495,7 +496,7 @@
 
     function setupStockList() {
         if (!document.querySelector('[data-admin-stock-list], [data-seller-stock-list], [data-admin-event-stock]')) return;
-        setInterval(refreshStockList, POLL_MS);
+        setInterval(refreshStockList, LIST_POLL_MS);
     }
 
     setupProductForms();

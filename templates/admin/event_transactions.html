@@ -138,7 +138,7 @@
     <div
         data-admin-event-tx-live
         data-api-url="{{ url_for('admin_api_event_transactions', event_id=event.id) }}"
-        data-poll-ms="30000"
+        data-poll-ms="20000"
         aria-live="polite"
     >
         {% include 'admin/partials/event_transactions_live.html' %}

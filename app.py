@@ -4118,7 +4118,7 @@ def admin_event_confirm_transaction_handover(event_id: int, tx_id: int):
 @app.route("/admin/api/eventos/<int:event_id>/transacoes")
 @admin_required
 def admin_api_event_transactions(event_id: int):
-    """Fragmento HTML da listagem de transações (polling ~30s no admin)."""
+    """Fragmento HTML da listagem de transações (polling ~20s no admin)."""
     event = _event_or_404(event_id)
     if event is None:
         return ("", 404)
