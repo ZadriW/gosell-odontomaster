@@ -83,6 +83,7 @@ from database import (
     get_active_promotions_for_event,
     get_promotion,
     list_promotions_for_event,
+    list_promotions_for_event_export,
     product_ids_with_active_promotions_for_event,
     quote_cart_items_for_event,
     toggle_promotion_active,
@@ -3947,6 +3948,158 @@ def admin_event_promotions(event_id: int):
         rule_type_labels=RULE_TYPE_LABELS,
         active_event_tab="promocoes",
         **_admin_shell_context(active_section="eventos"),
+    )
+
+
+def _promo_rule_description(promo: dict) -> str:
+    """Descrição legível da regra de promoção para planilha."""
+    rt = promo.get("rule_type") or ""
+    rv = float(promo.get("rule_value") or 0)
+    mq = max(1, int(promo.get("min_qty") or 1))
+    fq = max(0, int(promo.get("free_qty") or 0))
+    label = RULE_TYPE_LABELS.get(rt, rt)
+    if rt == "percent":
+        pct = int(rv) if abs(rv - int(rv)) < 1e-9 else f"{rv:.1f}".replace(".", ",")
+        return f"{label} — {pct}%"
+    if rt == "fixed":
+        return f"{label} — R$ {rv:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    if rt == "bogo":
+        return f"{label} — Compre {mq}, Leve {mq + fq}"
+    if rt in ("min_bundle", "exact_bundle"):
+        brl = f"R$ {rv:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+        return f"{label} — {mq} un. por {brl}"
+    return label
+
+
+@app.route("/admin/eventos/<int:event_id>/promocoes/export.xlsx")
+@admin_required
+def admin_event_promotions_export_xlsx(event_id: int):
+    """Exporta promoções do evento como planilha .xlsx no estilo da Dentsply."""
+    event = _event_or_404(event_id)
+    if event is None:
+        return redirect(url_for("admin_events"))
+
+    promotions = list_promotions_for_event_export(event_id)
+    if not promotions:
+        flash("Nenhuma promoção para exportar.", "info")
+        return redirect(url_for("admin_event_promotions", event_id=event_id))
+
+    try:
+        from openpyxl import Workbook
+        from openpyxl.styles import Alignment, Font, PatternFill, Border, Side
+    except ImportError:
+        _pip_install("openpyxl>=3.1.0,<4")
+        from openpyxl import Workbook
+        from openpyxl.styles import Alignment, Font, PatternFill, Border, Side
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Promoções"
+
+    # Estilos
+    font_title = Font(name="Calibri", bold=True, size=14, color="FFFFFF")
+    fill_title = PatternFill(start_color="0D47A1", end_color="0D47A1", fill_type="solid")
+    font_header = Font(name="Calibri", bold=True, size=11, color="FFFFFF")
+    fill_header = PatternFill(start_color="1565C0", end_color="1565C0", fill_type="solid")
+    font_section = Font(name="Calibri", bold=True, size=12, color="0D47A1")
+    fill_section = PatternFill(start_color="E3F2FD", end_color="E3F2FD", fill_type="solid")
+    font_data = Font(name="Calibri", size=11)
+    font_inactive = Font(name="Calibri", size=11, color="999999", italic=True)
+    align_center = Alignment(horizontal="center", vertical="center")
+    align_left = Alignment(horizontal="left", vertical="center")
+    align_right = Alignment(horizontal="right", vertical="center")
+    thin_border = Border(
+        bottom=Side(style="thin", color="DDDDDD"),
+    )
+    brl_fmt = '#.##0,00'
+
+    col_headers = ["Código", "Descrição", "Preço Evento (R$)"]
+    ncols = len(col_headers)
+
+    # Título do evento
+    row_num = 1
+    ws.merge_cells(start_row=row_num, start_column=1, end_row=row_num, end_column=ncols)
+    cell = ws.cell(row=row_num, column=1, value=f"PROMOÇÕES — {(event.get('name') or '').upper()}")
+    cell.font = font_title
+    cell.fill = fill_title
+    cell.alignment = align_center
+    for c in range(2, ncols + 1):
+        ws.cell(row=row_num, column=c).fill = fill_title
+    row_num += 1
+
+    for promo in promotions:
+        row_num += 1
+        ws.merge_cells(start_row=row_num, start_column=1, end_row=row_num, end_column=ncols)
+        promo_title = promo.get("name") or "Promoção"
+        rule_desc = _promo_rule_description(promo)
+        status = "Ativa" if promo.get("active") else "Inativa"
+        cell = ws.cell(row=row_num, column=1, value=f"{promo_title}  —  {rule_desc}  [{status}]")
+        cell.font = font_section
+        cell.fill = fill_section
+        cell.alignment = align_left
+        for c in range(2, ncols + 1):
+            ws.cell(row=row_num, column=c).fill = fill_section
+        row_num += 1
+
+        # Cabeçalho de colunas
+        for ci, hdr in enumerate(col_headers, start=1):
+            cell = ws.cell(row=row_num, column=ci, value=hdr)
+            cell.font = font_header
+            cell.fill = fill_header
+            cell.alignment = align_center
+        row_num += 1
+
+        products = promo.get("products") or []
+        if not products:
+            ws.merge_cells(start_row=row_num, start_column=1, end_row=row_num, end_column=ncols)
+            cell = ws.cell(row=row_num, column=1, value="(sem produtos vinculados)")
+            cell.font = font_inactive
+            cell.alignment = align_center
+            row_num += 1
+            continue
+
+        is_active = promo.get("active")
+        for prod in products:
+            font_row = font_data if is_active else font_inactive
+
+            sku = prod.get("sku") or str(prod.get("product_id", ""))
+            ws.cell(row=row_num, column=1, value=sku).font = font_row
+            ws.cell(row=row_num, column=1).alignment = align_center
+
+            ws.cell(row=row_num, column=2, value=prod.get("name", "")).font = font_row
+            ws.cell(row=row_num, column=2).alignment = align_left
+
+            ev_price = float(prod.get("event_price") or prod.get("library_price") or 0)
+            c3 = ws.cell(row=row_num, column=3, value=ev_price)
+            c3.font = font_row
+            c3.alignment = align_right
+            c3.number_format = brl_fmt
+
+            for c in range(1, ncols + 1):
+                ws.cell(row=row_num, column=c).border = thin_border
+
+            row_num += 1
+
+    # Ajuste de largura das colunas
+    ws.column_dimensions["A"].width = 14
+    ws.column_dimensions["B"].width = 60
+    ws.column_dimensions["C"].width = 22
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    safe_ev = re.sub(r"[^a-zA-Z0-9_-]+", "_", (event.get("name") or str(event_id)))[:40].strip("_") or str(event_id)
+    fname = f"promocoes_{event_id}_{safe_ev}_{ts}.xlsx"
+
+    return Response(
+        buf.getvalue(),
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "Content-Disposition": f'attachment; filename="{fname}"',
+            "Cache-Control": "no-store",
+        },
     )
 
 

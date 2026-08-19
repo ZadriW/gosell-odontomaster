@@ -309,6 +309,44 @@ def get_active_promotions_for_event(event_id: int) -> List[Dict]:
     return result
 
 
+def list_promotions_for_event_export(event_id: int) -> List[Dict]:
+    """Promoções do evento com dados completos de cada produto (SKU, preço, categoria).
+
+    Cada item de ``products`` traz ``product_id``, ``name``, ``sku``, ``category``,
+    ``library_price`` e ``event_price`` (preço efetivo no evento).
+    """
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM promotions WHERE event_id = ? ORDER BY active DESC, created_at DESC",
+            (int(event_id),),
+        ).fetchall()
+        result = []
+        for row in rows:
+            pid = int(row["id"])
+            p_rows = conn.execute(
+                """
+                SELECT pp.product_id,
+                       p.name,
+                       p.sku,
+                       p.category,
+                       p.price                         AS library_price,
+                       COALESCE(ep.price, p.price)     AS event_price
+                  FROM promotion_products pp
+                  JOIN products p ON p.id = pp.product_id
+                  LEFT JOIN event_products ep
+                    ON ep.product_id = pp.product_id AND ep.event_id = ?
+                 WHERE pp.promotion_id = ?
+                 ORDER BY p.name COLLATE NOCASE
+                """,
+                (int(event_id), pid),
+            ).fetchall()
+            promo = dict(row)
+            promo["rule_label"] = RULE_TYPE_LABELS.get(promo.get("rule_type", ""), "")
+            promo["products"] = [dict(r) for r in p_rows]
+            result.append(promo)
+    return result
+
+
 def product_ids_with_active_promotions_for_event(event_id: int) -> set[int]:
     """Conjunto de ``product_id`` com pelo menos uma promoção **ativa** no evento."""
     with get_conn() as conn:

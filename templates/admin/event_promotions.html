@@ -15,6 +15,16 @@
                 {{ promotions|length }} promoção(ões) · {{ promotions|selectattr('active')|list|length }} ativa(s)
             </p>
         </div>
+        {% if promotions %}
+        <div style="align-self:center;">
+            <a class="admin-btn admin-btn--ghost"
+               href="{{ url_for('admin_event_promotions_export_xlsx', event_id=event.id) }}"
+               title="Exportar promoções como planilha .xlsx">
+                <i class="fa-solid fa-file-excel" aria-hidden="true"></i>
+                Exportar Planilha
+            </a>
+        </div>
+        {% endif %}
     </header>
 
     {# ---- Lista de promoções ---- #}
