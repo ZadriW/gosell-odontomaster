@@ -348,6 +348,7 @@
                     economia: Number(row.economia) || 0,
                     promo_aplicada: !!row.em_promocao,
                     promo_nome: row.promo_nome || item.promo_nome || '',
+                    promo_tipo: row.promo_tipo || item.promo_tipo || '',
                 };
             });
             const pricingChanged = items.length !== prev.length || items.some((item, i) => {

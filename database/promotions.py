@@ -416,6 +416,67 @@ def active_promotion_names_by_product_id(event_id: int) -> Dict[int, str]:
 # Aplicação de promoções aos itens da transação
 # ---------------------------------------------------------------------------
 
+def _apply_exact_bundle_cross_product(
+    promo: dict,
+    item_indices: List[int],
+    result: List[Dict],
+) -> None:
+    """Aplica exact_bundle somando quantidades de todos os produtos da promoção.
+
+    Distribui o desconto proporcionalmente entre os itens participantes.
+    Ex.: kit de 3 por R$100, itens A(1 un. R$50) + B(1 un. R$40) + C(1 un. R$30)
+    → subtotal original R$120, subtotal promo R$100, rateio proporcional.
+    """
+    pack_qty = max(2, int(promo["min_qty"]))
+    pack_total = float(promo["rule_value"])
+    promo_id = int(promo["id"])
+
+    total_qty = sum(int(result[i].get("quantity") or 0) for i in item_indices)
+    groups, extra = _pack_groups_and_extra(total_qty, pack_qty)
+    if groups <= 0:
+        return
+
+    original_subtotal = round(
+        sum(float(result[i].get("original_price") or result[i].get("unit_price") or 0)
+            * int(result[i].get("quantity") or 0) for i in item_indices), 2,
+    )
+    if original_subtotal <= 0:
+        return
+
+    bundle_subtotal = round(groups * pack_total, 2)
+    extra_remaining = extra
+
+    extra_subtotal = 0.0
+    item_extras: Dict[int, int] = {}
+    for idx in reversed(item_indices):
+        qty_i = int(result[idx].get("quantity") or 0)
+        take = min(qty_i, extra_remaining)
+        item_extras[idx] = take
+        extra_remaining -= take
+        list_p = float(result[idx].get("original_price") or result[idx].get("unit_price") or 0)
+        extra_subtotal += round(take * list_p, 2)
+        if extra_remaining <= 0:
+            break
+
+    promo_total = round(bundle_subtotal + extra_subtotal, 2)
+    if promo_total >= original_subtotal:
+        return
+
+    for idx in item_indices:
+        qty_i = int(result[idx].get("quantity") or 0)
+        if qty_i <= 0:
+            continue
+        list_p = float(result[idx].get("original_price") or result[idx].get("unit_price") or 0)
+        item_original = round(list_p * qty_i, 2)
+        share = item_original / original_subtotal if original_subtotal else 0
+        item_promo_subtotal = round(promo_total * share, 2)
+        if item_promo_subtotal < item_original:
+            eff_unit = round(item_promo_subtotal / qty_i, 6) if qty_i else 0.0
+            result[idx]["unit_price"] = eff_unit
+            result[idx]["subtotal"] = item_promo_subtotal
+            result[idx]["promotion_id"] = promo_id
+
+
 def apply_promotions_to_items_in_conn(
     conn: sqlite3.Connection,
     event_id: int,
@@ -423,15 +484,13 @@ def apply_promotions_to_items_in_conn(
 ) -> List[Dict]:
     """Aplica promoções ativas do evento sobre ``items`` normalizados.
 
-    Retorna nova lista com ``unit_price``, ``subtotal``, ``original_price`` e
-    ``promotion_id`` ajustados para cada item que possua ``product_id`` e tenha
-    ao menos uma promoção ativa cobrindo esse produto.
+    Para ``exact_bundle``: soma as quantidades de **todos** os produtos da
+    mesma promoção para formar os pacotes (cross-product). Ex.: kit de 3 com
+    produtos A, B e C — 1 de cada ativa o pacote, assim como 3 de um mesmo.
 
-    Invariante: ``subtotal == round(unit_price * quantity, 2)`` sempre se mantém.
-    Se mais de uma promoção cobrir o mesmo produto, aplica a que resulta no menor
-    subtotal (melhor desconto).
+    Para os demais tipos: avalia cada item isoladamente e escolhe a promoção
+    com menor subtotal.
     """
-    # Carrega promos ativas do evento junto com os product_ids de cada uma.
     promo_rows = conn.execute(
         """
         SELECT pr.id, pr.rule_type, pr.rule_value, pr.min_qty, pr.free_qty,
@@ -446,35 +505,83 @@ def apply_promotions_to_items_in_conn(
     if not promo_rows:
         return items
 
-    # Agrupa: product_id -> lista de promos
     product_promos: dict = {}
+    promo_defs: Dict[int, dict] = {}
+    promo_pids: Dict[int, set] = {}
     for r in promo_rows:
         pid = int(r["product_id"])
-        product_promos.setdefault(pid, []).append({
+        pr = {
             "id": int(r["id"]),
             "rule_type": r["rule_type"],
             "rule_value": float(r["rule_value"]),
             "min_qty": int(r["min_qty"]),
             "free_qty": int(r["free_qty"]),
-        })
+        }
+        product_promos.setdefault(pid, []).append(pr)
+        promo_defs[pr["id"]] = pr
+        promo_pids.setdefault(pr["id"], set()).add(pid)
 
     result = []
     for item in items:
-        pid = item.get("product_id")
-        list_price = float(item.get("unit_price") or 0.0)
-        qty = int(item.get("quantity") or 0)
         new_item = dict(item)
+        list_price = float(item.get("unit_price") or 0.0)
         new_item["original_price"] = list_price
         new_item["promotion_id"] = None
+        result.append(new_item)
+
+    handled_by_cross: set = set()
+
+    for promo_id, promo in promo_defs.items():
+        if promo["rule_type"] != "exact_bundle":
+            continue
+        indices = [
+            i for i, it in enumerate(result)
+            if it.get("product_id") is not None
+            and int(it["product_id"]) in promo_pids[promo_id]
+            and int(it.get("quantity") or 0) > 0
+        ]
+        if not indices:
+            continue
+        total_qty = sum(int(result[i].get("quantity") or 0) for i in indices)
+        pack_qty = max(2, int(promo["min_qty"]))
+
+        single_item_better = False
+        if len(indices) == 1:
+            idx = indices[0]
+            qty_i = int(result[idx].get("quantity") or 0)
+            lp = float(result[idx].get("original_price") or result[idx].get("unit_price") or 0)
+            single_eff = _compute_effective_subtotal(
+                promo["rule_type"], promo["rule_value"],
+                promo["min_qty"], promo["free_qty"], lp, qty_i,
+            )
+            if single_eff < round(lp * qty_i, 2):
+                result[idx]["unit_price"] = round(single_eff / qty_i, 6) if qty_i else 0.0
+                result[idx]["subtotal"] = round(single_eff, 2)
+                result[idx]["promotion_id"] = promo_id
+                single_item_better = True
+
+        if not single_item_better and total_qty >= pack_qty:
+            _apply_exact_bundle_cross_product(promo, indices, result)
+
+        for i in indices:
+            if result[i].get("promotion_id") is not None:
+                handled_by_cross.add(i)
+
+    for i, new_item in enumerate(result):
+        if i in handled_by_cross:
+            continue
+        pid = new_item.get("product_id")
+        list_price = float(new_item.get("original_price") or new_item.get("unit_price") or 0.0)
+        qty = int(new_item.get("quantity") or 0)
 
         if pid is None or pid not in product_promos or qty <= 0:
-            result.append(new_item)
             continue
 
-        # Seleciona a promoção com menor subtotal efetivo
         best_subtotal: Optional[float] = None
         best_promo = None
         for promo in product_promos[pid]:
+            if promo["rule_type"] == "exact_bundle":
+                continue
             eff = _compute_effective_subtotal(
                 promo["rule_type"], promo["rule_value"],
                 promo["min_qty"], promo["free_qty"],
@@ -491,7 +598,6 @@ def apply_promotions_to_items_in_conn(
             new_item["subtotal"] = round(best_subtotal, 2)
             new_item["promotion_id"] = int(best_promo["id"])
 
-        result.append(new_item)
     return result
 
 
@@ -572,6 +678,7 @@ def quote_cart_items_for_event(event_id: int, cart_items: List[Dict]) -> Dict:
         return {"items": [], "total": 0.0, "subtotal_lista": 0.0, "economia_total": 0.0}
 
     promo_names: Dict[int, str] = {}
+    promo_types: Dict[int, str] = {}
     with get_conn() as conn:
         apply_list_prices_to_normalized_items(conn, normalized, event_id=int(event_id))
         subtotal_lista = round(sum(i["subtotal"] for i in normalized), 2)
@@ -580,10 +687,11 @@ def quote_cart_items_for_event(event_id: int, cart_items: List[Dict]) -> Dict:
         if promo_ids:
             placeholders = ",".join("?" * len(promo_ids))
             for r in conn.execute(
-                f"SELECT id, name FROM promotions WHERE id IN ({placeholders})",
+                f"SELECT id, name, rule_type FROM promotions WHERE id IN ({placeholders})",
                 list(promo_ids),
             ).fetchall():
                 promo_names[int(r["id"])] = str(r["name"] or "")
+                promo_types[int(r["id"])] = str(r["rule_type"] or "")
 
     out_items: List[Dict] = []
     for src, row in zip(normalized, priced):
@@ -604,6 +712,7 @@ def quote_cart_items_for_event(event_id: int, cart_items: List[Dict]) -> Dict:
                 "em_promocao": has_promo,
                 "promotion_id": int(promo_id) if promo_id is not None else None,
                 "promo_nome": promo_names.get(int(promo_id), "") if promo_id else "",
+                "promo_tipo": promo_types.get(int(promo_id), "") if promo_id else "",
                 "economia": round(max(0.0, list_p * qty - subtotal), 2),
             }
         )

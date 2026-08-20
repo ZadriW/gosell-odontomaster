@@ -62,6 +62,20 @@
         return round2(list * q);
     }
 
+    function extraBitText(extra, listUnit, formatBRL) {
+        if (extra <= 0) return '';
+        return extra === 1
+            ? `1 un. a ${formatBRL(listUnit)}`
+            : `${extra} un. a ${formatBRL(listUnit)}`;
+    }
+
+    function packBitText(groups, minQ, bundleTotal, formatBRL) {
+        if (groups <= 0) return '';
+        return groups === 1
+            ? `1 pacote de ${minQ} un. por ${formatBRL(bundleTotal)}`
+            : `${groups} pacotes de ${minQ} un. por ${formatBRL(bundleTotal)} cada`;
+    }
+
     function formatBundleQtyMeta(item, formatBRL) {
         const tipo = String(item && item.promo_tipo ? item.promo_tipo : '');
         if (tipo !== 'exact_bundle' && tipo !== 'min_bundle') return '';
@@ -70,16 +84,22 @@
         const qty = Math.max(0, parseInt(String(item.quantidade), 10) || 0);
         const bundleTotal = Math.max(0, Number(item.promo_rule_value) || 0);
         const listUnit = Number(item.preco_lista) || Number(item.preco) || 0;
-        const { groups, extra } = packGroupsAndExtra(qty, minQ);
-        if (groups <= 0) return '';
-        const packBit = groups === 1
-            ? `1 pacote de ${minQ} un. por ${formatBRL(bundleTotal)}`
-            : `${groups} pacotes de ${minQ} un. por ${formatBRL(bundleTotal)} cada`;
-        if (extra <= 0) return packBit;
-        const extraBit = extra === 1
-            ? `1 un. a ${formatBRL(listUnit)}`
-            : `${extra} un. a ${formatBRL(listUnit)}`;
-        return `${packBit} + ${extraBit}`;
+
+        const grouped = Number.isFinite(Number(item.bundle_groups));
+        const groups = grouped
+            ? Math.max(0, parseInt(String(item.bundle_groups), 10) || 0)
+            : packGroupsAndExtra(qty, minQ).groups;
+        const extra = grouped
+            ? Math.max(0, parseInt(String(item.bundle_item_extra), 10) || 0)
+            : packGroupsAndExtra(qty, minQ).extra;
+        const inPack = grouped
+            ? Math.max(0, qty - extra)
+            : qty - extra;
+
+        const packBit = inPack > 0 ? packBitText(groups, minQ, bundleTotal, formatBRL) : '';
+        const extraBit = extraBitText(extra, listUnit, formatBRL);
+        if (packBit && extraBit) return `${packBit} + ${extraBit}`;
+        return packBit || extraBit;
     }
 
     function promoMetaFromProduct(product) {
@@ -144,7 +164,75 @@
     }
 
     function recalculateItems(items) {
-        return (items || []).map(applyPromoToItem);
+        const all = (items || []).map(applyPromoToItem);
+
+        const bundleGroups = {};
+        all.forEach((item, idx) => {
+            if (!item.em_promocao || item.promo_tipo !== 'exact_bundle') return;
+            const key = [
+                item.promo_nome || '',
+                item.promo_min_qty || 0,
+                item.promo_rule_value || 0,
+            ].join('|');
+            if (!bundleGroups[key]) bundleGroups[key] = [];
+            bundleGroups[key].push(idx);
+        });
+
+        Object.values(bundleGroups).forEach(indices => {
+            const minQ = Math.max(2, parseInt(String(all[indices[0]].promo_min_qty), 10) || 2);
+            const packTotal = Math.max(0, Number(all[indices[0]].promo_rule_value) || 0);
+            let totalQty = 0;
+            let originalSubtotal = 0;
+            indices.forEach(i => {
+                const q = Math.max(0, parseInt(String(all[i].quantidade), 10) || 0);
+                const lp = Number(all[i].preco_lista) || 0;
+                totalQty += q;
+                originalSubtotal += round2(lp * q);
+            });
+            const groups = Math.floor(totalQty / minQ);
+            if (groups <= 0) return;
+            const extra = totalQty % minQ;
+            const itemExtra = {};
+            let extraRemaining = extra;
+            let extraSub = 0;
+            for (let j = indices.length - 1; j >= 0 && extraRemaining > 0; j--) {
+                const i = indices[j];
+                const q = Math.max(0, parseInt(String(all[i].quantidade), 10) || 0);
+                const take = Math.min(q, extraRemaining);
+                itemExtra[i] = take;
+                const lp = Number(all[i].preco_lista) || 0;
+                extraSub += round2(take * lp);
+                extraRemaining -= take;
+            }
+            const bundleSub = round2(groups * packTotal);
+            const promoTotal = round2(bundleSub + extraSub);
+            const applyDiscount = promoTotal < originalSubtotal - 0.001;
+
+            indices.forEach(i => {
+                const q = Math.max(0, parseInt(String(all[i].quantidade), 10) || 0);
+                if (q <= 0) return;
+                const lp = Number(all[i].preco_lista) || 0;
+                const extraOnItem = itemExtra[i] || 0;
+                all[i].bundle_groups = groups;
+                all[i].bundle_extra = extra;
+                all[i].bundle_item_extra = extraOnItem;
+
+                if (!applyDiscount) return;
+                const itemOrig = round2(lp * q);
+                const share = originalSubtotal > 0 ? itemOrig / originalSubtotal : 0;
+                const itemPromo = round2(promoTotal * share);
+                if (itemPromo < itemOrig) {
+                    all[i].subtotal = itemPromo;
+                    all[i].economia = round2(itemOrig - itemPromo);
+                    all[i].promo_aplicada = true;
+                    all[i].preco = extraOnItem > 0
+                        ? lp
+                        : (q > 0 ? round2(itemPromo / q) : lp);
+                }
+            });
+        });
+
+        return all;
     }
 
     function getTotals(items) {
