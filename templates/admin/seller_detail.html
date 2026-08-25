@@ -6,6 +6,7 @@
 {% from "macros/admin_tx_item_cells.html" import admin_tx_item_cells, admin_tx_discount_summary %}
 {% from "macros/admin_tx_delivery.html" import admin_tx_delivery_badge, admin_tx_delivery_section %}
 {% from "macros/admin_tx_handover.html" import admin_tx_handover_action %}
+{% from "macros/admin_tx_note.html" import admin_tx_note_form %}
 
 {% block title %}{{ seller.name }} - Vendedores - Admin | Dental Odonto Master{% endblock %}
 
@@ -352,9 +353,23 @@
                                 <span class="admin-table__col--num">Subtotal</span>
                             </div>
                             {% for it in tx_items %}
+                            {% if tx.status == 'confirmado' and it.product_id %}
+                            <form
+                                class="admin-tx__items-row admin-tx__items-row--editable"
+                                method="post"
+                                action="{{ url_for('admin_transaction_replace_item', tx_id=tx.id, item_id=it.id) }}"
+                            >
+                                {% include 'partials/csrf_field.html' %}
+                                {% if tx.event_id %}
+                                <input type="hidden" name="event_id" value="{{ tx.event_id }}">
+                                {% endif %}
+                                {{ admin_tx_item_cells(it, event_id=tx.event_id, editable=True, tx=tx) }}
+                            </form>
+                            {% else %}
                             <div class="admin-tx__items-row">
                                 {{ admin_tx_item_cells(it, event_id=tx.event_id) }}
                             </div>
+                            {% endif %}
                             {% endfor %}
                         </div>
                         {{ admin_tx_delivery_section(
@@ -387,6 +402,9 @@
                                 <span>Total da transação</span>
                                 <strong>{{ tx.total | brl }}</strong>
                             </div>
+                        </div>
+                        <div class="admin-tx__actions">
+                            {{ admin_tx_note_form(tx, 'admin_seller_transaction_note', seller_id=seller.id) }}
                         </div>
                     </div>
                 </div>

@@ -7,7 +7,11 @@ from typing import Dict, List, Optional, Tuple
 
 from .connection import DEFAULT_MIN_STOCK, _now_iso, get_conn
 from .event_stock import _apply_event_movement
-from .products import _product_row_to_client
+from .products import (
+    _product_catalog_like_clause,
+    _product_row_to_client,
+    prepare_catalog_variant_groups,
+)
 from .sku_helpers import _default_sku_for_id
 import product_images
 
@@ -171,12 +175,14 @@ def find_product_by_sku_or_id(q: str) -> Optional[Dict]:
         row = None
         try:
             pid = int(q)
-            row = conn.execute("SELECT * FROM products WHERE id = ?", (pid,)).fetchone()
+            row = conn.execute(
+                "SELECT * FROM products WHERE id = ? AND active = 1", (pid,)
+            ).fetchone()
         except ValueError:
             pass
         if row is None:
             row = conn.execute(
-                "SELECT * FROM products WHERE sku = ?", (q,)
+                "SELECT * FROM products WHERE sku = ? AND active = 1", (q,)
             ).fetchone()
         return dict(row) if row else None
 
@@ -215,6 +221,14 @@ def add_product_to_event(
         if existing:
             raise ValueError("Produto já adicionado a este evento.")
 
+        prod_row = conn.execute(
+            "SELECT active FROM products WHERE id = ?", (int(product_id),)
+        ).fetchone()
+        if prod_row is None:
+            raise ValueError("Produto não encontrado.")
+        if int(prod_row["active"] or 0) != 1:
+            raise ValueError("Este produto está inativo no catálogo.")
+
         if link_audit_reason is None:
             conn.execute(
                 """
@@ -236,12 +250,6 @@ def add_product_to_event(
         ).fetchone()
         if ev_ok is None:
             raise ValueError("Evento não encontrado.")
-
-        prod_ok = conn.execute(
-            "SELECT 1 FROM products WHERE id = ?", (int(product_id),)
-        ).fetchone()
-        if prod_ok is None:
-            raise ValueError("Produto não encontrado.")
 
         conn.execute(
             """
@@ -372,6 +380,7 @@ def list_event_products(event_id: int) -> List[Dict]:
                 p.category,
                 p.image,
                 p.price          AS library_price,
+                ep.price         AS event_price,
                 COALESCE(ep.price, p.price) AS price,
                 p.active         AS product_active
             FROM event_products ep
@@ -400,23 +409,10 @@ def _event_products_admin_filter_clause(
     """Cláusula AND … para filtros da grade de estoque do evento (admin)."""
     parts: List[str] = []
     params: List = []
-    if q:
-        qs = q.strip()
-        like = f"%{qs.lower()}%"
-        or_parts = [
-            "LOWER(p.name) LIKE ?",
-            "LOWER(COALESCE(p.description, '')) LIKE ?",
-            "LOWER(COALESCE(p.sku, '')) LIKE ?",
-        ]
-        or_params: List = [like, like, like]
-        id_part = qs.lstrip("#").strip()
-        if id_part.isdigit():
-            or_parts.append("p.id = ?")
-            or_params.append(int(id_part))
-            or_parts.append("INSTR(CAST(p.id AS TEXT), ?) > 0")
-            or_params.append(id_part)
-        parts.append("(" + " OR ".join(or_parts) + ")")
-        params.extend(or_params)
+    search_sql, search_params = _product_catalog_like_clause(q, include_sku_aliases=True)
+    if search_sql:
+        parts.append(search_sql)
+        params.extend(search_params)
     cat = (categoria or "todos").strip().lower()
     if cat != "todos":
         parts.append("LOWER(p.category) = LOWER(?)")
@@ -429,12 +425,14 @@ def _event_products_admin_filter_clause(
         )
     elif st == "baixo":
         parts.append(
-            "ep.min_stock > 0 AND ep.stock > 0 AND ep.stock < ep.min_stock"
+            "p.active = 1 AND ep.min_stock > 0 AND ep.stock > 0 AND ep.stock < ep.min_stock"
         )
     elif st == "sem_estoque":
-        parts.append("ep.stock <= 0")
+        parts.append("p.active = 1 AND ep.stock <= 0")
     elif st == "inativo":
         parts.append("p.active = 0")
+    else:
+        parts.append("p.active = 1")
     ent = (entrega or "todos").strip().lower()
     if ent == "pendente":
         parts.append(
@@ -494,8 +492,11 @@ def list_event_products_slice(
                 p.description,
                 p.image,
                 p.price          AS library_price,
+                ep.price         AS event_price,
                 COALESCE(ep.price, p.price) AS price,
-                p.active         AS product_active
+                p.active         AS product_active,
+                p.variant_name,
+                p.subtitle
             {_EVENT_PRODUCTS_ADMIN_FROM}
             {extra}
             ORDER BY p.name COLLATE NOCASE
@@ -522,6 +523,7 @@ def _event_products_slice_row_to_client(row: Dict) -> Dict:
         "id": pid,
         "sku": sku,
         "nome": row["name"],
+        "variante": (row.get("variant_name") or "").strip(),
         "categoria": row["category"],
         "descricao": (row.get("description") or ""),
         "preco": float(row["price"] or 0),
@@ -740,16 +742,18 @@ def list_transactions_summary_for_event_period(
     *,
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
+    seller_id: Optional[int] = None,
     limit: int = EXPORT_SALES_SUMMARY_CSV_CAP,
 ) -> List[Dict]:
     """Pedidos com venda registrada em ``stock_movements`` para o evento (``movement_type='venda'``).
 
     ``date_from`` / ``date_to``: ``YYYY-MM-DD``, comparados com ``date(transactions.created_at)`` (inclusive).
+    ``seller_id``: restringe a um vendedor; ``None`` exporta todos.
     """
     cap = max(1, min(int(limit), EXPORT_SALES_SUMMARY_CSV_CAP))
     sql = (
         "SELECT t.id, t.order_number, t.created_at, t.total, t.items_count, t.status, "
-        "t.client_name, t.client_cpf, t.client_zipcode, t.client_address, "
+        "t.client_name, t.client_cpf, t.client_email, t.client_phone, t.client_zipcode, t.client_address, "
         "t.client_number, t.client_complement, t.client_city, t.client_state, "
         "t.seller_id, t.seller_name, t.payment_method, t.card_installments, t.aut, "
         "t.client_cro_uf, t.client_cro_numero "
@@ -761,6 +765,9 @@ def list_transactions_summary_for_event_period(
         " AND t.status = 'confirmado'"
     )
     params: List = [int(event_id)]
+    if seller_id is not None:
+        sql += " AND t.seller_id = ?"
+        params.append(int(seller_id))
     if date_from:
         sql += " AND date(t.created_at) >= date(?)"
         params.append(date_from)
@@ -779,12 +786,20 @@ def list_transaction_items_for_event_period(
     *,
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
+    seller_id: Optional[int] = None,
     limit: int = EXPORT_SALES_ITEMS_CSV_CAP,
 ) -> List[Dict]:
-    """Itens de pedidos cuja venda está ligada ao evento (via ``stock_movements``)."""
+    """Itens de pedidos cuja venda está ligada ao evento (via ``stock_movements``).
+
+    Inclui dados do pedido/cliente para a exportação unificada (``nivel=completo``).
+    """
     cap = max(1, min(int(limit), EXPORT_SALES_ITEMS_CSV_CAP))
     sql = (
         "SELECT ti.id AS item_id, t.id AS transaction_id, t.order_number, t.created_at, "
+        "t.status, t.total, t.items_count, "
+        "t.client_name, t.client_cpf, t.client_email, t.client_phone, t.client_zipcode, t.client_address, "
+        "t.client_number, t.client_complement, t.client_city, t.client_state, "
+        "t.client_cro_uf, t.client_cro_numero, "
         "t.seller_id, t.seller_name, t.payment_method, t.card_installments, t.aut, "
         "ti.product_id, ti.product_name, ti.category, ti.product_sku, "
         "ti.quantity, ti.unit_price, ti.subtotal "
@@ -797,6 +812,9 @@ def list_transaction_items_for_event_period(
         " AND t.status = 'confirmado'"
     )
     params: List = [int(event_id)]
+    if seller_id is not None:
+        sql += " AND t.seller_id = ?"
+        params.append(int(seller_id))
     if date_from:
         sql += " AND date(t.created_at) >= date(?)"
         params.append(date_from)
@@ -1227,7 +1245,7 @@ def list_event_products_for_client(event_id: int) -> List[Dict]:
         d["abaixo_minimo"] = d["estoque_minimo"] > 0 and d["estoque"] < d["estoque_minimo"]
         d["sem_estoque"] = d["estoque"] <= 0
         result.append(d)
-    return result
+    return prepare_catalog_variant_groups(result)
 
 
 def list_active_event_product_stocks(event_id: int) -> List[Dict]:

@@ -184,6 +184,16 @@
     overflow: hidden;
 }
 
+.cart-item__variant {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--color-text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    margin-top: 2px;
+    line-height: 1.3;
+}
+
 .cart-item__sku {
     font-size: 12px;
     font-weight: 600;
@@ -444,6 +454,18 @@
     box-shadow: none;
     cursor: not-allowed;
     transform: none;
+}
+
+/* BOGO grátis — mesmo fundo dos demais itens do carrinho */
+.cart-item__total .line-item__free-tag,
+.line-item__free-tag {
+    color: #16a34a;
+    font-weight: 700;
+    font-size: 0.95em;
+}
+.cart-item__meta strong,
+.line-item__meta strong {
+    color: #16a34a;
 }
 
 body.cart-open {

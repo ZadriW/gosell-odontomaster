@@ -28,6 +28,15 @@
             </p>
         </div>
         <div class="admin-section__header-actions" style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;">
+            <form method="post" action="{{ url_for('admin_sync_catalog_wake') }}">
+                {% include 'partials/csrf_field.html' %}
+                <button type="submit" class="admin-btn admin-btn--ghost"
+                        title="Atualiza nomes, SKUs, preços e imagens a partir da Wake Commerce. Estoque e eventos não são alterados."
+                        onclick="return confirm('Sincronizar catálogo com a Wake Commerce?\n\nIsso atualiza nomes, SKUs, preços-base e imagens.\nEstoque, vendas e promoções NÃO serão afetados.');">
+                    <i class="fa-solid fa-arrows-rotate" aria-hidden="true"></i>
+                    Sincronizar Wake
+                </button>
+            </form>
             <form method="post" action="{{ url_for('admin_event_cache_product_images', event_id=event.id) }}">
                 {% include 'partials/csrf_field.html' %}
                 {{ event_stock_preserved_filters(filters, pagination) }}
@@ -55,7 +64,7 @@
                     type="search"
                     name="q"
                     value="{{ filters.q }}"
-                    placeholder="Nome ou descrição..."
+                    placeholder="Nome, variante, SKU ou ID..."
                     class="admin-filter__input"
                 >
             </span>
@@ -151,12 +160,14 @@
             Importar produtos via planilha
         </h2>
         <p class="admin-card__subtitle">
-            Planilha <strong>.xls</strong> ou <strong>.xlsx</strong> de estoque:
-            coluna <strong>A</strong> = SKU, coluna <strong>C</strong> = preço unitário (opcional),
-            coluna <strong>E</strong> = quantidade (opcional).
-            Cabeçalhos como <strong>CODIGO</strong> e <strong>VALOR UNIDADE</strong> também são reconhecidos.
-            Sem preço, usa o preço-base da biblioteca. Sem quantidade, sobe com estoque 0.
-            Duplicatas são somadas.
+            Planilha <strong>.xls</strong> ou <strong>.xlsx</strong>:
+            coluna <strong>A</strong> = SKU, coluna <strong>E</strong> = quantidade (opcional).
+            O preço só é atualizado se houver cabeçalho explícito
+            (<strong>PREÇO</strong>, <strong>VALOR UNITÁRIO</strong> ou <strong>VALOR UNIDADE</strong>).
+            Planilha só de estoque não altera preços já definidos no evento.
+            Sem cabeçalho de preço, produtos novos usam o preço-base da biblioteca.
+            Sem quantidade, sobe com estoque 0. Duplicatas na planilha são somadas.
+            Se o produto já estiver no evento, a quantidade importada é somada ao estoque atual.
         </p>
         <form method="post"
               action="{{ url_for('admin_event_import_xls', event_id=event.id) }}"
@@ -225,6 +236,7 @@
                 {% endif %}
                 Produto
             </span>
+            <span class="admin-table__col--num" role="columnheader" title="Preço de venda neste evento">Preço</span>
             <span class="admin-table__col--num" role="columnheader" title="Unidades vendidas neste evento (pedidos confirmados)">Vendas</span>
             <span class="admin-table__col--num" role="columnheader" data-stock-qty>Estoque</span>
             <span class="admin-table__col--num" role="columnheader">Mínimo</span>
@@ -282,10 +294,22 @@
                                       role="tooltip">{{ promo_tip }}</span>
                             </span>
                         </span>
+                        {% if p.variant_name %}<span class="admin-stock__variant">{{ p.variant_name }}</span>{% endif %}
+                        {% if p.subtitle %}<span class="admin-stock__subtitle">{{ p.subtitle }}</span>{% endif %}
                         <small class="admin-stock__meta">
                             ID: {{ p.product_id }} | SKU: <code class="admin-stock__sku-code">{{ p.sku or '—' }}</code>
                         </small>
                     </span>
+                </span>
+
+                <span class="admin-table__col--num admin-stock__price"
+                      data-stock-price
+                      {% if p.event_price is not none %}
+                      title="Preço personalizado neste evento. Biblioteca: {{ p.library_price | brl }}"
+                      {% else %}
+                      title="Preço da biblioteca"
+                      {% endif %}>
+                    <span data-stock-price-value>{{ p.price | brl }}</span>{% if p.event_price is not none %}<span class="admin-stock__price-flag" data-stock-price-flag aria-hidden="true" title="Preço personalizado no evento">*</span>{% else %}<span class="admin-stock__price-flag" data-stock-price-flag hidden aria-hidden="true">*</span>{% endif %}
                 </span>
 
                 <span class="admin-table__col--num" data-stock-sales

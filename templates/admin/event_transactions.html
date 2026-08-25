@@ -10,14 +10,27 @@
                 <i class="fa-solid fa-arrow-left" aria-hidden="true"></i>
                 {{ event.name }}
             </a>
-            <h2 class="admin-section__title">Exportar vendas (CSV)</h2>
+            <h2 class="admin-section__title">Exportar vendas (planilha)</h2>
             <p class="admin-section__subtitle">
-                Pedidos confirmados com movimentação de venda neste evento. Opcional: período pela data do pedido.
-                Campos vazios exportam o histórico completo (até os limites do servidor).
+                Pedidos confirmados com movimentação de venda neste evento.
+                Filtre por vendedor para baixar só as vendas dele, ou deixe em «Todos».
+                Período pela data do pedido é opcional; campos vazios exportam o histórico completo
+                (até os limites do servidor). O arquivo é baixado em .xlsx (Excel).
             </p>
         </div>
     </header>
-    <form class="admin-filters" method="get" action="{{ url_for('admin_event_sales_export_csv', event_id=event.id) }}" aria-label="Exportar vendas em CSV">
+    <form class="admin-filters" method="get" action="{{ url_for('admin_event_sales_export_xlsx', event_id=event.id) }}" aria-label="Exportar vendas em planilha Excel">
+        <label class="admin-filter">
+            <span class="admin-filter__label">Vendedor</span>
+            <select name="vendedor" class="admin-filter__input" title="Exportar vendas de um vendedor ou de todos">
+                <option value="0">Todos</option>
+                {% for s in movement_filter_sellers %}
+                <option value="{{ s.id }}">
+                    {{ s.name }}{% if not s.active %} (inativo){% endif %}
+                </option>
+                {% endfor %}
+            </select>
+        </label>
         <label class="admin-filter">
             <span class="admin-filter__label">Data inicial</span>
             <input type="date" name="data_inicio" class="admin-filter__input">
@@ -28,15 +41,16 @@
         </label>
         <label class="admin-filter">
             <span class="admin-filter__label">Detalhe</span>
-            <select name="nivel" class="admin-filter__input" title="Um arquivo por pedido ou uma linha por item vendido">
+            <select name="nivel" class="admin-filter__input" title="Resumo por pedido, uma linha por item, ou pedido com cliente e produtos">
                 <option value="pedidos">Resumo por pedido</option>
                 <option value="itens">Uma linha por item</option>
+                <option value="completo">Pedido + itens</option>
             </select>
         </label>
         <div class="admin-filters__actions">
             <button type="submit" class="admin-btn admin-btn--primary">
-                <i class="fa-solid fa-file-csv" aria-hidden="true"></i>
-                Baixar CSV
+                <i class="fa-solid fa-file-excel" aria-hidden="true"></i>
+                Baixar planilha
             </button>
         </div>
     </form>

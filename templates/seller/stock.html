@@ -31,7 +31,7 @@
                     type="search"
                     name="q"
                     value="{{ filters.q }}"
-                    placeholder="Nome, SKU ou ID do produto..."
+                    placeholder="Nome, variante, SKU ou ID..."
                     class="admin-filter__input"
                     autocomplete="off"
                     inputmode="search"
@@ -81,7 +81,7 @@
                     type="search"
                     name="q"
                     value="{{ filters.q }}"
-                    placeholder="Nome, descrição ou SKU..."
+                    placeholder="Nome, variante, SKU ou ID..."
                     class="admin-filter__input"
                 >
             </span>
@@ -158,6 +158,7 @@
                     <span>
                         <span class="admin-stock__product-name-row">
                             <strong>{{ p.nome }}</strong>
+                            {% if p.variante %}<span class="admin-stock__variant">{{ p.variante }}</span>{% endif %}
                             {% set promo_tip = promo_tooltips.get(p.id, '') %}
                             <span class="admin-stock__promo-wrap"
                                   data-stock-promo-wrap

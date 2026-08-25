@@ -96,21 +96,35 @@
             {# bogo #}
             <div class="admin-promo-rule-fields" data-rule-fields="bogo"
                  style="display:{{ 'flex' if promo.rule_type == 'bogo' else 'none' }}; gap:16px; flex-wrap:wrap;">
-                <div class="admin-field" style="flex:1; min-width:130px;">
+                <div class="admin-field" style="flex:1; min-width:200px;">
                     <label class="admin-field__label" for="edit-promo-min-qty">Compre (qtd. paga)</label>
                     <input id="edit-promo-min-qty" type="number" name="min_qty_bogo"
                            class="admin-field__input"
                            min="1" step="1"
                            value="{{ promo.min_qty if promo.rule_type == 'bogo' else '2' }}"
                            placeholder="Ex.: 2">
+                    <label class="admin-field__label" for="edit-promo-bogo-buy-sku" style="margin-top:10px;">SKU a comprar</label>
+                    <select id="edit-promo-bogo-buy-sku" name="bogo_buy_product_id"
+                            class="admin-field__input"
+                            data-bogo-buy-sku
+                            data-selected="{{ promo.bogo_buy_product_id or '' }}">
+                        <option value="">Marque produtos participantes primeiro</option>
+                    </select>
                 </div>
-                <div class="admin-field" style="flex:1; min-width:130px;">
+                <div class="admin-field" style="flex:1; min-width:200px;">
                     <label class="admin-field__label" for="edit-promo-free-qty">Leve a mais (grátis)</label>
                     <input id="edit-promo-free-qty" type="number" name="free_qty"
                            class="admin-field__input"
                            min="1" step="1"
                            value="{{ promo.free_qty if promo.rule_type == 'bogo' else '1' }}"
                            placeholder="Ex.: 1">
+                    <label class="admin-field__label" for="edit-promo-bogo-free-sku" style="margin-top:10px;">SKU grátis</label>
+                    <select id="edit-promo-bogo-free-sku" name="bogo_free_product_id"
+                            class="admin-field__input"
+                            data-bogo-free-sku
+                            data-selected="{{ promo.bogo_free_product_id or '' }}">
+                        <option value="">Marque produtos participantes primeiro</option>
+                    </select>
                 </div>
                 <div class="admin-promo-bogo-preview admin-field__hint" aria-live="polite" style="width:100%;">
                     <i class="fa-solid fa-circle-info" aria-hidden="true"></i>
@@ -147,6 +161,29 @@
                         A partir de {{ promo.min_qty }} unidades, cada conjunto de {{ promo.min_qty }} por R$ {{ '%.2f'|format(promo.rule_value)|replace('.',',') }} — excedentes pagam preço normal
                         {% elif promo.rule_type == 'exact_bundle' %}
                         Kit de {{ promo.min_qty }} unidades por R$ {{ '%.2f'|format(promo.rule_value)|replace('.',',') }}
+                        {% endif %}
+                    </span>
+                </div>
+            </div>
+
+            {# combo_bundle #}
+            <div class="admin-promo-rule-fields" data-rule-fields="combo_bundle"
+                 style="display:{{ 'flex' if promo.rule_type == 'combo_bundle' else 'none' }}; gap:16px; flex-wrap:wrap;">
+                <div class="admin-field" style="flex:1; min-width:160px;">
+                    <label class="admin-field__label" for="edit-promo-combo-value">Valor total do combo (R$)</label>
+                    <input id="edit-promo-combo-value" type="number" name="rule_value_combo"
+                           class="admin-field__input"
+                           min="0.01" step="0.01"
+                           value="{{ promo.rule_value if promo.rule_type == 'combo_bundle' else '' }}"
+                           placeholder="Ex.: 99,90">
+                </div>
+                <div class="admin-promo-combo-preview admin-field__hint" aria-live="polite" style="width:100%;">
+                    <i class="fa-solid fa-circle-info" aria-hidden="true"></i>
+                    <span data-combo-summary>
+                        {% if promo.rule_type == 'combo_bundle' %}
+                        Combo: na compra de 1 un. de cada produto selecionado, o conjunto sai por R$ {{ '%.2f'|format(promo.rule_value)|replace('.',',') }}
+                        {% else %}
+                        Selecione 2+ produtos e defina o valor do combo
                         {% endif %}
                     </span>
                 </div>
@@ -225,11 +262,17 @@
             {% elif promo.rule_type == 'fixed' %}
             <p>Cada unidade de produto participante tem <strong>R$ {{ '%.2f'|format(promo.rule_value)|replace('.',',') }} de desconto</strong> no preço de lista. Se o desconto ultrapassar o preço, o item é cobrado a R$ 0,00.</p>
             {% elif promo.rule_type == 'bogo' %}
+            {% if promo.bogo_buy_sku and promo.bogo_free_sku and promo.bogo_buy_sku != promo.bogo_free_sku %}
+            <p>A cada <strong>{{ promo.min_qty }} unidade(s)</strong> do SKU <strong>{{ promo.bogo_buy_sku }}</strong> pagas, o cliente leva <strong>{{ promo.free_qty }} unidade(s)</strong> do SKU <strong>{{ promo.bogo_free_sku }}</strong> gratuitamente. O produto pago continua no preço de lista; o desconto incide só nas unidades grátis do segundo SKU.</p>
+            {% else %}
             <p>A cada <strong>{{ promo.min_qty }} unidade(s) pagas</strong>, o cliente leva <strong>{{ promo.free_qty }} unidade(s) gratuitamente</strong> — ou seja, leva {{ promo.min_qty + promo.free_qty }} pagando {{ promo.min_qty }}. O desconto é distribuído proporcionalmente no subtotal do pedido.</p>
+            {% endif %}
             {% elif promo.rule_type == 'min_bundle' %}
             <p>A partir da compra de <strong>{{ promo.min_qty }} unidade(s)</strong>, cada conjunto de {{ promo.min_qty }} un. custa <strong>R$ {{ '%.2f'|format(promo.rule_value)|replace('.',',') }}</strong>. Abaixo desse mínimo o preço normal é cobrado; unidades que sobrem além dos grupos completos também são cobradas pelo preço normal unitário.</p>
             {% elif promo.rule_type == 'exact_bundle' %}
             <p>Cada grupo de exatamente <strong>{{ promo.min_qty }} unidade(s)</strong> do mesmo produto custa <strong>R$ {{ '%.2f'|format(promo.rule_value)|replace('.',',') }}</strong>. Unidades que sobrem além dos grupos completos são cobradas pelo preço normal unitário.</p>
+            {% elif promo.rule_type == 'combo_bundle' %}
+            <p>Na compra de <strong>1 unidade de cada</strong> produto selecionado ({{ promo.product_ids|length }} produtos), o conjunto inteiro sai por <strong>R$ {{ '%.2f'|format(promo.rule_value)|replace('.',',') }}</strong>. Se o cliente comprar mais de um combo completo, cada grupo sai pelo valor promocional. Unidades excedentes que não completam outro combo são cobradas pelo preço normal.</p>
             {% endif %}
             <p class="admin-text-muted" style="margin-top:8px; font-size:13px;">
                 <i class="fa-solid fa-shield-halved" aria-hidden="true"></i>
@@ -255,16 +298,19 @@
     const percentFixedFields = form.querySelector('[data-rule-fields="percent fixed"]');
     const bogoFields = form.querySelector('[data-rule-fields="bogo"]');
     const bundleFields = form.querySelector('[data-rule-fields="min_bundle exact_bundle"]');
+    const comboFields = form.querySelector('[data-rule-fields="combo_bundle"]');
     const labelPercent = form.querySelector('[data-rule-label-percent]');
     const labelFixed = form.querySelector('[data-rule-label-fixed]');
     const labelMinBundle = form.querySelector('[data-rule-label-min-bundle]');
     const labelExactBundle = form.querySelector('[data-rule-label-exact-bundle]');
     const bogoSummary = form.querySelector('[data-bogo-summary]');
     const bundleSummary = form.querySelector('[data-bundle-summary]');
+    const comboSummary = form.querySelector('[data-combo-summary]');
     const minQtyInput = form.querySelector('#edit-promo-min-qty');
     const freeQtyInput = form.querySelector('#edit-promo-free-qty');
     const bundleQtyInput = form.querySelector('#edit-promo-bundle-qty');
     const bundleValueInput = form.querySelector('#edit-promo-bundle-value');
+    const comboValueInput = form.querySelector('#edit-promo-combo-value');
 
     function updateRuleFields() {
         if (!ruleSelect) return;
@@ -272,11 +318,13 @@
         if (percentFixedFields) percentFixedFields.style.display = (val === 'percent' || val === 'fixed') ? 'flex' : 'none';
         if (bogoFields) bogoFields.style.display = val === 'bogo' ? 'flex' : 'none';
         if (bundleFields) bundleFields.style.display = (val === 'min_bundle' || val === 'exact_bundle') ? 'flex' : 'none';
+        if (comboFields) comboFields.style.display = val === 'combo_bundle' ? 'flex' : 'none';
         if (labelPercent) labelPercent.style.display = val === 'percent' ? '' : 'none';
         if (labelFixed) labelFixed.style.display = val === 'fixed' ? '' : 'none';
         if (labelMinBundle) labelMinBundle.style.display = val === 'min_bundle' ? '' : 'none';
         if (labelExactBundle) labelExactBundle.style.display = val === 'exact_bundle' ? '' : 'none';
         updateBundleSummary();
+        updateComboSummary();
     }
 
     function updateBogoSummary() {
@@ -304,6 +352,15 @@
         }
     }
 
+    function updateComboSummary() {
+        if (!comboSummary || !comboValueInput) return;
+        const val = parseFloat(comboValueInput.value) || 0;
+        const valFmt = val.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        comboSummary.textContent = val > 0
+            ? `Combo: na compra de 1 un. de cada produto selecionado, o conjunto sai por R$ ${valFmt}`
+            : 'Selecione 2+ produtos e defina o valor do combo';
+    }
+
     if (ruleSelect) {
         ruleSelect.addEventListener('change', updateRuleFields);
     }
@@ -311,6 +368,7 @@
     if (freeQtyInput) freeQtyInput.addEventListener('input', updateBogoSummary);
     if (bundleQtyInput) { bundleQtyInput.addEventListener('input', updateBundleSummary); }
     if (bundleValueInput) { bundleValueInput.addEventListener('input', updateBundleSummary); }
+    if (comboValueInput) { comboValueInput.addEventListener('input', updateComboSummary); }
 
     document.addEventListener('click', function (e) {
         const f = e.target.closest('#formEditPromo');
@@ -324,4 +382,5 @@
     });
 })();
 </script>
+<script src="{{ url_for('static', filename='js/admin-promo-bogo-sku.js') }}"></script>
 {% endblock %}

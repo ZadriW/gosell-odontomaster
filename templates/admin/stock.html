@@ -24,7 +24,7 @@
                     type="search"
                     name="q"
                     value="{{ filters.q }}"
-                    placeholder="Nome ou descrição..."
+                    placeholder="Nome, variante, SKU ou ID..."
                     class="admin-filter__input"
                 >
             </span>
@@ -93,6 +93,7 @@
                     <img class="admin-stock__thumb" src="{{ p.imagem }}" alt="{{ p.nome }}" loading="lazy" onerror="this.style.visibility='hidden'">
                     <span>
                         <strong>{{ p.nome }}</strong>
+                        {% if p.variante %}<span class="admin-stock__variant">{{ p.variante }}</span>{% endif %}
                         <small class="admin-stock__meta">ID: {{ p.id }} | SKU: <code class="admin-stock__sku-code">{{ p.sku or '—' }}</code></small>
                     </span>
                 </span>

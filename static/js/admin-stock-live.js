@@ -419,6 +419,35 @@
         setInterval(refreshProduct, PRODUCT_POLL_MS);
     }
 
+    function formatBrl(value) {
+        const n = Number(value);
+        if (!Number.isFinite(n)) return 'R$ 0,00';
+        return n.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+    }
+
+    function updateStockPriceCell(row, product) {
+        const priceCell = row.querySelector('[data-stock-price]');
+        if (!priceCell || !Object.prototype.hasOwnProperty.call(product, 'price')) return;
+        const price = Number(product.price ?? product.preco) || 0;
+        const libraryPrice = Number(product.library_price ?? product.preco_biblioteca ?? price) || 0;
+        const override = Boolean(
+            product.preco_evento_override ?? product.event_price != null,
+        );
+        const priceValue = priceCell.querySelector('[data-stock-price-value]');
+        if (priceValue) priceValue.textContent = formatBrl(price);
+        else priceCell.textContent = formatBrl(price);
+        if (override) {
+            priceCell.title = `Preço personalizado neste evento. Biblioteca: ${formatBrl(libraryPrice)}`;
+        } else {
+            priceCell.title = 'Preço da biblioteca';
+        }
+        const priceFlag = priceCell.querySelector('[data-stock-price-flag]');
+        if (priceFlag) {
+            if (override) priceFlag.removeAttribute('hidden');
+            else priceFlag.setAttribute('hidden', '');
+        }
+    }
+
     async function refreshStockList() {
         const tables = document.querySelectorAll(
             '[data-admin-stock-list], [data-seller-stock-list], [data-admin-event-stock]',
@@ -443,6 +472,7 @@
                 if (sales && Object.prototype.hasOwnProperty.call(product, 'units_sold')) {
                     sales.textContent = String(Number(product.units_sold) || 0);
                 }
+                updateStockPriceCell(row, product);
                 updateStockStatusCell(row, product);
                 const deliveryWrap = row.querySelector('[data-stock-delivery-wrap]');
                 const deliveryCount = row.querySelector('[data-stock-delivery-count]');

@@ -7,7 +7,7 @@ import sqlite3
 from datetime import datetime
 from typing import Dict, Iterable, List, Optional, Tuple
 
-from .connection import _now_iso, get_conn
+from .connection import DEFAULT_MIN_STOCK, _now_iso, get_conn
 from .event_stock import _apply_event_movement
 from .promotions import (
     apply_list_prices_to_normalized_items,
@@ -118,7 +118,10 @@ def _public_items_from_normalized(
         list_p = float(i.get("original_price") or i.get("unit_price") or 0)
         subtotal = float(i.get("subtotal") or 0)
         promo_id = i.get("promotion_id")
-        has_promo = promo_id is not None and subtotal < round(list_p * qty, 2) - 0.001
+        is_gift = bool(i.get("bogo_auto_free"))
+        has_promo = is_gift or (
+            promo_id is not None and subtotal < round(list_p * qty, 2) - 0.001
+        )
         out.append(
             {
                 "id": int(pid),
@@ -229,6 +232,7 @@ def create_transaction(
                 "unit_price": price,
                 "quantity": qty,
                 "subtotal": round(price * qty, 2),
+                "bogo_auto_free": bool(raw.get("bogo_auto_free")),
             }
         )
 
@@ -483,6 +487,7 @@ def update_pending_transaction(
                 "unit_price": price,
                 "quantity": qty,
                 "subtotal": round(price * qty, 2),
+                "bogo_auto_free": bool(raw.get("bogo_auto_free")),
             }
         )
 
@@ -1057,6 +1062,363 @@ def refund_transaction(
         "id": tx_id,
         "order_number": tx_row.get("order_number"),
         "status": "estornado",
+    }
+
+
+def replace_transaction_item_product(
+    tx_id: int,
+    item_id: int,
+    new_product_id: int,
+    new_quantity: int,
+    *,
+    created_by: str = "admin",
+    expected_event_id: Optional[int] = None,
+) -> Dict:
+    """Substitui o produto de um item de pedido confirmado.
+
+    Reverte o estoque já baixado do item anterior, atualiza o snapshot
+    (nome, SKU, categoria, preço) e baixa o estoque do produto novo.
+    A nota de retirada lê ``transaction_items``, então passa a refletir
+    o produto substituído.
+    """
+    new_pid = int(new_product_id)
+    new_qty = int(new_quantity)
+    if new_qty <= 0:
+        raise ValueError("A quantidade deve ser maior que zero.")
+
+    with get_conn() as conn:
+        tx = conn.execute(
+            "SELECT * FROM transactions WHERE id = ?", (int(tx_id),)
+        ).fetchone()
+        if tx is None:
+            raise ValueError("Transação não encontrada.")
+        tx_row = dict(tx)
+        status = str(tx_row.get("status") or "").lower()
+        if status != "confirmado":
+            raise ValueError("Só é possível alterar itens de pedidos confirmados.")
+
+        event_id_raw = tx_row.get("event_id")
+        event_id: Optional[int] = int(event_id_raw) if event_id_raw is not None else None
+        if expected_event_id is not None:
+            if event_id is None or int(event_id) != int(expected_event_id):
+                raise ValueError("Esta transação não pertence a este evento.")
+
+        item = conn.execute(
+            """
+            SELECT id, product_id, product_name, product_sku, category,
+                   unit_price, original_price, quantity, subtotal,
+                   quantity_delivered, promotion_id
+              FROM transaction_items
+             WHERE id = ? AND transaction_id = ?
+            """,
+            (int(item_id), int(tx_id)),
+        ).fetchone()
+        if item is None:
+            raise ValueError("Item não encontrado neste pedido.")
+
+        try:
+            old_pid = int(item["product_id"])
+        except (TypeError, ValueError):
+            raise ValueError("Este item não controla estoque e não pode ser substituído.") from None
+
+        prod = conn.execute(
+            """
+            SELECT p.id, p.name, p.sku, p.category, p.price, p.active
+              FROM products p
+             WHERE p.id = ?
+            """,
+            (new_pid,),
+        ).fetchone()
+        if prod is None:
+            raise ValueError("Produto do novo SKU não encontrado no catálogo.")
+        if int(prod["active"] or 0) != 1:
+            raise ValueError("O produto do novo SKU está inativo no catálogo.")
+
+        event_price = None
+        if event_id is not None:
+            ep = conn.execute(
+                "SELECT stock, price FROM event_products "
+                "WHERE event_id = ? AND product_id = ?",
+                (int(event_id), new_pid),
+            ).fetchone()
+            if ep is None:
+                now = _now_iso()
+                conn.execute(
+                    """
+                    INSERT INTO event_products
+                        (event_id, product_id, stock, min_stock, backorder_limit,
+                         created_at, updated_at)
+                    VALUES (?, ?, 0, ?, -1, ?, ?)
+                    """,
+                    (int(event_id), new_pid, DEFAULT_MIN_STOCK, now, now),
+                )
+            else:
+                if ep["price"] is not None:
+                    event_price = float(ep["price"])
+
+        list_price = float(event_price if event_price is not None else (prod["price"] or 0))
+        new_name = str(prod["name"] or "Produto")
+        new_sku = (prod["sku"] or "").strip() or _default_sku_for_id(new_pid)
+        new_category = prod["category"]
+        new_subtotal = round(list_price * new_qty, 2)
+
+        old_qty = int(item["quantity"] or 0)
+        old_delivered = int(item["quantity_delivered"] or 0)
+        order_number = (tx_row.get("order_number") or "").strip() or f"#{tx_id}"
+        reason = "Substituição de item no pedido"
+
+        same_product = old_pid == new_pid
+        if same_product and new_qty == old_qty:
+            raise ValueError("Nenhuma alteração: SKU e quantidade são os mesmos.")
+
+        def _stock_in(pid: int, qty: int, *, mov_reason: str) -> None:
+            if qty <= 0:
+                return
+            if event_id is not None:
+                _apply_event_movement(
+                    conn,
+                    event_id=int(event_id),
+                    product_id=pid,
+                    movement_type="entrada",
+                    delta=qty,
+                    reason=mov_reason,
+                    reference=order_number,
+                    transaction_id=int(tx_id),
+                    created_by=created_by,
+                )
+            else:
+                _apply_movement(
+                    conn,
+                    product_id=pid,
+                    movement_type="entrada",
+                    delta=qty,
+                    reason=mov_reason,
+                    reference=order_number,
+                    transaction_id=int(tx_id),
+                    created_by=created_by,
+                )
+
+        def _stock_out(pid: int, qty: int, *, mov_reason: str) -> int:
+            if qty <= 0:
+                return 0
+            available = _available_stock_for_product(conn, pid, event_id)
+            if available is None:
+                return 0
+            take = min(qty, max(0, int(available)))
+            if take <= 0:
+                return 0
+            if event_id is not None:
+                _apply_event_movement(
+                    conn,
+                    event_id=int(event_id),
+                    product_id=pid,
+                    movement_type="venda",
+                    delta=-take,
+                    reason=mov_reason,
+                    reference=order_number,
+                    transaction_id=int(tx_id),
+                    created_by=created_by,
+                )
+            else:
+                _apply_movement(
+                    conn,
+                    product_id=pid,
+                    movement_type="venda",
+                    delta=-take,
+                    reason=mov_reason,
+                    reference=order_number,
+                    transaction_id=int(tx_id),
+                    created_by=created_by,
+                )
+            return take
+
+        if same_product:
+            if new_qty < old_delivered:
+                _stock_in(old_pid, old_delivered - new_qty, mov_reason=reason)
+                new_delivered = new_qty
+            elif new_qty > old_qty:
+                extra = _stock_out(old_pid, new_qty - old_qty, mov_reason=reason)
+                new_delivered = old_delivered + extra
+            else:
+                new_delivered = min(old_delivered, new_qty)
+        else:
+            _stock_in(old_pid, old_delivered, mov_reason=reason)
+            new_delivered = _stock_out(new_pid, new_qty, mov_reason=reason)
+
+        conn.execute(
+            """
+            UPDATE transaction_items
+               SET product_id = ?,
+                   product_name = ?,
+                   product_sku = ?,
+                   category = ?,
+                   unit_price = ?,
+                   original_price = ?,
+                   quantity = ?,
+                   subtotal = ?,
+                   quantity_delivered = ?,
+                   promotion_id = NULL
+             WHERE id = ? AND transaction_id = ?
+            """,
+            (
+                str(new_pid),
+                new_name,
+                new_sku,
+                new_category,
+                list_price,
+                list_price,
+                new_qty,
+                new_subtotal,
+                new_delivered,
+                int(item_id),
+                int(tx_id),
+            ),
+        )
+
+        # Re-aplicar promoções em todos os itens após a substituição.
+        # Bidirecional: remove promoções que o pedido não cumpre mais E aplica
+        # promoções que o novo conjunto de itens passa a cumprir.
+        # Inclui BOGO: remove itens grátis obsoletos e insere novos quando elegível.
+        if event_id is not None:
+            all_items_rows = conn.execute(
+                """
+                SELECT id, product_id, product_name, product_sku, category,
+                       unit_price, original_price, quantity, subtotal,
+                       quantity_delivered, promotion_id
+                  FROM transaction_items
+                 WHERE transaction_id = ?
+                """,
+                (int(tx_id),),
+            ).fetchall()
+
+            # Separar itens pagos de itens bogo_auto_free (grátis).
+            # Heurística: unit_price ≈ 0 e original_price > 0 = item grátis BOGO.
+            paid_items: List[Dict] = []
+            old_free_items: List[Dict] = []
+            for row in all_items_rows:
+                up = float(row["unit_price"] or 0)
+                op = float(row["original_price"] or row["unit_price"] or 0)
+                is_bogo_free = (up < 0.001 and op > 0.01)
+                item_dict = {
+                    "id": int(row["id"]),
+                    "product_id": int(row["product_id"]) if row["product_id"] is not None else None,
+                    "product_name": row["product_name"],
+                    "product_sku": row["product_sku"],
+                    "category": row["category"],
+                    "unit_price": op,
+                    "original_price": op,
+                    "quantity": int(row["quantity"] or 0),
+                    "subtotal": round(op * int(row["quantity"] or 0), 2),
+                    "quantity_delivered": int(row["quantity_delivered"] or 0),
+                    "promotion_id": None,
+                }
+                if is_bogo_free:
+                    old_free_items.append(item_dict)
+                else:
+                    paid_items.append(item_dict)
+
+            # Reverter estoque dos itens grátis antigos e removê-los do DB.
+            for free_it in old_free_items:
+                delivered = int(free_it.get("quantity_delivered") or 0)
+                if delivered > 0:
+                    fpid = free_it.get("product_id")
+                    if fpid is not None:
+                        _stock_in(int(fpid), delivered, mov_reason="Alteração de item: unidade grátis da promoção Compre X, Leve Y removida")
+                conn.execute(
+                    "DELETE FROM transaction_items WHERE id = ? AND transaction_id = ?",
+                    (int(free_it["id"]), int(tx_id)),
+                )
+
+            # Aplicar promoções sobre os itens pagos.
+            priced = apply_promotions_to_items_in_conn(conn, int(event_id), paid_items)
+
+            # Atualizar itens existentes e inserir novos itens BOGO grátis.
+            for priced_item in priced:
+                iid = priced_item.get("id")
+                if iid is not None:
+                    conn.execute(
+                        """
+                        UPDATE transaction_items
+                           SET unit_price = ?,
+                               original_price = ?,
+                               subtotal = ?,
+                               promotion_id = ?
+                         WHERE id = ? AND transaction_id = ?
+                        """,
+                        (
+                            float(priced_item.get("unit_price") or 0),
+                            float(priced_item.get("original_price") or priced_item.get("unit_price") or 0),
+                            float(priced_item.get("subtotal") or 0),
+                            priced_item.get("promotion_id"),
+                            int(iid),
+                            int(tx_id),
+                        ),
+                    )
+                else:
+                    # Novo item BOGO grátis — inserir no DB.
+                    gift_pid = priced_item.get("product_id")
+                    gift_qty = int(priced_item.get("quantity") or 0)
+                    if gift_pid is None or gift_qty <= 0:
+                        continue
+                    gift_sku = (priced_item.get("product_sku") or "").strip()
+                    if not gift_sku:
+                        gift_sku = _default_sku_for_id(int(gift_pid))
+                    conn.execute(
+                        """
+                        INSERT INTO transaction_items
+                            (transaction_id, product_id, product_name, category,
+                             unit_price, quantity, subtotal, product_sku,
+                             original_price, promotion_id, quantity_delivered)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            int(tx_id),
+                            str(gift_pid),
+                            priced_item.get("product_name") or "Produto",
+                            priced_item.get("category"),
+                            0.0,
+                            gift_qty,
+                            0.0,
+                            gift_sku,
+                            float(priced_item.get("original_price") or 0),
+                            priced_item.get("promotion_id"),
+                            0,
+                        ),
+                    )
+                    # Baixar estoque do novo brinde.
+                    _stock_out(int(gift_pid), gift_qty, mov_reason="Alteração de item: unidade grátis da promoção Compre X, Leve Y")
+
+        totals = conn.execute(
+            """
+            SELECT COALESCE(SUM(quantity), 0) AS items_count,
+                   COALESCE(SUM(subtotal), 0) AS total
+              FROM transaction_items
+             WHERE transaction_id = ?
+            """,
+            (int(tx_id),),
+        ).fetchone()
+        items_count = int(totals["items_count"] or 0)
+        total = round(float(totals["total"] or 0), 2)
+        delivery_status = _delivery_status_for_tx(conn, int(tx_id))
+        conn.execute(
+            """
+            UPDATE transactions
+               SET items_count = ?, total = ?, delivery_status = ?
+             WHERE id = ?
+            """,
+            (items_count, total, delivery_status, int(tx_id)),
+        )
+
+    return {
+        "id": int(tx_id),
+        "item_id": int(item_id),
+        "order_number": tx_row.get("order_number"),
+        "old_product_name": item["product_name"],
+        "new_product_name": new_name,
+        "new_sku": new_sku,
+        "quantity": new_qty,
+        "delivered": new_delivered,
+        "pending": max(0, new_qty - new_delivered),
     }
 
 
@@ -1873,6 +2235,7 @@ def get_pending_transaction_restore_payload(tx_id: int, seller_id: int) -> Optio
                     entry["promo_min_qty"] = enriched.get("promo_min_qty") or 1
                     entry["promo_free_qty"] = enriched.get("promo_free_qty") or 0
                     entry["promo_badge"] = enriched.get("promo_badge") or ""
+                    entry["promos"] = list(enriched.get("promos") or [])
                     if not entry["promo_nome"]:
                         entry["promo_nome"] = enriched.get("promo_nome") or ""
 
@@ -1967,7 +2330,7 @@ def list_transactions(limit: int = 200, seller_id: Optional[int] = None) -> List
                    client_name, client_cpf, client_email, client_phone, client_zipcode, client_address,
                    client_number, client_complement, client_city, client_state,
                    client_cro_uf, client_cro_numero, delivery_status,
-                   handover_status, handover_confirmed_at
+                   handover_status, handover_confirmed_at, receipt_note
               FROM transactions
              {where}
              ORDER BY datetime(created_at) DESC, id DESC
@@ -2096,7 +2459,7 @@ def list_transactions_for_event(
                client_name, client_cpf, client_email, client_phone, client_zipcode, client_address,
                client_number, client_complement, client_city, client_state,
                client_cro_uf, client_cro_numero, delivery_status,
-               handover_status, handover_confirmed_at
+               handover_status, handover_confirmed_at, receipt_note
           FROM transactions t
          WHERE {wh}
          ORDER BY datetime(t.created_at) DESC, t.id DESC
@@ -2199,7 +2562,7 @@ def list_transactions_for_seller(
                client_name, client_cpf, client_email, client_phone, client_zipcode, client_address,
                client_number, client_complement, client_city, client_state,
                client_cro_uf, client_cro_numero, delivery_status,
-               handover_status, handover_confirmed_at
+               handover_status, handover_confirmed_at, receipt_note
           FROM transactions t
          WHERE {wh}
          ORDER BY datetime(t.created_at) DESC, t.id DESC
@@ -2301,6 +2664,49 @@ def reset_totem_to_default_state() -> Dict[str, int]:
             "products_restored": len(prod_rows),
             "event_product_pairs_reset": len(ep_rows),
         }
+
+
+RECEIPT_NOTE_MAX_LEN = 500
+
+
+def update_transaction_receipt_note(
+    tx_id: int,
+    note: str,
+    *,
+    expected_event_id: Optional[int] = None,
+    expected_seller_id: Optional[int] = None,
+) -> Dict:
+    """Grava a observação impressa no rodapé da nota não fiscal."""
+    cleaned = (note or "").strip()
+    if len(cleaned) > RECEIPT_NOTE_MAX_LEN:
+        raise ValueError(
+            f"A observação deve ter no máximo {RECEIPT_NOTE_MAX_LEN} caracteres."
+        )
+    stored = cleaned or None
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT id, order_number, event_id, seller_id FROM transactions WHERE id = ?",
+            (int(tx_id),),
+        ).fetchone()
+        if row is None:
+            raise ValueError("Pedido não encontrado.")
+        if expected_event_id is not None:
+            row_eid = row["event_id"]
+            if row_eid is None or int(row_eid) != int(expected_event_id):
+                raise ValueError("Este pedido não pertence ao evento informado.")
+        if expected_seller_id is not None:
+            row_sid = row["seller_id"]
+            if row_sid is None or int(row_sid) != int(expected_seller_id):
+                raise ValueError("Este pedido não pertence a este vendedor.")
+        conn.execute(
+            "UPDATE transactions SET receipt_note = ? WHERE id = ?",
+            (stored, int(tx_id)),
+        )
+    return {
+        "id": int(tx_id),
+        "order_number": row["order_number"],
+        "receipt_note": cleaned,
+    }
 
 
 def get_transaction(tx_id: int) -> Optional[Dict]:

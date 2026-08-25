@@ -220,18 +220,118 @@
         const tipo = product.promo_tipo || '';
 
         // percent / fixed: preço unitário já reduzido — exibe riscado + novo preço.
+        const names = escapeCatalogHtml(product.promo_nome || '');
+        const nameHtml = names ? `<span class="product-card__promo-name">${names}</span>` : '';
         if (em && (tipo === 'percent' || tipo === 'fixed') && Number.isFinite(po) && po > pp + 0.001) {
-            return `<div class="product-card__price-wrap"><span class="product-card__price-original">${formatCatalogPriceBRL(po)}</span><p class="product-card__price product-card__price--promo">${formatCatalogPriceBRL(pp)}</p></div>`;
+            return `<div class="product-card__price-wrap"><span class="product-card__price-original">${formatCatalogPriceBRL(po)}</span><p class="product-card__price product-card__price--promo">${formatCatalogPriceBRL(pp)}</p>${nameHtml}</div>`;
         }
 
-        // bogo / min_bundle / exact_bundle: desconto depende da quantidade — exibe preço
-        // de lista + nome da promoção. O desconto só aparece quando a regra é atingida no carrinho.
-        if (em && (tipo === 'bogo' || tipo === 'min_bundle' || tipo === 'exact_bundle')) {
-            const nome = escapeCatalogHtml(product.promo_nome || '');
-            return `<div class="product-card__price-wrap"><p class="product-card__price">${formatCatalogPriceBRL(pp)}</p>${nome ? `<span class="product-card__promo-name">${nome}</span>` : ''}</div>`;
+        // bogo / min_bundle / exact_bundle / combo: desconto depende da quantidade.
+        if (em && (tipo === 'bogo' || tipo === 'min_bundle' || tipo === 'exact_bundle' || tipo === 'combo_bundle' || names)) {
+            return `<div class="product-card__price-wrap"><p class="product-card__price">${formatCatalogPriceBRL(pp)}</p>${nameHtml}</div>`;
         }
 
         return `<p class="product-card__price">${formatCatalogPriceBRL(pp)}</p>`;
+    }
+
+    function optionProductsOf(parentProduct) {
+        const ids = Array.isArray(parentProduct && parentProduct.opcoes)
+            ? parentProduct.opcoes
+            : String((parentProduct && parentProduct.opcoes) || '')
+                .split(',')
+                .map(s => s.trim())
+                .filter(Boolean);
+        return ids
+            .map(id => productsById.get(String(id)))
+            .filter(Boolean);
+    }
+
+    function summarizeParentFromOptions(parentProduct) {
+        const children = optionProductsOf(parentProduct);
+        if (!children.length) return parentProduct;
+        const prices = children.map(c => Number(c.preco) || 0);
+        const stocks = children.map(c => Math.max(0, Math.floor(Number(c.estoque)) || 0));
+        const pending = children.reduce(
+            (sum, c) => sum + Math.max(0, Math.floor(Number(c.pending_delivery_units)) || 0),
+            0,
+        );
+        const minPrice = Math.min(...prices);
+        const maxPrice = Math.max(...prices);
+        const promoChild = children.find(c => c.em_promocao && c.promo_badge);
+        return {
+            ...parentProduct,
+            opcoes_count: children.length,
+            estoque_opcoes: stocks.reduce((a, b) => a + b, 0),
+            preco_a_partir: minPrice,
+            precos_opcoes_variam: maxPrice - minPrice > 0.001,
+            pending_delivery_units: Math.max(
+                Math.max(0, Math.floor(Number(parentProduct.pending_delivery_units)) || 0),
+                pending,
+            ),
+            em_promocao: !!(parentProduct.em_promocao || promoChild),
+            promo_badge: parentProduct.promo_badge || (promoChild && promoChild.promo_badge) || '',
+        };
+    }
+
+    function applyParentOptionCard(card, product) {
+        const summary = summarizeParentFromOptions(product);
+        productsById.set(String(product.id), { ...product, ...summary, tem_opcoes: true });
+        card.dataset.estoque = String(summary.estoque_opcoes || 0);
+        card.dataset.preco = String(summary.preco_a_partir || 0);
+        const label = card.querySelector('[data-stock-display]');
+        if (label) label.textContent = formatStockLabel(summary.estoque_opcoes || 0);
+        syncStockDisplayTone(card);
+        const skuEl = card.querySelector('.product-card__sku');
+        if (skuEl && summary.opcoes_count) {
+            skuEl.textContent = `${summary.opcoes_count} opções`;
+        }
+        const priceRoot = card.querySelector('[data-catalog-pricing]');
+        if (priceRoot) {
+            const from = summary.precos_opcoes_variam
+                ? '<span class="product-card__price-from">A partir de</span>'
+                : '';
+            priceRoot.innerHTML = `<div class="product-card__price-wrap">${from}<p class="product-card__price">${formatCatalogPriceBRL(summary.preco_a_partir)}</p></div>`;
+        }
+        card.classList.toggle('product-card--promo', !!summary.em_promocao);
+        syncCatalogBadges(card, summary);
+    }
+
+    function ingestCatalogProducts(list, { stockOnly } = {}) {
+        if (!Array.isArray(list)) return;
+        list.forEach(row => {
+            const id = String(row.id);
+            const prev = productsById.get(id) || {};
+            if (stockOnly) {
+                productsById.set(id, {
+                    ...prev,
+                    estoque: row.estoque,
+                    backorder_limit: row.backorder_limit,
+                    pending_delivery_units: Object.prototype.hasOwnProperty.call(row, 'pending_delivery_units')
+                        ? row.pending_delivery_units
+                        : prev.pending_delivery_units,
+                });
+            } else {
+                productsById.set(id, { ...prev, ...row });
+            }
+        });
+        cards.forEach(card => {
+            const p = productsById.get(String(card.dataset.id));
+            if (!p) return;
+            if (card.hasAttribute('data-tem-opcoes') || p.tem_opcoes) {
+                applyParentOptionCard(card, p);
+            } else if (stockOnly) {
+                applyStockToCard(card, p.estoque, p.backorder_limit);
+                if (Object.prototype.hasOwnProperty.call(p, 'pending_delivery_units')) {
+                    syncCatalogBadges(card, p);
+                }
+            } else {
+                applyCatalogSnapshotToCard(card, p);
+            }
+        });
+        refreshOpenOptionsModal();
+        if (Cart && typeof Cart.syncPricesFromProductMap === 'function') {
+            Cart.syncPricesFromProductMap(productsById);
+        }
     }
 
     function applyCatalogSnapshotToCard(card, p) {
@@ -263,17 +363,7 @@
                     T ? T.messageFromBadResponse(res, data) : 'Não foi possível atualizar preços e promoções.',
                 );
             }
-            const list = data.products;
-            if (!Array.isArray(list)) return;
-            const byId = new Map(list.map(row => [String(row.id), row]));
-            cards.forEach(card => {
-                const row = byId.get(String(card.dataset.id));
-                if (!row) return;
-                applyCatalogSnapshotToCard(card, row);
-            });
-            if (Cart && typeof Cart.syncPricesFromProductMap === 'function') {
-                Cart.syncPricesFromProductMap(productsById);
-            }
+            ingestCatalogProducts(data.products);
         } catch (err) {
             const T = window.TotemApiErrors;
             const msg = T ? T.formatCatchMessage(err) : String(err.message || err);
@@ -299,23 +389,7 @@
                     T ? T.messageFromBadResponse(res, data) : 'Não foi possível atualizar o estoque ao vivo.',
                 );
             }
-            const list = data.products;
-            if (!Array.isArray(list)) return;
-            const byId = new Map(list.map(row => [String(row.id), row]));
-            cards.forEach(card => {
-                const id = card.dataset.id;
-                const row = byId.get(id);
-                if (!row) return;
-                applyStockToCard(card, row.estoque, row.backorder_limit);
-                if (Object.prototype.hasOwnProperty.call(row, 'pending_delivery_units')) {
-                    const p = productsById.get(id);
-                    if (p) p.pending_delivery_units = row.pending_delivery_units;
-                    if (p) syncCatalogBadges(card, p);
-                }
-            });
-            if (Cart && typeof Cart.syncPricesFromProductMap === 'function') {
-                Cart.syncPricesFromProductMap(productsById);
-            }
+            ingestCatalogProducts(data.products, { stockOnly: true });
         } catch (err) {
             const T = window.TotemApiErrors;
             const msg = T ? T.formatCatchMessage(err) : String(err.message || err);
@@ -338,11 +412,16 @@
             const matchesCategory =
                 state.category === 'todos'
                 || card.dataset.category === state.category;
-            const sku = card.dataset.sku || '';
+            const tokens = query.split(/\s+/).filter(Boolean);
+            const haystack = normalize([
+                card.dataset.name || '',
+                card.dataset.variante || '',
+                card.dataset.sku || '',
+                card.dataset.busca || '',
+            ].join(' '));
             const matchesQuery =
                 !query
-                || normalize(card.dataset.name).includes(query)
-                || (sku && normalize(sku).includes(query));
+                || tokens.every(token => haystack.includes(token));
             const show = matchesCategory && matchesQuery;
             card.style.display = show ? '' : 'none';
             if (show) visible += 1;
@@ -356,6 +435,127 @@
 
         categoryChips.forEach(c => {
             c.classList.toggle('is-active', c.dataset.category === state.category);
+        });
+    }
+
+    /* -------------------------------------------------------------------- */
+    /* Modal de variantes                                                   */
+    /* -------------------------------------------------------------------- */
+
+    const optionsDialog = document.getElementById('catalogOptionsDialog');
+    const optionsGrid = document.getElementById('catalogOptionsGrid');
+    const optionsTitle = document.getElementById('catalogOptionsTitle');
+    const optionsClose = document.getElementById('catalogOptionsClose');
+    let openOptionsParentId = null;
+
+    function stockToneClass(estoque, minStock) {
+        return stockToneFromLevels(estoque, minStock).replace('product-card__stock--', '');
+    }
+
+    function renderOptionCardHtml(product) {
+        const q = Math.max(0, Math.floor(Number(product.estoque)) || 0);
+        const sm = Math.max(0, Math.floor(Number(product.estoque_minimo)) || 0);
+        const bl = Number.isFinite(Number(product.backorder_limit)) ? Number(product.backorder_limit) : -1;
+        const blocked = window.__SELLER_BACKORDER__ && bl === 0 && q <= 0;
+        const em = !!product.em_promocao;
+        const tone = stockToneClass(q, sm);
+        const sku = product.sku
+            ? `<div class="product-card__meta-line"><span class="product-card__sku">SKU ${escapeCatalogHtml(product.sku)}</span><span class="product-card__stock product-card__stock--${tone}" data-stock-display>${formatStockLabel(q)}</span></div>`
+            : `<span class="product-card__stock product-card__stock--${tone} product-card__stock--alone" data-stock-display>${formatStockLabel(q)}</span>`;
+        let backorder = '';
+        if (bl >= 0) {
+            const blockedClass = bl === 0 ? ' product-card__backorder-info--blocked' : '';
+            const icon = bl === 0 ? 'fa-ban' : 'fa-truck-clock';
+            const msg = bl === 0
+                ? 'Vendas futuras bloqueadas'
+                : `<span data-backorder-limit-value>${bl}</span> vendas futuras disp.`;
+            backorder = `<span class="product-card__backorder-info${blockedClass}" data-backorder-info><i class="fa-solid ${icon}" aria-hidden="true"></i><span data-backorder-msg>${msg}</span></span>`;
+        }
+        return `
+            <article
+                class="catalog-option${em ? ' catalog-option--promo' : ''}${blocked ? ' catalog-option--backorder-blocked' : ''}"
+                data-id="${escapeCatalogHtml(product.id)}"
+                data-estoque="${q}"
+                data-estoque-min="${sm}"
+                data-preco="${Number(product.preco) || 0}"
+                data-backorder-limit="${bl}"
+            >
+                <div class="product-card__body">
+                    <h2 class="product-card__name">${escapeCatalogHtml(product.variante || product.nome || '')}</h2>
+                    ${product.subtitle ? `<p class="product-card__subtitle">${escapeCatalogHtml(product.subtitle)}</p>` : ''}
+                    ${sku}
+                    ${backorder}
+                    <div data-catalog-pricing>${renderPricingBlockMarkup(product)}</div>
+                </div>
+                <div class="product-card__actions">
+                    <div class="product-card__counter" role="group" aria-label="Quantidade">
+                        <button type="button" class="product-card__counter-btn" data-action="dec" aria-label="Diminuir quantidade"><span aria-hidden="true">&minus;</span></button>
+                        <input class="product-card__counter-input" type="number" min="1" max="${Math.max(1, q)}" value="1" inputmode="numeric" aria-label="Quantidade a adicionar"${blocked ? ' disabled' : ''}>
+                        <button type="button" class="product-card__counter-btn" data-action="inc" aria-label="Aumentar quantidade"><span aria-hidden="true">+</span></button>
+                    </div>
+                    <button class="product-card__button" type="button" data-id="${escapeCatalogHtml(product.id)}" aria-label="Adicionar ao carrinho"${blocked ? ' disabled' : ''}>
+                        <i class="fa-solid fa-cart-plus" aria-hidden="true"></i>
+                    </button>
+                </div>
+            </article>
+        `;
+    }
+
+    function renderOptionsGrid(parentProduct) {
+        if (!optionsGrid) return;
+        const children = optionProductsOf(parentProduct);
+        if (!children.length) {
+            optionsGrid.innerHTML = '<p class="catalog-options__empty">Nenhuma opção disponível para este produto.</p>';
+            return;
+        }
+        const query = normalize(state.query.trim());
+        const tokens = query.split(/\s+/).filter(Boolean);
+        const filtered = !query ? children : children.filter(p => {
+            const haystack = normalize([p.nome || '', p.variante || '', p.sku || ''].join(' '));
+            return tokens.every(token => haystack.includes(token));
+        });
+        const list = filtered.length ? filtered : children;
+        optionsGrid.innerHTML = list.map(renderOptionCardHtml).join('');
+    }
+
+    function openOptionsModal(parentId) {
+        const product = productsById.get(String(parentId));
+        if (!product || !optionsDialog) return;
+        openOptionsParentId = String(parentId);
+        if (optionsTitle) optionsTitle.textContent = product.nome || 'Opções';
+        renderOptionsGrid(product);
+        if (typeof optionsDialog.showModal === 'function') {
+            if (!optionsDialog.open) optionsDialog.showModal();
+        } else {
+            optionsDialog.setAttribute('open', '');
+        }
+    }
+
+    function closeOptionsModal() {
+        openOptionsParentId = null;
+        if (!optionsDialog) return;
+        if (typeof optionsDialog.close === 'function' && optionsDialog.open) {
+            optionsDialog.close();
+        } else {
+            optionsDialog.removeAttribute('open');
+        }
+    }
+
+    function refreshOpenOptionsModal() {
+        if (!openOptionsParentId || !optionsDialog || !optionsDialog.open) return;
+        const product = productsById.get(openOptionsParentId);
+        if (!product) return;
+        renderOptionsGrid(product);
+    }
+
+    if (optionsClose) optionsClose.addEventListener('click', closeOptionsModal);
+    if (optionsDialog) {
+        optionsDialog.addEventListener('cancel', event => {
+            event.preventDefault();
+            closeOptionsModal();
+        });
+        optionsDialog.addEventListener('click', event => {
+            if (event.target === optionsDialog) closeOptionsModal();
         });
     }
 
@@ -421,10 +621,17 @@
     /* Contador no card e adição ao carrinho                                */
     /* -------------------------------------------------------------------- */
 
-    grid.addEventListener('click', event => {
+    function handleCatalogCardClick(event) {
+        const optionsBtn = event.target.closest('[data-open-options]');
+        if (optionsBtn) {
+            event.preventDefault();
+            openOptionsModal(optionsBtn.getAttribute('data-open-options'));
+            return;
+        }
+
         const counterBtn = event.target.closest('.product-card__counter-btn');
         if (counterBtn) {
-            const card = counterBtn.closest('.product-card');
+            const card = counterBtn.closest('.product-card, .catalog-option');
             const input = card.querySelector('.product-card__counter-input');
             const action = counterBtn.dataset.action;
             const stock = getStock(card);
@@ -447,7 +654,7 @@
         const button = event.target.closest('.product-card__button');
         if (!button || button.disabled) return;
 
-        const card = button.closest('.product-card');
+        const card = button.closest('.product-card, .catalog-option');
         const input = card.querySelector('.product-card__counter-input');
         const qty = clampQty(card, input.value);
 
@@ -480,21 +687,23 @@
         button._addedTimer = setTimeout(() => {
             button.classList.remove('is-added');
         }, 900);
-    });
+    }
 
-    grid.addEventListener('change', event => {
+    function handleCatalogCardQtyEvent(event) {
         const input = event.target;
-        if (!input.classList.contains('product-card__counter-input')) return;
-        const card = input.closest('.product-card');
+        if (!input.classList || !input.classList.contains('product-card__counter-input')) return;
+        const card = input.closest('.product-card, .catalog-option');
         input.value = String(clampQty(card, input.value));
-    });
+    }
 
-    grid.addEventListener('blur', event => {
-        const input = event.target;
-        if (!input.classList.contains('product-card__counter-input')) return;
-        const card = input.closest('.product-card');
-        input.value = String(clampQty(card, input.value));
-    }, true);
+    grid.addEventListener('click', handleCatalogCardClick);
+    grid.addEventListener('change', handleCatalogCardQtyEvent);
+    grid.addEventListener('blur', handleCatalogCardQtyEvent, true);
+    if (optionsGrid) {
+        optionsGrid.addEventListener('click', handleCatalogCardClick);
+        optionsGrid.addEventListener('change', handleCatalogCardQtyEvent);
+        optionsGrid.addEventListener('blur', handleCatalogCardQtyEvent, true);
+    }
 
     /* -------------------------------------------------------------------- */
     /* Drawer do carrinho                                                   */
@@ -528,13 +737,19 @@
     }
 
     function renderCartItem(item) {
+        const isAutoFree = !!item.bogo_auto_free;
+        const freeUnits = parseInt(String(item.bogo_free_units), 10) || 0;
+        const qty = Number(item.quantidade) || 0;
+        const isFullyFree = isAutoFree || (freeUnits > 0 && freeUnits >= qty);
         const bundleMeta = window.PromoPricing && typeof window.PromoPricing.formatBundleQtyMeta === 'function'
             ? window.PromoPricing.formatBundleQtyMeta(item, Cart.formatBRL.bind(Cart))
             : '';
-        const subtotal = Cart.formatBRL(item.subtotal != null ? item.subtotal : item.preco * item.quantidade);
+        const subtotal = isFullyFree
+            ? '<strong class="line-item__free-tag">GRÁTIS</strong>'
+            : Cart.formatBRL(item.subtotal != null ? item.subtotal : item.preco * item.quantidade);
         const unit = Cart.formatBRL(item.preco);
         const listUnit = Number(item.preco_lista) || Number(item.preco) || 0;
-        const showOriginal = !bundleMeta && item.promo_aplicada && listUnit > Number(item.preco) + 0.001;
+        const showOriginal = !bundleMeta && !isFullyFree && item.promo_aplicada && listUnit > Number(item.preco) + 0.001;
         const unitLine = showOriginal
             ? `<span class="line-item__price-original">${Cart.formatBRL(listUnit)}</span> ${unit}`
             : unit;
@@ -553,23 +768,14 @@
             : ((window.__SELLER_BACKORDER__ && missing > 0)
                 ? `<p class="cart-item__backorder"><i class="fa-solid fa-box-open" aria-hidden="true"></i> ${missing} un. sem estoque — retirada posterior pelo cliente</p>`
                 : '');
-        return `
-            <article class="cart-item" data-id="${item.id}">
-                <div class="cart-item__image">
-                    <img src="${item.imagem}" alt="${item.nome}" loading="lazy">
-                </div>
-                <div class="cart-item__info">
-                    <span class="cart-item__category">${item.categoria || ''}</span>
-                    <h3 class="cart-item__name">${item.nome}</h3>
-                    ${item.sku ? `<p class="cart-item__sku">SKU ${item.sku}</p>` : ''}
-                    <p class="cart-item__price">
-                        ${bundleMeta
-                            ? `${bundleMeta} &middot; <strong>${subtotal}</strong>`
-                            : `${unitLine} un. &middot; <strong>${subtotal}</strong>`}
-                    </p>
-                    ${promoHint}
-                    ${backorderHint}
-                    <div class="cart-item__counter" role="group" aria-label="Quantidade">
+        const qtyLine = isFullyFree
+            ? `${qty} un. <strong>GRÁTIS</strong>`
+            : (bundleMeta
+                ? `${bundleMeta} &middot; <strong>${subtotal}</strong>`
+                : `${unitLine} un. &middot; <strong>${subtotal}</strong>`);
+        const counter = isAutoFree
+            ? ''
+            : `<div class="cart-item__counter" role="group" aria-label="Quantidade">
                         <button type="button" class="cart-item__counter-btn" data-cart-action="dec" aria-label="Diminuir">
                             <i class="fa-solid fa-minus" aria-hidden="true"></i>
                         </button>
@@ -577,12 +783,33 @@
                         <button type="button" class="cart-item__counter-btn" data-cart-action="inc" aria-label="Aumentar">
                             <i class="fa-solid fa-plus" aria-hidden="true"></i>
                         </button>
-                    </div>
+                    </div>`;
+        const removeBtn = isAutoFree
+            ? ''
+            : `<button type="button" class="cart-item__remove" data-cart-action="remove" aria-label="Remover">
+                        <i class="fa-solid fa-trash" aria-hidden="true"></i>
+                    </button>`;
+        const freeClass = isFullyFree ? ' cart-item--free' : '';
+        return `
+            <article class="cart-item${freeClass}" data-id="${item.id}">
+                <div class="cart-item__image">
+                    <img src="${item.imagem}" alt="${item.nome}" loading="lazy">
+                </div>
+                <div class="cart-item__info">
+                    <span class="cart-item__category">${item.categoria || ''}</span>
+                    <h3 class="cart-item__name">${item.nome}</h3>
+                    ${item.variante ? `<p class="cart-item__variant">${item.variante}</p>` : ''}
+                    ${item.sku ? `<p class="cart-item__sku">SKU ${item.sku}</p>` : ''}
+                    <p class="cart-item__price">
+                        ${qtyLine}
+                    </p>
+                    ${promoHint}
+                    ${backorderHint}
+                    ${counter}
                 </div>
                 <div class="cart-item__side">
-                    <button type="button" class="cart-item__remove" data-cart-action="remove" aria-label="Remover">
-                        <i class="fa-solid fa-trash" aria-hidden="true"></i>
-                    </button>
+                    ${isFullyFree ? `<div class="cart-item__total">${subtotal}</div>` : ''}
+                    ${removeBtn}
                 </div>
             </article>
         `;

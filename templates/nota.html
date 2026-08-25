@@ -376,6 +376,17 @@
             line-height: 1.2;
         }
 
+        .receipt__footer-obs {
+            margin-bottom: 12px;
+            min-height: 28px;
+            text-align: left;
+        }
+
+        .receipt__footer-obs .receipt__footer-text {
+            white-space: pre-wrap;
+            text-align: left;
+        }
+
         .receipt__footer-note {
             margin-top: 12px;
             font-size: 10px;
@@ -627,6 +638,13 @@
 
         <!-- ──────────────────── RODAPÉ ──────────────────── -->
         <footer class="receipt__footer">
+            {% set obs = (tx.receipt_note or '')|trim %}
+            {% if obs %}
+            <div class="receipt__footer-obs">
+                <div class="receipt__footer-title">Observação</div>
+                <div class="receipt__footer-text">{{ obs }}</div>
+            </div>
+            {% endif %}
             {% if pending_items %}
             <div class="receipt__footer-title">Retirada de produtos</div>
             <div class="receipt__footer-text">

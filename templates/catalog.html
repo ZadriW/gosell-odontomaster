@@ -1,219 +1,30 @@
-{% extends "base.html" %}
-{% from "macros/admin_brand_logo.html" import admin_brand_logo %}
+{% extends "seller/_layout.html" %}
 
-{% block title %}Catálogo | Odonto Master{% endblock %}
+{% block title %}Venda — catálogo | Vendedor | Dental Odonto Master{% endblock %}
 
-{% block head %}
+{% block admin_main_class %}admin-main--catalog-embed{% endblock %}
+
+{% block seller_head %}
 <link rel="stylesheet" href="{{ url_for('static', filename='css/catalog.css') }}">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/cart.css') }}">
-<link rel="stylesheet" href="{{ url_for('static', filename='css/idle-timeout.css') }}">
 {% endblock %}
 
-{% block body %}
-<header class="topbar">
-    <a class="topbar__brand" href="{{ url_for('welcome') }}" aria-label="Voltar ao início">
-        {{ admin_brand_logo() }}
-    </a>
-
-    <div class="topbar__search">
-        <svg class="topbar__search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <circle cx="11" cy="11" r="7"></circle>
-            <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
-        </svg>
-        <input
-            id="searchInput"
-            type="search"
-            placeholder="Buscar produto..."
-            autocomplete="off"
-        >
-    </div>
-
-    <button
-        class="topbar__cart"
-        type="button"
-        id="openCartBtn"
-        aria-label="Abrir carrinho"
-    >
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <circle cx="9" cy="21" r="1"></circle>
-            <circle cx="20" cy="21" r="1"></circle>
-            <path d="M1 1h4l2.7 13.4a2 2 0 0 0 2 1.6h9.7a2 2 0 0 0 2-1.6L23 6H6"></path>
-        </svg>
-        <span class="topbar__cart-count" id="cartCount">0</span>
-    </button>
-</header>
-
-<div
-    id="catalogAddToast"
-    class="catalog-toast"
-    role="status"
-    aria-live="polite"
-    aria-atomic="true"
-    aria-hidden="true"
->
-    <span class="catalog-toast__icon" aria-hidden="true">
-        <i class="fa-solid fa-circle-check"></i>
-    </span>
-    <span class="catalog-toast__text">Produto adicionado ao carrinho!</span>
-</div>
-
-<nav class="categories" aria-label="Categorias">
-    <button class="category-chip is-active" type="button" data-category="todos">Todos</button>
-    {% for category in categories %}
-    <button class="category-chip" type="button" data-category="{{ category }}">{{ category }}</button>
-    {% endfor %}
-</nav>
-
-<main class="catalog">
-    <div class="catalog__header">
-        <h1 class="catalog__title">Catálogo de Produtos</h1>
-        <p class="catalog__subtitle" id="resultsInfo">{{ products|length }} produtos disponíveis</p>
-    </div>
-
-    <div class="product-grid" id="productGrid">
-        {% for product in products %}
-        <article
-            class="product-card"
-            data-id="{{ product.id }}"
-            data-category="{{ product.categoria }}"
-            data-name="{{ product.nome|lower }}"
-            data-sku="{{ (product.sku or '')|lower }}"
-            data-estoque="{{ product.estoque }}"
-        >
-            <div class="product-card__image">
-                <img src="{{ product.imagem }}" alt="{{ product.nome }}" loading="lazy">
-            </div>
-            <div class="product-card__body">
-                <span class="product-card__category">{{ product.categoria }}</span>
-                <h2 class="product-card__name">{{ product.nome }}</h2>
-                {% if product.sku %}
-                <span class="product-card__sku">SKU {{ product.sku }}</span>
-                {% endif %}
-                <p class="product-card__price">R$ {{ '%.2f'|format(product.preco)|replace('.', ',') }}</p>
-            </div>
-            <div class="product-card__actions">
-                <div class="product-card__counter" role="group" aria-label="Quantidade">
-                    <button type="button" class="product-card__counter-btn" data-action="dec" aria-label="Diminuir quantidade">
-                        <span aria-hidden="true">&minus;</span>
-                    </button>
-                    <input
-                        class="product-card__counter-input"
-                        type="number"
-                        min="1"
-                        max="{{ product.estoque }}"
-                        value="1"
-                        inputmode="numeric"
-                        aria-label="Quantidade a adicionar"
-                    >
-                    <button type="button" class="product-card__counter-btn" data-action="inc" aria-label="Aumentar quantidade">
-                        <span aria-hidden="true">+</span>
-                    </button>
-                </div>
-                <button class="product-card__button" type="button" data-id="{{ product.id }}" aria-label="Adicionar ao carrinho">
-                    <i class="fa-solid fa-cart-plus" aria-hidden="true"></i>
-                </button>
-            </div>
-        </article>
-        {% endfor %}
-    </div>
-
-    <p class="catalog__empty" id="emptyState" hidden>
-        Nenhum produto encontrado para sua busca.
-    </p>
-</main>
-
-<div class="cart-backdrop" id="cartBackdrop" aria-hidden="true"></div>
-
-<aside
-    class="cart-drawer"
-    id="cartDrawer"
-    role="dialog"
-    aria-modal="true"
-    aria-labelledby="cartDrawerTitle"
-    aria-hidden="true"
->
-    <header class="cart-drawer__header">
-        <h2 class="cart-drawer__title" id="cartDrawerTitle">
-            <i class="fa-solid fa-cart-shopping" aria-hidden="true"></i>
-            Meu carrinho
-            <span class="cart-drawer__title-count" id="cartDrawerCount">0</span>
-        </h2>
-        <button type="button" class="cart-drawer__close" id="cartDrawerClose" aria-label="Fechar carrinho">
-            <i class="fa-solid fa-xmark" aria-hidden="true"></i>
-        </button>
-    </header>
-
-    <div class="cart-drawer__body">
-        <div class="cart-drawer__empty" id="cartDrawerEmpty">
-            <div class="cart-drawer__empty-icon">
-                <i class="fa-solid fa-basket-shopping" aria-hidden="true"></i>
-            </div>
-            <p class="cart-drawer__empty-title">Seu carrinho está vazio</p>
-            <p class="cart-drawer__empty-text">
-                Adicione produtos do catálogo para continuar.
-            </p>
-        </div>
-        <div class="cart-drawer__items" id="cartDrawerItems" hidden></div>
-    </div>
-
-    <footer class="cart-drawer__footer">
-        <div class="cart-drawer__summary">
-            <span class="cart-drawer__summary-label">Total</span>
-            <span class="cart-drawer__summary-value" id="cartDrawerTotal">R$ 0,00</span>
-        </div>
-        <button
-            type="button"
-            class="cart-drawer__checkout"
-            id="cartDrawerCheckout"
-            disabled
-        >
-            Finalizar compra
-            <i class="fa-solid fa-arrow-right" aria-hidden="true"></i>
-        </button>
-        <button
-            type="button"
-            class="cart-drawer__clear"
-            id="cartDrawerClear"
-            disabled
-        >
-            <i class="fa-solid fa-trash-can" aria-hidden="true"></i>
-            Limpar carrinho
-        </button>
-    </footer>
-</aside>
-
-    <div
-        id="idle-timeout-overlay"
-        class="idle-modal-overlay"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="idle-timeout-title"
-        aria-describedby="idle-timeout-desc"
-        aria-hidden="true"
-    >
-        <div class="idle-modal-dialog" role="document">
-            <div class="idle-modal-dialog__icon" aria-hidden="true">
-                <i class="fa-regular fa-clock"></i>
-            </div>
-            <h2 id="idle-timeout-title" class="idle-modal-dialog__title">Ainda está aí?</h2>
-            <p id="idle-timeout-desc" class="idle-modal-dialog__text">
-                Toque no botão abaixo para continuar comprando. Sem interação, o totem voltará à tela inicial em instantes.
-            </p>
-            <div class="idle-modal-dialog__actions">
-                <button type="button" class="idle-modal-dialog__btn" id="idle-timeout-continue">
-                    Continuar comprando
-                </button>
-            </div>
-        </div>
-    </div>
+{% block seller_body %}
+    {% set catalog_brand_href = seller_home_url|default(seller_venda_url, true) %}
+    {% set catalog_brand_aria = 'Catálogo do vendedor' %}
+    {% include 'partials/catalog_content.html' %}
 {% endblock %}
 
-{% block scripts %}
+{% block seller_scripts %}
+<script src="{{ url_for('static', filename='js/totem-api-errors.js') }}"></script>
 <script>
-    window.__PRODUCTS__ = {{ products|tojson }};
+window.__SELLER_BACKORDER__ = true;
+window.__TOTEM_FLOW__ = {{ totem_flow | tojson }};
+window.__PRODUCTS__ = {{ products|tojson }};
+window.__CATALOG_STOCK_API__ = {{ catalog_stock_api_url | tojson }};
+window.__CATALOG_PROMO_REFRESH_API__ = {{ catalog_promo_refresh_api_url | tojson }};
 </script>
 <script src="{{ url_for('static', filename='js/promo-pricing.js') }}"></script>
 <script src="{{ url_for('static', filename='js/cart.js') }}"></script>
-<script src="{{ url_for('static', filename='js/idle-timeout.js') }}"></script>
 <script src="{{ url_for('static', filename='js/catalog.js') }}"></script>
 {% endblock %}

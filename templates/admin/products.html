@@ -12,14 +12,25 @@
                 {{ stock.units_in_stock }} unidades nos eventos
             </p>
         </div>
-        <form method="post" action="{{ url_for('admin_products_cache_images') }}">
-            {% include 'partials/csrf_field.html' %}
-            <button type="submit" class="admin-btn admin-btn--ghost"
-                    title="Baixa as fotos da Wake para este computador. Use com internet antes do evento.">
-                <i class="fa-solid fa-images" aria-hidden="true"></i>
-                Salvar imagens (offline)
-            </button>
-        </form>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+            <form method="post" action="{{ url_for('admin_sync_catalog_wake') }}">
+                {% include 'partials/csrf_field.html' %}
+                <button type="submit" class="admin-btn admin-btn--ghost"
+                        title="Atualiza nomes, SKUs, preços e imagens a partir da Wake Commerce. Estoque e eventos não são alterados."
+                        onclick="return confirm('Sincronizar catálogo com a Wake Commerce?\n\nIsso atualiza nomes, SKUs, preços-base e imagens.\nEstoque, vendas e promoções NÃO serão afetados.');">
+                    <i class="fa-solid fa-arrows-rotate" aria-hidden="true"></i>
+                    Sincronizar Wake
+                </button>
+            </form>
+            <form method="post" action="{{ url_for('admin_products_cache_images') }}">
+                {% include 'partials/csrf_field.html' %}
+                <button type="submit" class="admin-btn admin-btn--ghost"
+                        title="Baixa as fotos da Wake para este computador. Use com internet antes do evento.">
+                    <i class="fa-solid fa-images" aria-hidden="true"></i>
+                    Salvar imagens (offline)
+                </button>
+            </form>
+        </div>
     </header>
 
     <form class="admin-filters" method="get" action="{{ url_for('admin_products') }}">
@@ -31,7 +42,7 @@
                     type="search"
                     name="q"
                     value="{{ filters.q }}"
-                    placeholder="Nome, SKU ou ID do produto..."
+                    placeholder="Nome, variante, SKU ou ID..."
                     class="admin-filter__input"
                     autocomplete="off"
                     inputmode="search"
@@ -91,6 +102,8 @@
                     <img class="admin-stock__thumb" src="{{ p.imagem }}" alt="{{ p.nome }}" loading="lazy" onerror="this.style.visibility='hidden'">
                     <span>
                         <strong>{{ p.nome }}</strong>
+                        {% if p.variante %}<span class="admin-stock__variant">{{ p.variante }}</span>{% endif %}
+                        {% if p.subtitle %}<span class="admin-stock__subtitle">{{ p.subtitle }}</span>{% endif %}
                         <small class="admin-stock__meta">ID: {{ p.id }} | SKU: <code class="admin-stock__sku-code">{{ p.sku or '—' }}</code></small>
                     </span>
                 </span>

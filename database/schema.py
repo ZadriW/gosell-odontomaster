@@ -131,10 +131,12 @@ CREATE TABLE IF NOT EXISTS promotions (
     event_id    INTEGER NOT NULL,
     name        TEXT    NOT NULL,
     rule_type   TEXT    NOT NULL
-        CHECK (rule_type IN ('percent', 'fixed', 'bogo', 'min_bundle', 'exact_bundle')),
+        CHECK (rule_type IN ('percent', 'fixed', 'bogo', 'min_bundle', 'exact_bundle', 'combo_bundle')),
     rule_value  REAL    NOT NULL DEFAULT 0,
     min_qty     INTEGER NOT NULL DEFAULT 1,
     free_qty    INTEGER NOT NULL DEFAULT 0,
+    bogo_buy_product_id  INTEGER,
+    bogo_free_product_id INTEGER,
     active      INTEGER NOT NULL DEFAULT 1,
     created_at  TEXT    NOT NULL,
     updated_at  TEXT    NOT NULL,
@@ -453,6 +455,13 @@ def _ensure_delivery_columns(conn: sqlite3.Connection) -> None:
     )
 
 
+def _ensure_transactions_receipt_note(conn: sqlite3.Connection) -> None:
+    """Texto livre impresso no rodapé da nota não fiscal."""
+    cols = _table_columns(conn, "transactions")
+    if "receipt_note" not in cols:
+        conn.execute("ALTER TABLE transactions ADD COLUMN receipt_note TEXT")
+
+
 def _ensure_transactions_handover_status(conn: sqlite3.Connection) -> None:
     """Confirmação geral de entrega do pedido (retirada no balcão pelo cliente).
 
@@ -520,12 +529,13 @@ def _ensure_sellers_columns(conn: sqlite3.Connection) -> None:
 
 
 def _ensure_products_wake_columns(conn: sqlite3.Connection) -> None:
-    """Colunas Wake em ``products`` (variante principal, nome da variante)."""
+    """Colunas Wake em ``products`` (variante principal, nome da variante, subtítulo)."""
     cols = _table_columns(conn, "products")
     for field, ddl in {
         "wake_product_id": "INTEGER",
         "variant_name": "TEXT",
         "main_variant": "INTEGER NOT NULL DEFAULT 0",
+        "subtitle": "TEXT",
     }.items():
         if field not in cols:
             conn.execute(f"ALTER TABLE products ADD COLUMN {field} {ddl}")
@@ -548,7 +558,7 @@ def _ensure_product_sku_aliases_table(conn: sqlite3.Connection) -> None:
 
 
 def _ensure_promotions_extended_rule_types(conn: sqlite3.Connection) -> None:
-    """Recria promotions com CHECK ampliado para incluir min_bundle e exact_bundle.
+    """Recria promotions com CHECK ampliado (min_bundle, exact_bundle, combo_bundle).
 
     Em bases existentes o DDL ``CREATE TABLE IF NOT EXISTS`` não altera a restrição
     CHECK — por isso recriamos a tabela preservando os dados.
@@ -558,7 +568,7 @@ def _ensure_promotions_extended_rule_types(conn: sqlite3.Connection) -> None:
     ).fetchone()
     if row is None:
         return  # tabela ainda não existe; _SCHEMA criará com CHECK correto
-    if 'min_bundle' in (row[0] or ''):
+    if 'combo_bundle' in (row[0] or ''):
         return  # já migrada
 
     conn.execute("PRAGMA foreign_keys = OFF")
@@ -570,7 +580,7 @@ def _ensure_promotions_extended_rule_types(conn: sqlite3.Connection) -> None:
             event_id    INTEGER NOT NULL,
             name        TEXT    NOT NULL,
             rule_type   TEXT    NOT NULL
-                CHECK (rule_type IN ('percent','fixed','bogo','min_bundle','exact_bundle')),
+                CHECK (rule_type IN ('percent','fixed','bogo','min_bundle','exact_bundle','combo_bundle')),
             rule_value  REAL    NOT NULL DEFAULT 0,
             min_qty     INTEGER NOT NULL DEFAULT 1,
             free_qty    INTEGER NOT NULL DEFAULT 0,
@@ -590,6 +600,7 @@ def _ensure_promotions_extended_rule_types(conn: sqlite3.Connection) -> None:
         "  WHEN 'na_compra_de' THEN 'exact_bundle' "
         "  WHEN 'min_bundle' THEN 'min_bundle' "
         "  WHEN 'exact_bundle' THEN 'exact_bundle' "
+        "  WHEN 'combo_bundle' THEN 'combo_bundle' "
         "  ELSE rule_type END, "
         "rule_value, min_qty, free_qty, active, created_at, updated_at "
         "FROM promotions"
@@ -601,6 +612,15 @@ def _ensure_promotions_extended_rule_types(conn: sqlite3.Connection) -> None:
         "ON promotions(event_id, active)"
     )
     conn.execute("PRAGMA foreign_keys = ON")
+
+
+def _ensure_promotions_bogo_product_columns(conn: sqlite3.Connection) -> None:
+    """Adiciona SKUs de compra/grátis no BOGO (bases já criadas sem essas colunas)."""
+    cols = _table_columns(conn, "promotions")
+    if "bogo_buy_product_id" not in cols:
+        conn.execute("ALTER TABLE promotions ADD COLUMN bogo_buy_product_id INTEGER")
+    if "bogo_free_product_id" not in cols:
+        conn.execute("ALTER TABLE promotions ADD COLUMN bogo_free_product_id INTEGER")
 
 
 # ---------------------------------------------------------------------------
@@ -666,6 +686,7 @@ def init_db() -> None:
         _ensure_product_sku_aliases_table(conn)
         _ensure_events_tables(conn)
         _ensure_promotions_extended_rule_types(conn)
+        _ensure_promotions_bogo_product_columns(conn)
         _ensure_events_badge_color(conn)
         _ensure_event_extensions(conn)
         _ensure_event_products_backorder_limit(conn)
@@ -674,9 +695,11 @@ def init_db() -> None:
         _ensure_transaction_items_promo_columns(conn)
         _ensure_delivery_columns(conn)
         _ensure_transactions_handover_status(conn)
+        _ensure_transactions_receipt_note(conn)
         _consolidate_legacy_movement_types(conn)
         _purge_invalid_product_ids(conn)
         _purge_legacy_demo_products(conn)
+        _restore_retired_variant_parents(conn)
         _ensure_min_stock_default_five(conn)
 
 
@@ -719,3 +742,15 @@ def _purge_legacy_demo_products(conn: sqlite3.Connection) -> None:
         f"DELETE FROM products WHERE id IN ({placeholders})",
         ids,
     )
+
+
+def _restore_retired_variant_parents(conn: sqlite3.Connection) -> None:
+    """Reativa SKUs-base que a rotina antiga desligou do catálogo/evento."""
+    _ensure_schema_migrations_table(conn)
+    migration_name = "restore_variant_parent_products_v2"
+    if _migration_applied(conn, migration_name):
+        return
+    from .products import restore_retired_variant_parents_in_conn
+
+    restore_retired_variant_parents_in_conn(conn)
+    _mark_migration_applied(conn, migration_name)

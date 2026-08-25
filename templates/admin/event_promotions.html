@@ -52,13 +52,20 @@
                         R$ {{ '%.2f'|format(promo.rule_value)|replace('.',',') }} de desconto
                     {% elif promo.rule_type == 'bogo' %}
                         <i class="fa-solid fa-gift" aria-hidden="true"></i>
+                        {% if promo.bogo_buy_sku and promo.bogo_free_sku and promo.bogo_buy_sku != promo.bogo_free_sku %}
+                        Compre {{ promo.min_qty }} SKU {{ promo.bogo_buy_sku }} · leve {{ promo.free_qty }} SKU {{ promo.bogo_free_sku }}
+                        {% else %}
                         Compre {{ promo.min_qty }} Leve {{ promo.min_qty + promo.free_qty }}
+                        {% endif %}
                     {% elif promo.rule_type == 'min_bundle' %}
                         <i class="fa-solid fa-layer-group" aria-hidden="true"></i>
                         A partir de {{ promo.min_qty }} un. — R$ {{ '%.2f'|format(promo.rule_value)|replace('.',',') }}
                     {% elif promo.rule_type == 'exact_bundle' %}
                         <i class="fa-solid fa-box" aria-hidden="true"></i>
                         Kit de {{ promo.min_qty }} un. — R$ {{ '%.2f'|format(promo.rule_value)|replace('.',',') }}
+                    {% elif promo.rule_type == 'combo_bundle' %}
+                        <i class="fa-solid fa-object-group" aria-hidden="true"></i>
+                        Combo — R$ {{ '%.2f'|format(promo.rule_value)|replace('.',',') }}
                     {% endif %}
                 </span>
             </span>
@@ -168,23 +175,35 @@
 
             {# Campos condicional: bogo #}
             <div class="admin-promo-rule-fields" data-rule-fields="bogo" style="display:none; gap:16px; flex-wrap:wrap;">
-                <div class="admin-field" style="flex:1; min-width:130px;">
+                <div class="admin-field" style="flex:1; min-width:200px;">
                     <label class="admin-field__label" for="promo-min-qty">Compre (qtd. paga)</label>
                     <input id="promo-min-qty" type="number" name="min_qty_bogo"
                            class="admin-field__input"
                            min="1" step="1" value="2"
                            placeholder="Ex.: 2">
+                    <label class="admin-field__label" for="promo-bogo-buy-sku" style="margin-top:10px;">SKU a comprar</label>
+                    <select id="promo-bogo-buy-sku" name="bogo_buy_product_id"
+                            class="admin-field__input"
+                            data-bogo-buy-sku>
+                        <option value="">Marque produtos participantes primeiro</option>
+                    </select>
                 </div>
-                <div class="admin-field" style="flex:1; min-width:130px;">
+                <div class="admin-field" style="flex:1; min-width:200px;">
                     <label class="admin-field__label" for="promo-free-qty">Leve a mais (grátis)</label>
                     <input id="promo-free-qty" type="number" name="free_qty"
                            class="admin-field__input"
                            min="1" step="1" value="1"
                            placeholder="Ex.: 1">
+                    <label class="admin-field__label" for="promo-bogo-free-sku" style="margin-top:10px;">SKU grátis</label>
+                    <select id="promo-bogo-free-sku" name="bogo_free_product_id"
+                            class="admin-field__input"
+                            data-bogo-free-sku>
+                        <option value="">Marque produtos participantes primeiro</option>
+                    </select>
                 </div>
                 <div class="admin-promo-bogo-preview admin-field__hint" aria-live="polite" style="width:100%;">
                     <i class="fa-solid fa-circle-info" aria-hidden="true"></i>
-                    <span data-bogo-summary>Compre 2, leve 3 (1 grátis)</span>
+                    <span data-bogo-summary>Compre 2, leve 3 (1 grátis). Escolha os SKUs abaixo.</span>
                 </div>
             </div>
 
@@ -210,6 +229,21 @@
                 <div class="admin-promo-bundle-preview admin-field__hint" aria-live="polite" style="width:100%;">
                     <i class="fa-solid fa-circle-info" aria-hidden="true"></i>
                     <span data-bundle-summary></span>
+                </div>
+            </div>
+
+            {# Campos condicional: combo_bundle #}
+            <div class="admin-promo-rule-fields" data-rule-fields="combo_bundle" style="display:none; gap:16px; flex-wrap:wrap;">
+                <div class="admin-field" style="flex:1; min-width:160px;">
+                    <label class="admin-field__label" for="promo-combo-value">Valor total do combo (R$)</label>
+                    <input id="promo-combo-value" type="number" name="rule_value_combo"
+                           class="admin-field__input"
+                           min="0.01" step="0.01" value=""
+                           placeholder="Ex.: 99,90">
+                </div>
+                <div class="admin-promo-combo-preview admin-field__hint" aria-live="polite" style="width:100%;">
+                    <i class="fa-solid fa-circle-info" aria-hidden="true"></i>
+                    <span data-combo-summary>Selecione 2+ produtos e defina o valor do combo</span>
                 </div>
             </div>
 
@@ -287,16 +321,19 @@
     const percentFixedFields = document.querySelector('[data-rule-fields="percent fixed"]');
     const bogoFields = document.querySelector('[data-rule-fields="bogo"]');
     const bundleFields = document.querySelector('[data-rule-fields="min_bundle exact_bundle"]');
+    const comboFields = document.querySelector('[data-rule-fields="combo_bundle"]');
     const labelPercent = document.querySelector('[data-rule-label-percent]');
     const labelFixed = document.querySelector('[data-rule-label-fixed]');
     const labelMinBundle = document.querySelector('[data-rule-label-min-bundle]');
     const labelExactBundle = document.querySelector('[data-rule-label-exact-bundle]');
     const bogoSummary = document.querySelector('[data-bogo-summary]');
     const bundleSummary = document.querySelector('[data-bundle-summary]');
+    const comboSummary = document.querySelector('[data-combo-summary]');
     const minQtyInput = document.getElementById('promo-min-qty');
     const freeQtyInput = document.getElementById('promo-free-qty');
     const bundleQtyInput = document.getElementById('promo-bundle-qty');
     const bundleValueInput = document.getElementById('promo-bundle-value');
+    const comboValueInput = document.getElementById('promo-combo-value');
 
     function updateRuleFields() {
         if (!ruleSelect) return;
@@ -304,11 +341,13 @@
         if (percentFixedFields) percentFixedFields.style.display = (val === 'percent' || val === 'fixed') ? 'flex' : 'none';
         if (bogoFields) bogoFields.style.display = val === 'bogo' ? 'flex' : 'none';
         if (bundleFields) bundleFields.style.display = (val === 'min_bundle' || val === 'exact_bundle') ? 'flex' : 'none';
+        if (comboFields) comboFields.style.display = val === 'combo_bundle' ? 'flex' : 'none';
         if (labelPercent) labelPercent.style.display = val === 'percent' ? '' : 'none';
         if (labelFixed) labelFixed.style.display = val === 'fixed' ? '' : 'none';
         if (labelMinBundle) labelMinBundle.style.display = val === 'min_bundle' ? '' : 'none';
         if (labelExactBundle) labelExactBundle.style.display = val === 'exact_bundle' ? '' : 'none';
         updateBundleSummary();
+        updateComboSummary();
     }
 
     function updateBogoSummary() {
@@ -336,6 +375,15 @@
         }
     }
 
+    function updateComboSummary() {
+        if (!comboSummary || !comboValueInput) return;
+        const val = parseFloat(comboValueInput.value) || 0;
+        const valFmt = val.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        comboSummary.textContent = val > 0
+            ? `Combo: na compra de 1 un. de cada produto selecionado, o conjunto sai por R$ ${valFmt}`
+            : 'Selecione 2+ produtos e defina o valor do combo';
+    }
+
     if (ruleSelect) {
         ruleSelect.addEventListener('change', updateRuleFields);
         updateRuleFields();
@@ -344,6 +392,7 @@
     if (freeQtyInput) freeQtyInput.addEventListener('input', updateBogoSummary);
     if (bundleQtyInput) { bundleQtyInput.addEventListener('input', updateBundleSummary); }
     if (bundleValueInput) { bundleValueInput.addEventListener('input', updateBundleSummary); }
+    if (comboValueInput) { comboValueInput.addEventListener('input', updateComboSummary); }
 
     document.addEventListener('click', function (e) {
         const form = e.target.closest('#formNovaPromo') || e.target.closest('#formEditPromo');
@@ -357,4 +406,5 @@
     });
 })();
 </script>
+<script src="{{ url_for('static', filename='js/admin-promo-bogo-sku.js') }}"></script>
 {% endblock %}

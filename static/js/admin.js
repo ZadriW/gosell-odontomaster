@@ -84,6 +84,9 @@
 
         if (event.target.closest('.admin-tx__delivery')) return;
         if (event.target.closest('input[type="checkbox"]')) return;
+        if (event.target.closest('[data-tx-note-toggle]')) return;
+        if (event.target.closest('[data-tx-note-form]')) return;
+        if (event.target.closest('[data-tx-note-delete-form]')) return;
 
         const btn = event.target.closest('.admin-tx__row');
         if (!btn) return;
@@ -120,6 +123,23 @@
         if (details) details.hidden = expanded;
     }
 
+    document.querySelector('.admin-main')?.addEventListener('click', event => {
+        const toggle = event.target.closest('[data-tx-note-toggle]');
+        if (!toggle) return;
+        event.preventDefault();
+        event.stopPropagation();
+        const wrap = toggle.closest('[data-tx-note]');
+        const form = wrap ? wrap.querySelector('[data-tx-note-form]') : null;
+        if (!form) return;
+        const opening = form.hidden;
+        form.hidden = !opening;
+        toggle.setAttribute('aria-expanded', String(opening));
+        if (opening) {
+            const field = form.querySelector('textarea');
+            if (field) field.focus();
+        }
+    });
+
     // `<div role="button">` no painel do vendedor: Enter/Espaço abrem/fecham (sem click nativo).
     document.querySelector('.admin-main')?.addEventListener('keydown', event => {
         if (event.key !== 'Enter' && event.key !== ' ') return;
@@ -134,6 +154,9 @@
 
         if (event.target.closest('.admin-tx__delivery')) return;
         if (event.target.closest('input[type="checkbox"]')) return;
+        if (event.target.closest('[data-tx-note-toggle]')) return;
+        if (event.target.closest('[data-tx-note-form]')) return;
+        if (event.target.closest('[data-tx-note-delete-form]')) return;
 
         const btn = event.target.closest('.admin-tx__row');
         if (!btn || btn.tagName === 'BUTTON') return;
@@ -175,15 +198,28 @@
     const confirmIconWrap = confirmDialog?.querySelector('.admin-confirm__icon');
 
     let confirmResolve = null;
+    let ignoreNextConfirmClose = false;
 
     function finishConfirmDialog(result) {
         if (!confirmDialog) return;
-        if (confirmDialog.open) {
-            confirmDialog.close();
-        }
         const resolve = confirmResolve;
         confirmResolve = null;
-        if (resolve) resolve(result);
+
+        const done = () => {
+            if (resolve) resolve(result);
+        };
+
+        if (confirmDialog.open) {
+            ignoreNextConfirmClose = true;
+            const onClosed = () => {
+                confirmDialog.removeEventListener('close', onClosed);
+                done();
+            };
+            confirmDialog.addEventListener('close', onClosed);
+            confirmDialog.close();
+            return;
+        }
+        done();
     }
 
     function readConfirmOptions(el) {
@@ -254,6 +290,10 @@
         finishConfirmDialog(false);
     });
     confirmDialog?.addEventListener('close', () => {
+        if (ignoreNextConfirmClose) {
+            ignoreNextConfirmClose = false;
+            return;
+        }
         if (confirmResolve) finishConfirmDialog(false);
     });
     confirmDialog?.addEventListener('click', event => {
@@ -370,9 +410,57 @@
         });
     }
 
+    function setTxItemEditing(row, editing) {
+        if (!row) return;
+        row.classList.toggle('is-editing', editing);
+        const skuInput = row.querySelector('.admin-tx__sku-input');
+        const qtyInput = row.querySelector('.admin-tx__qty-input');
+        const editBtn = row.querySelector('[data-tx-item-edit]');
+        const confirmBtn = row.querySelector('.admin-tx__item-confirm');
+        const cancelBtn = row.querySelector('[data-tx-item-cancel]');
+        [skuInput, qtyInput].forEach((input) => {
+            if (!input) return;
+            input.hidden = !editing;
+            input.disabled = !editing;
+        });
+        if (editBtn) editBtn.hidden = editing;
+        if (confirmBtn) confirmBtn.hidden = !editing;
+        if (cancelBtn) cancelBtn.hidden = !editing;
+        if (editing && skuInput) {
+            skuInput.focus();
+            skuInput.select();
+        }
+    }
+
+    function initTxItemReplace(root) {
+        const scope = root || document;
+        scope.querySelectorAll('.admin-tx__items-row--editable').forEach((row) => {
+            if (row.dataset.txItemBound === '1') return;
+            row.dataset.txItemBound = '1';
+            row.addEventListener('click', (event) => {
+                const editBtn = event.target.closest('[data-tx-item-edit]');
+                const cancelBtn = event.target.closest('[data-tx-item-cancel]');
+                if (editBtn) {
+                    event.preventDefault();
+                    setTxItemEditing(row, true);
+                } else if (cancelBtn) {
+                    event.preventDefault();
+                    const skuInput = row.querySelector('.admin-tx__sku-input');
+                    const qtyInput = row.querySelector('.admin-tx__qty-input');
+                    if (skuInput) skuInput.value = skuInput.defaultValue;
+                    if (qtyInput) qtyInput.value = qtyInput.defaultValue;
+                    setTxItemEditing(row, false);
+                }
+            });
+        });
+    }
+
     initDeliveryPanels();
+    initTxItemReplace();
     document.addEventListener('totem:admin-tx-live-updated', event => {
-        initDeliveryPanels(event.detail?.root || document);
+        const liveRoot = event.detail?.root || document;
+        initDeliveryPanels(liveRoot);
+        initTxItemReplace(liveRoot);
     });
     window.TotemAdminDelivery = { initDeliveryPanels, syncDeliveryPanel };
 

@@ -11,6 +11,7 @@
         bogo: 'bogo',
         min_bundle: 'min_bundle exact_bundle',
         exact_bundle: 'min_bundle exact_bundle',
+        combo_bundle: 'combo_bundle',
     };
 
     function syncPromoRuleFields(form) {

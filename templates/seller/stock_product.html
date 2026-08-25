@@ -23,6 +23,7 @@
             {% include 'partials/product_promo_name_badge.html' %}
             {% endif %}
         </h1>
+        {% if product.variante %}<p class="admin-section__variant">{{ product.variante }}</p>{% endif %}
         <p class="admin-section__subtitle">
             <span class="admin-product__sku">SKU <strong>{{ product.sku }}</strong></span>
             &middot; #{{ product.id }}

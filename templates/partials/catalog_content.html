@@ -50,13 +50,14 @@
 <main class="catalog">
     <div class="catalog__header">
         <h1 class="catalog__title">Catálogo de Produtos</h1>
-        <p class="catalog__subtitle" id="resultsInfo">{{ products|length }} produtos disponíveis</p>
+        <p class="catalog__subtitle" id="resultsInfo">{{ products|rejectattr('catalog_oculto')|list|length }} produtos disponíveis</p>
     </div>
 
     <div class="product-grid" id="productGrid">
-        {% for product in products %}
+        {% for product in products if not product.catalog_oculto %}
         {% set sm = (product.estoque_minimo | default(5)) | int %}
-        {% set q = product.estoque | int %}
+        {% set tem_opcoes = product.tem_opcoes | default(false) %}
+        {% set q = (product.estoque_opcoes if tem_opcoes else product.estoque) | int %}
         {% if q <= 0 %}
             {% set stock_tone = 'empty' %}
         {% elif sm > 0 and q < sm %}
@@ -67,17 +68,20 @@
         {% set em_promo = product.em_promocao | default(false) %}
         {% set pending_n = product.pending_delivery_units or 0 %}
         {% set bl = product.backorder_limit | default(-1) | int %}
-        {% set backorder_blocked = bl == 0 and q <= 0 %}
+        {% set backorder_blocked = (not tem_opcoes) and bl == 0 and q <= 0 %}
         <article
             class="product-card{% if em_promo %} product-card--promo{% endif %}{% if backorder_blocked %} product-card--backorder-blocked{% endif %}"
             data-id="{{ product.id }}"
             data-category="{{ product.categoria }}"
             data-name="{{ product.nome|lower }}"
+            data-variante="{{ (product.variante or '')|lower }}"
             data-sku="{{ (product.sku or '')|lower }}"
-            data-estoque="{{ product.estoque }}"
+            data-busca="{{ (product.busca_opcoes or '')|lower }}"
+            data-estoque="{{ q }}"
             data-estoque-min="{{ sm }}"
-            data-preco="{{ product.preco }}"
+            data-preco="{{ product.preco_a_partir if tem_opcoes else product.preco }}"
             data-backorder-limit="{{ bl }}"
+            {% if tem_opcoes %}data-tem-opcoes="1" data-opcoes="{{ (product.opcoes or [])|join(',') }}"{% endif %}
         >
             <div class="product-card__image">
                 <div class="product-card__promo-badge-slot" data-promo-badge-root>
@@ -104,7 +108,14 @@
             <div class="product-card__body">
                 <span class="product-card__category">{{ product.categoria }}</span>
                 <h2 class="product-card__name">{{ product.nome }}</h2>
-                {% if product.sku %}
+                {% if not tem_opcoes and product.variante %}<p class="product-card__variant">{{ product.variante }}</p>{% endif %}
+                {% if product.subtitle %}<p class="product-card__subtitle">{{ product.subtitle }}</p>{% endif %}
+                {% if tem_opcoes %}
+                <div class="product-card__meta-line">
+                    <span class="product-card__sku">{{ product.opcoes_count or (product.opcoes|length) }} opções</span>
+                    <span class="product-card__stock product-card__stock--{{ stock_tone }}" data-stock-display>{{ q }} no estoque.</span>
+                </div>
+                {% elif product.sku %}
                 <div class="product-card__meta-line">
                     <span class="product-card__sku">SKU {{ product.sku }}</span>
                     <span class="product-card__stock product-card__stock--{{ stock_tone }}" data-stock-display>{{ product.estoque }} no estoque.</span>
@@ -112,6 +123,7 @@
                 {% else %}
                 <span class="product-card__stock product-card__stock--{{ stock_tone }} product-card__stock--alone" data-stock-display>{{ product.estoque }} no estoque.</span>
                 {% endif %}
+                {% if not tem_opcoes %}
                 <span class="product-card__backorder-info{% if bl == 0 %} product-card__backorder-info--blocked{% endif %}" data-backorder-info
                       {% if bl < 0 %}hidden{% endif %}>
                     <i class="fa-solid {% if bl == 0 %}fa-ban{% else %}fa-truck-clock{% endif %}" aria-hidden="true"></i>
@@ -123,16 +135,26 @@
                         {% endif %}
                     </span>
                 </span>
+                {% endif %}
                 <div data-catalog-pricing>
+                    {% if tem_opcoes %}
+                    <div class="product-card__price-wrap">
+                        {% if product.precos_opcoes_variam %}
+                        <span class="product-card__price-from">A partir de</span>
+                        {% endif %}
+                        <p class="product-card__price">R$ {{ '%.2f'|format(product.preco_a_partir or product.preco)|replace('.', ',') }}</p>
+                    </div>
+                    {% else %}
                     {% set promo_tipo = product.promo_tipo | default('') %}
                     {% if em_promo and promo_tipo in ('percent', 'fixed') and product.preco_original is defined and product.preco_original > product.preco + 0.001 %}
                     {# percent / fixed: preço unitário efetivamente reduzido — exibe riscado + novo #}
                     <div class="product-card__price-wrap">
                         <span class="product-card__price-original">R$ {{ '%.2f'|format(product.preco_original)|replace('.', ',') }}</span>
                         <p class="product-card__price product-card__price--promo">R$ {{ '%.2f'|format(product.preco)|replace('.', ',') }}</p>
+                        {% if product.promo_nome %}<span class="product-card__promo-name">{{ product.promo_nome }}</span>{% endif %}
                     </div>
-                    {% elif em_promo and promo_tipo in ('bogo', 'min_bundle', 'exact_bundle') %}
-                    {# Desconto por quantidade: exibe preço de lista + nome da promo #}
+                    {% elif em_promo and (promo_tipo in ('bogo', 'min_bundle', 'exact_bundle', 'combo_bundle') or product.promo_nome) %}
+                    {# Desconto por quantidade (ou várias regras): preço de lista + nomes das promos #}
                     <div class="product-card__price-wrap">
                         <p class="product-card__price">R$ {{ '%.2f'|format(product.preco)|replace('.', ',') }}</p>
                         {% if product.promo_nome %}<span class="product-card__promo-name">{{ product.promo_nome }}</span>{% endif %}
@@ -140,9 +162,20 @@
                     {% else %}
                     <p class="product-card__price">R$ {{ '%.2f'|format(product.preco)|replace('.', ',') }}</p>
                     {% endif %}
+                    {% endif %}
                 </div>
             </div>
             <div class="product-card__actions">
+                {% if tem_opcoes %}
+                <button
+                    class="product-card__options-btn"
+                    type="button"
+                    data-open-options="{{ product.id }}"
+                    aria-label="Ver opções de {{ product.nome }}"
+                >
+                    Ver Opções
+                </button>
+                {% else %}
                 <div class="product-card__counter" role="group" aria-label="Quantidade">
                     <button type="button" class="product-card__counter-btn" data-action="dec" aria-label="Diminuir quantidade">
                         <span aria-hidden="true">&minus;</span>
@@ -163,6 +196,7 @@
                 <button class="product-card__button" type="button" data-id="{{ product.id }}" aria-label="Adicionar ao carrinho"{% if backorder_blocked %} disabled{% endif %}>
                     <i class="fa-solid fa-cart-plus" aria-hidden="true"></i>
                 </button>
+                {% endif %}
             </div>
         </article>
         {% endfor %}
@@ -172,6 +206,25 @@
         Nenhum produto encontrado para sua busca.
     </p>
 </main>
+
+<dialog
+    class="catalog-options"
+    id="catalogOptionsDialog"
+    aria-labelledby="catalogOptionsTitle"
+>
+    <div class="catalog-options__panel">
+        <header class="catalog-options__header">
+            <div>
+                <p class="catalog-options__eyebrow">Opções do produto</p>
+                <h2 class="catalog-options__title" id="catalogOptionsTitle">Variantes</h2>
+            </div>
+            <button type="button" class="catalog-options__close" id="catalogOptionsClose" aria-label="Fechar opções">
+                <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+            </button>
+        </header>
+        <div class="catalog-options__grid" id="catalogOptionsGrid"></div>
+    </div>
+</dialog>
 
 <div class="cart-backdrop" id="cartBackdrop" aria-hidden="true"></div>
 

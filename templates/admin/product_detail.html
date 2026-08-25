@@ -17,6 +17,7 @@
                 Voltar aos produtos
             </a>
             <h1 class="admin-section__title">{{ product.nome }}</h1>
+            {% if product.variante %}<p class="admin-section__variant">{{ product.variante }}</p>{% endif %}
             <p class="admin-section__subtitle">
                 <span class="admin-product__sku">SKU <strong>{{ product.sku }}</strong></span>
                 &middot; #{{ product.id }} &middot; {{ product.categoria }} &middot; {{ product.preco | brl }}

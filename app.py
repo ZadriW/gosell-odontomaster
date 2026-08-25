@@ -146,6 +146,7 @@ from database import (
     list_products_admin,
     list_products_admin_slice,
     list_products_for_client,
+    summarize_catalog_option_groups,
     list_sellers,
     list_stock_movements,
     list_transaction_items_for_event_period,
@@ -158,6 +159,7 @@ from database import (
     units_sold_by_product_for_event,
     units_sold_by_product_for_seller,
     refund_transaction,
+    replace_transaction_item_product,
     register_event_stock_adjustment,
     register_event_stock_entry,
     register_event_stock_exit,
@@ -166,6 +168,8 @@ from database import (
     reset_totem_to_default_state,
     restore_event,
     set_product_active,
+    sync_catalog_from_wake,
+    get_distinct_wake_product_ids,
     upsert_wake_variant,
     update_event,
     update_event_product_backorder_limit,
@@ -173,6 +177,7 @@ from database import (
     update_event_product_stock,
     update_seller_account,
     update_seller_last_login,
+    update_transaction_receipt_note,
     validate_seller_username,
 )
 import product_images
@@ -949,6 +954,7 @@ def seller_sale():
         _attach_pending_delivery_units(
             products, seller_ev["id"], seller_id=_current_seller_id(),
         )
+        summarize_catalog_option_groups(products)
         # No modo evento, estoque + preços + promoções vêm do mesmo polling (15s).
         catalog_stock_api_url = ""
         catalog_promo_refresh_api_url = url_for(
@@ -1028,6 +1034,30 @@ def seller_cancel_pending_transaction(tx_id: int):
     except ValueError as exc:
         flash(str(exc), "error")
     return redirect(url_for("seller_dashboard"))
+
+
+@app.route(
+    "/vendedor/pedido/<int:tx_id>/observacao-nota",
+    methods=["POST"],
+)
+@seller_required
+def seller_transaction_note(tx_id: int):
+    """Vendedor grava observação impressa na nota do próprio pedido."""
+    note = request.form.get("receipt_note") or ""
+    try:
+        result = update_transaction_receipt_note(
+            tx_id,
+            note,
+            expected_seller_id=_current_seller_id(),
+        )
+        order_label = result.get("order_number") or f"#{tx_id}"
+        if result.get("receipt_note"):
+            flash(f"Observação da nota do pedido {order_label} salva.", "success")
+        else:
+            flash(f"Observação da nota do pedido {order_label} removida.", "success")
+    except ValueError as exc:
+        flash(str(exc), "error")
+    return redirect(request.referrer or url_for("seller_dashboard"))
 
 
 def _seller_dashboard_transactions_view() -> tuple:
@@ -1486,6 +1516,7 @@ def seller_api_event_catalog_promos_refresh():
     _attach_pending_delivery_units(
         products, seller_ev["id"], seller_id=_current_seller_id(),
     )
+    summarize_catalog_option_groups(products)
     return jsonify({"products": products})
 
 
@@ -1932,6 +1963,35 @@ def admin_seller_confirm_transaction_handover(seller_id: int, tx_id: int):
     try:
         confirm_transaction_handover(tx_id, seller_id=seller_id)
         flash("Pedido marcado como entregue.", "success")
+    except ValueError as exc:
+        flash(str(exc), "error")
+    return redirect(
+        request.referrer or url_for("admin_seller_detail", seller_id=seller_id)
+    )
+
+
+@app.route(
+    "/admin/vendedores/<int:seller_id>/transacoes/<int:tx_id>/observacao-nota",
+    methods=["POST"],
+)
+@admin_required
+def admin_seller_transaction_note(seller_id: int, tx_id: int):
+    seller = get_seller(seller_id)
+    if seller is None:
+        flash("Vendedor não encontrado.", "error")
+        return redirect(url_for("admin_sellers"))
+    note = request.form.get("receipt_note") or ""
+    try:
+        result = update_transaction_receipt_note(
+            tx_id,
+            note,
+            expected_seller_id=seller_id,
+        )
+        order_label = result.get("order_number") or f"#{tx_id}"
+        if result.get("receipt_note"):
+            flash(f"Observação da nota do pedido {order_label} salva.", "success")
+        else:
+            flash(f"Observação da nota do pedido {order_label} removida.", "success")
     except ValueError as exc:
         flash(str(exc), "error")
     return redirect(
@@ -2696,9 +2756,100 @@ def _csv_attachment_response(filename: str, header: list[str], rows: list[list])
     )
 
 
-@app.route("/admin/eventos/<int:event_id>/vendas/export.csv")
+def _xlsx_attachment_response(
+    filename: str,
+    header: list[str],
+    rows: list[list],
+    *,
+    sheet_title: str = "Vendas",
+) -> Response:
+    """Planilha .xlsx com cabeçalho, filtro automático e valores numéricos nas colunas de R$/qtd."""
+    try:
+        from openpyxl import Workbook
+        from openpyxl.styles import Alignment, Font, PatternFill
+        from openpyxl.utils import get_column_letter
+    except ImportError:
+        _pip_install("openpyxl>=3.1.0,<4")
+        from openpyxl import Workbook
+        from openpyxl.styles import Alignment, Font, PatternFill
+        from openpyxl.utils import get_column_letter
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = (sheet_title or "Vendas")[:31]
+
+    font_header = Font(name="Calibri", bold=True, size=11, color="FFFFFF")
+    fill_header = PatternFill(start_color="1565C0", end_color="1565C0", fill_type="solid")
+    font_data = Font(name="Calibri", size=11)
+    align_center = Alignment(horizontal="center", vertical="center")
+    align_left = Alignment(horizontal="left", vertical="center")
+    align_right = Alignment(horizontal="right", vertical="center")
+
+    money_cols = {i for i, h in enumerate(header, start=1) if "(R$)" in str(h)}
+    qty_names = {"Qtd.", "Qtd. de Itens", "ID Interno", "ID Pedido", "ID Item"}
+    qty_cols = {i for i, h in enumerate(header, start=1) if str(h) in qty_names}
+
+    def coerce(col: int, value):
+        if value is None or value == "":
+            return None
+        if col in money_cols:
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return value
+        if col in qty_cols:
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                try:
+                    return float(value)
+                except (TypeError, ValueError):
+                    return value
+        return value
+
+    for ci, hdr in enumerate(header, start=1):
+        cell = ws.cell(row=1, column=ci, value=hdr)
+        cell.font = font_header
+        cell.fill = fill_header
+        cell.alignment = align_center
+
+    for ri, row in enumerate(rows, start=2):
+        for ci, raw in enumerate(row, start=1):
+            val = coerce(ci, raw)
+            cell = ws.cell(row=ri, column=ci, value=val)
+            cell.font = font_data
+            if ci in money_cols:
+                cell.alignment = align_right
+                if isinstance(val, (int, float)):
+                    cell.number_format = "#,##0.00"
+            elif ci in qty_cols:
+                cell.alignment = align_center
+            else:
+                cell.alignment = align_left
+
+    for ci, hdr in enumerate(header, start=1):
+        ws.column_dimensions[get_column_letter(ci)].width = min(42, max(12, len(str(hdr)) + 3))
+
+    last_col = get_column_letter(max(1, len(header)))
+    last_row = max(1, len(rows) + 1)
+    ws.auto_filter.ref = f"A1:{last_col}{last_row}"
+    ws.freeze_panes = "A2"
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    return Response(
+        buf.getvalue(),
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "no-store",
+        },
+    )
+
+
+@app.route("/admin/eventos/<int:event_id>/vendas/export.xlsx")
 @admin_required
-def admin_event_sales_export_csv(event_id: int):
+def admin_event_sales_export_xlsx(event_id: int):
     event = _event_or_404(event_id)
     if event is None:
         return redirect(url_for("admin_events"))
@@ -2711,17 +2862,36 @@ def admin_event_sales_export_csv(event_id: int):
             return redirect(url_for("admin_event_detail", event_id=event_id))
 
     nivel = (request.args.get("nivel") or "pedidos").strip().lower()
-    if nivel not in ("pedidos", "itens"):
+    if nivel not in ("pedidos", "itens", "completo"):
         nivel = "pedidos"
+
+    event_sellers_rows = list_event_sellers(event_id)
+    event_seller_ids = {int(s["id"]) for s in event_sellers_rows}
+    seller_raw = _parse_int(request.args.get("vendedor"), 0)
+    seller_filter = seller_raw if seller_raw > 0 and seller_raw in event_seller_ids else None
+    if seller_raw > 0 and seller_filter is None:
+        flash("Vendedor inválido para este evento.", "error")
+        return redirect(url_for("admin_event_transactions", event_id=event_id))
+    seller_name = ""
+    if seller_filter is not None:
+        for s in event_sellers_rows:
+            if int(s["id"]) == seller_filter:
+                seller_name = str(s.get("name") or "").strip()
+                break
 
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     safe_ev = re.sub(r"[^a-zA-Z0-9_-]+", "_", (event.get("name") or str(event_id)))[:40].strip("_") or str(event_id)
+    seller_suffix = ""
+    if seller_filter is not None:
+        safe_seller = re.sub(r"[^a-zA-Z0-9_-]+", "_", seller_name or str(seller_filter))[:40].strip("_") or str(seller_filter)
+        seller_suffix = f"_vendedor_{safe_seller}"
 
     if nivel == "pedidos":
         rows_data = list_transactions_summary_for_event_period(
             event_id,
             date_from=raw_from or None,
             date_to=raw_to or None,
+            seller_id=seller_filter,
         )
         # Ordem lógica: identificação → data/hora → situação → vendedor →
         #               financeiro → pagamento → cliente → CRO → ID interno
@@ -2737,6 +2907,8 @@ def admin_event_sales_export_csv(event_id: int):
             "AUT",
             "Nome do Cliente",
             "CPF",
+            "E-mail",
+            "Telefone",
             "CEP",
             "Endereço",
             "Número",
@@ -2768,6 +2940,8 @@ def admin_event_sales_export_csv(event_id: int):
                     _csv_cell(t.get("aut")),
                     _csv_cell(t.get("client_name")),
                     _csv_cell(t.get("client_cpf")),
+                    _csv_cell(t.get("client_email")),
+                    _csv_cell(t.get("client_phone")),
                     _csv_cell(t.get("client_zipcode")),
                     _csv_cell(t.get("client_address")),
                     _csv_cell(t.get("client_number")),
@@ -2779,60 +2953,150 @@ def admin_event_sales_export_csv(event_id: int):
                     _csv_cell(t.get("id")),
                 ]
             )
-        fname = f"vendas_evento_{event_id}_{safe_ev}_pedidos_{ts}.csv"
+        fname = f"vendas_evento_{event_id}_{safe_ev}{seller_suffix}_pedidos_{ts}.xlsx"
     else:
         rows_data = list_transaction_items_for_event_period(
             event_id,
             date_from=raw_from or None,
             date_to=raw_to or None,
+            seller_id=seller_filter,
         )
-        # Ordem lógica: pedido → data/hora → vendedor → pagamento →
-        #               produto → quantidades → valores → IDs
-        header = [
-            "Código do Pedido",
-            "Data",
-            "Hora",
-            "Vendedor",
-            "Forma de Pagamento",
-            "AUT",
-            "Produto",
-            "SKU",
-            "Categoria",
-            "Qtd.",
-            "Preço Unitário (R$)",
-            "Subtotal (R$)",
-            "ID Pedido",
-            "ID Item",
-        ]
-        rows = []
-        for ti in rows_data:
-            created = ti.get("created_at")
-            rows.append(
-                [
-                    _csv_cell(ti.get("order_number")),
-                    _csv_fmt_date(created),
-                    _csv_fmt_time(created),
-                    _csv_cell(ti.get("seller_name")),
-                    _csv_cell(
-                        _payment_method_label(
-                            ti.get("payment_method"),
-                            ti.get("card_installments"),
-                        )
-                    ),
-                    _csv_cell(ti.get("aut")),
-                    _csv_cell(ti.get("product_name")),
-                    _csv_cell(ti.get("product_sku")),
-                    _csv_cell(ti.get("category")),
-                    _csv_cell(ti.get("quantity")),
-                    _csv_fmt_brl(ti.get("unit_price")),
-                    _csv_fmt_brl(ti.get("subtotal")),
-                    _csv_cell(ti.get("transaction_id")),
-                    _csv_cell(ti.get("item_id")),
-                ]
-            )
-        fname = f"vendas_evento_{event_id}_{safe_ev}_itens_{ts}.csv"
+        if nivel == "completo":
+            # Pedido + cliente + item: uma linha por produto, dados do cliente repetidos.
+            header = [
+                "Código do Pedido",
+                "Data",
+                "Hora",
+                "Status",
+                "Vendedor",
+                "Nome do Cliente",
+                "CPF",
+                "E-mail",
+                "Telefone",
+                "CEP",
+                "Endereço",
+                "Número",
+                "Complemento",
+                "Cidade",
+                "UF",
+                "CRO UF",
+                "Nº CRO",
+                "Forma de Pagamento",
+                "AUT",
+                "Qtd. de Itens",
+                "Valor Total (R$)",
+                "Produto",
+                "SKU",
+                "Categoria",
+                "Qtd.",
+                "Preço Unitário (R$)",
+                "Subtotal (R$)",
+                "ID Pedido",
+                "ID Item",
+            ]
+            rows = []
+            for ti in rows_data:
+                created = ti.get("created_at")
+                rows.append(
+                    [
+                        _csv_cell(ti.get("order_number")),
+                        _csv_fmt_date(created),
+                        _csv_fmt_time(created),
+                        _csv_fmt_status(ti.get("status")),
+                        _csv_cell(ti.get("seller_name")),
+                        _csv_cell(ti.get("client_name")),
+                        _csv_cell(ti.get("client_cpf")),
+                        _csv_cell(ti.get("client_email")),
+                        _csv_cell(ti.get("client_phone")),
+                        _csv_cell(ti.get("client_zipcode")),
+                        _csv_cell(ti.get("client_address")),
+                        _csv_cell(ti.get("client_number")),
+                        _csv_cell(ti.get("client_complement")),
+                        _csv_cell(ti.get("client_city")),
+                        _csv_cell(ti.get("client_state")),
+                        _csv_cell(ti.get("client_cro_uf")),
+                        _csv_cell(ti.get("client_cro_numero")),
+                        _csv_cell(
+                            _payment_method_label(
+                                ti.get("payment_method"),
+                                ti.get("card_installments"),
+                            )
+                        ),
+                        _csv_cell(ti.get("aut")),
+                        _csv_cell(ti.get("items_count")),
+                        _csv_fmt_brl(ti.get("total")),
+                        _csv_cell(ti.get("product_name")),
+                        _csv_cell(ti.get("product_sku")),
+                        _csv_cell(ti.get("category")),
+                        _csv_cell(ti.get("quantity")),
+                        _csv_fmt_brl(ti.get("unit_price")),
+                        _csv_fmt_brl(ti.get("subtotal")),
+                        _csv_cell(ti.get("transaction_id")),
+                        _csv_cell(ti.get("item_id")),
+                    ]
+                )
+            fname = f"vendas_evento_{event_id}_{safe_ev}{seller_suffix}_completo_{ts}.xlsx"
+        else:
+            # Ordem lógica: pedido → data/hora → vendedor → pagamento →
+            #               produto → quantidades → valores → IDs
+            header = [
+                "Código do Pedido",
+                "Data",
+                "Hora",
+                "Vendedor",
+                "Forma de Pagamento",
+                "AUT",
+                "Produto",
+                "SKU",
+                "Categoria",
+                "Qtd.",
+                "Preço Unitário (R$)",
+                "Subtotal (R$)",
+                "ID Pedido",
+                "ID Item",
+            ]
+            rows = []
+            for ti in rows_data:
+                created = ti.get("created_at")
+                rows.append(
+                    [
+                        _csv_cell(ti.get("order_number")),
+                        _csv_fmt_date(created),
+                        _csv_fmt_time(created),
+                        _csv_cell(ti.get("seller_name")),
+                        _csv_cell(
+                            _payment_method_label(
+                                ti.get("payment_method"),
+                                ti.get("card_installments"),
+                            )
+                        ),
+                        _csv_cell(ti.get("aut")),
+                        _csv_cell(ti.get("product_name")),
+                        _csv_cell(ti.get("product_sku")),
+                        _csv_cell(ti.get("category")),
+                        _csv_cell(ti.get("quantity")),
+                        _csv_fmt_brl(ti.get("unit_price")),
+                        _csv_fmt_brl(ti.get("subtotal")),
+                        _csv_cell(ti.get("transaction_id")),
+                        _csv_cell(ti.get("item_id")),
+                    ]
+                )
+            fname = f"vendas_evento_{event_id}_{safe_ev}{seller_suffix}_itens_{ts}.xlsx"
 
-    return _csv_attachment_response(fname, header, rows)
+    return _xlsx_attachment_response(fname, header, rows)
+
+
+@app.route("/admin/eventos/<int:event_id>/vendas/export.csv")
+@admin_required
+def admin_event_sales_export_csv(event_id: int):
+    """Compatibilidade: o download de vendas passou a ser .xlsx."""
+    return redirect(
+        url_for(
+            "admin_event_sales_export_xlsx",
+            event_id=event_id,
+            **request.args.to_dict(flat=True),
+        )
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -3247,7 +3511,7 @@ def _find_or_fetch_product(sku_or_id: str) -> tuple[dict | None, bool, str | Non
 
     Retorna ``(produto_dict | None, veio_da_wake, erro)``.
     ``erro`` é preenchido quando a busca falha por token Wake ausente
-    (``"wake_token"``) — distinto de produto simplesmente não encontrado.
+    (``"wake_token"``).
     """
     q = (sku_or_id or "").strip()
     if not q:
@@ -3364,16 +3628,86 @@ def admin_products_cache_images():
     return redirect(url_for("admin_products"))
 
 
+@app.route("/admin/catalogo/sincronizar-wake", methods=["POST"])
+@admin_required
+def admin_sync_catalog_wake():
+    """Sincroniza nomes/SKU/preço/imagem/variante com a Wake Commerce.
+
+    NÃO altera estoque, vendas, promoções nem vínculos com eventos.
+    Requer internet e WAKE_TOKEN configurado.
+    """
+    from database.products import get_local_ids_without_wake_mapping
+
+    if not wake_api.wake_token_configured():
+        flash(
+            "Token Wake (WAKE_TOKEN) não configurado. "
+            "Defina a variável de ambiente antes de sincronizar.",
+            "error",
+        )
+        return _redirect_back_admin()
+
+    all_variants: list = []
+
+    # Etapa 1: Buscar famílias via wake_product_id já mapeados
+    wake_pids = get_distinct_wake_product_ids()
+    if wake_pids:
+        try:
+            family_variants = wake_api.fetch_all_local_families_from_wake(wake_pids)
+            all_variants.extend(family_variants)
+        except Exception as exc:
+            app.logger.exception("Sync Wake: falha ao buscar famílias")
+            flash(f"Erro ao consultar famílias Wake: {exc}", "error")
+            return _redirect_back_admin()
+
+    # Etapa 2: Buscar por productVariantId para produtos sem wake_product_id
+    unmapped_ids = get_local_ids_without_wake_mapping()
+    if unmapped_ids:
+        already_synced = {int(v.get("variant_id") or v.get("id") or 0) for v in all_variants}
+        to_fetch = [vid for vid in unmapped_ids if vid not in already_synced]
+        if to_fetch:
+            try:
+                extra = wake_api.fetch_variants_by_ids(to_fetch)
+                all_variants.extend(extra)
+            except Exception as exc:
+                app.logger.warning("Sync Wake: falha ao buscar variantes extras: %s", exc)
+
+    if not all_variants:
+        flash("Nenhuma variante retornada pela Wake. Verifique o token e a internet.", "error")
+        return _redirect_back_admin()
+
+    stats = sync_catalog_from_wake(all_variants)
+    flash(
+        f"Sincronização concluída: {stats['updated']} atualizado(s), "
+        f"{stats['inserted']} novo(s), {stats['skipped']} ignorado(s). "
+        "Estoque e eventos preservados.",
+        "success",
+    )
+    return _redirect_back_admin()
+
+
+def _redirect_back_admin():
+    """Redireciona para a página de origem ou biblioteca de produtos."""
+    ref = request.referrer
+    if ref:
+        return redirect(ref)
+    return redirect(url_for("admin_products"))
+
+
 _XLS_SKU_COL_NAMES = frozenset({
     "produto", "cód. produto", "cod. produto", "codigo", "código",
     "sku", "cod produto", "cód produto", "item", "ref", "referência",
     "referencia", "cod.", "cód.",
 })
 
+# "produto" / "item" batem no nome comercial; o código costuma estar em outra coluna.
+_XLS_SKU_COL_NAMES_WEAK = frozenset({"produto", "item", "ref", "referência", "referencia"})
+
 _XLS_STOCK_COL_NAMES = frozenset({
     "qtd. disponivel", "qtd disponivel", "qtd. disponível", "qtd disponível",
     "qtd. estoque", "qtd estoque", "quantidade", "estoque", "disponivel",
     "disponível", "saldo", "qty", "stock",
+    "estoque atual", "qtd atual", "qtd. atual", "quantidade atual",
+    "qtd.", "qtd",
 })
 
 _XLS_PRICE_COL_NAMES = frozenset({
@@ -3413,6 +3747,26 @@ def _header_text(value) -> str:
     if value is None or isinstance(value, (datetime, date)):
         return ""
     return str(value).strip().lower()
+
+
+def _is_stock_header(h: str) -> bool:
+    if not h:
+        return False
+    if h in _XLS_STOCK_COL_NAMES:
+        return True
+    if h.startswith("estoque") or h.startswith("qtd"):
+        return True
+    if "estoque" in h and "atual" in h:
+        return True
+    return False
+
+
+def _is_sku_header(h: str, *, allow_weak: bool) -> bool:
+    if not h or h not in _XLS_SKU_COL_NAMES:
+        return False
+    if not allow_weak and h in _XLS_SKU_COL_NAMES_WEAK:
+        return False
+    return True
 
 
 def _value_to_str(value) -> str:
@@ -3494,9 +3848,9 @@ def _detect_spreadsheet_header(rows: list[list]) -> tuple[int | None, int, int |
     """Retorna (header_row, sku_col, price_col_or_none, stock_col_or_none).
 
     Procura nas primeiras 15 linhas um cabeçalho de SKU/código em qualquer coluna.
-    Preço e estoque só são usados se o nome da coluna bater; senão:
-    - layout legado (SKU na coluna A): preço = C, estoque = E;
-    - outros layouts (ex.: código na B): preço/estoque só pelos nomes.
+    Preço só é lido se existir cabeçalho explícito (Preço, Valor Unitário, Valor Unidade).
+    Sem esse cabeçalho, a importação não altera preços — evita planilha só de estoque
+    gravar valores da coluna C. Estoque sem cabeçalho usa a coluna E (índice 4).
     """
     nrows = len(rows)
     ncols = max((len(row) for row in rows), default=0)
@@ -3508,20 +3862,23 @@ def _detect_spreadsheet_header(rows: list[list]) -> tuple[int | None, int, int |
             h = _header_text(_grid_cell(rows, r, c))
             if not h:
                 continue
-            if sku_col is None and h in _XLS_SKU_COL_NAMES:
+            if sku_col is None and _is_sku_header(h, allow_weak=False):
                 sku_col = c
             if h in _XLS_PRICE_COL_NAMES:
                 price_col = c
-            if h in _XLS_STOCK_COL_NAMES:
+            if _is_stock_header(h):
                 stock_col = c
+        if sku_col is None:
+            for c in range(ncols):
+                h = _header_text(_grid_cell(rows, r, c))
+                if _is_sku_header(h, allow_weak=True):
+                    sku_col = c
+                    break
         if sku_col is not None:
-            if sku_col == 0:
-                if price_col is None:
-                    price_col = 2
-                if stock_col is None:
-                    stock_col = 4
+            if stock_col is None and ncols > 4:
+                stock_col = 4
             return r, sku_col, price_col, stock_col
-    return None, 0, 2, 4
+    return None, 0, None, 4
 
 
 def _parse_xls_sku_stock(
@@ -3531,10 +3888,10 @@ def _parse_xls_sku_stock(
     """Lê planilha .xls/.xlsx e retorna lista de (sku, unit_price_or_none, stock_qty).
 
     1. Procura cabeçalho de código/SKU em qualquer coluna das primeiras 15 linhas.
-       Preço: coluna nomeada (ex. 'Valor Unidade') ou, no layout legado, coluna C.
+       Preço: somente coluna com cabeçalho explícito (Preço, Valor Unitário, Valor Unidade).
        Quantidade: coluna nomeada de estoque ou, no layout legado, coluna E.
        Sem quantidade reconhecida, o produto sobe com estoque 0.
-    2. Sem cabeçalho: primeira linha numérica na coluna A; preço C; estoque E.
+    2. Sem cabeçalho: primeira linha numérica na coluna A; estoque E; preço ignorado.
 
     SKUs duplicados somam estoque; o preço é o da primeira aparição.
     """
@@ -3578,16 +3935,47 @@ def _parse_xls_sku_stock(
     return [(sku, result_price.get(sku), qty) for sku, qty in result_qty.items()]
 
 
+def _apply_imported_event_price(
+    event_id: int,
+    product_id: int,
+    unit_price: float | None,
+) -> bool:
+    """Grava o preço da planilha no evento. Retorna True se o valor de venda mudou.
+
+    Célula vazia/zero não altera nada. Se o evento já tem o mesmo preço como
+    override, a importação é idempotente (não regrava).
+    """
+    if unit_price is None:
+        return False
+    new_price = round(float(unit_price), 2)
+    if new_price <= 0:
+        return False
+    existing = get_product_in_event(event_id, product_id)
+    if existing is None:
+        return False
+    current = round(float(existing.get("preco") or 0), 2)
+    already_override = bool(existing.get("preco_evento_override"))
+    if already_override and current == new_price:
+        return False
+    if not update_event_product_price(event_id, product_id, new_price):
+        return False
+    return (not already_override) or current != new_price
+
+
 @app.route("/admin/eventos/<int:event_id>/produtos/importar-xls", methods=["POST"])
 @admin_required
 def admin_event_import_xls(event_id: int):
     """Importa produtos em lote para o evento a partir de planilha .xls ou .xlsx.
 
     Lê o código/SKU (coluna A no layout legado, ou a coluna do cabeçalho CODIGO),
-    o preço unitário (coluna C ou 'Valor Unidade') e a quantidade (coluna E, se houver).
-    Sem preço reconhecido, herda o preço-base da biblioteca.
+    o preço unitário (somente com cabeçalho Preço / Valor Unitário / Valor Unidade)
+    e a quantidade (coluna E, se houver).
+    Preço reconhecido atualiza o preço de venda no evento, inclusive em produtos
+    que já estavam no catálogo do evento. Sem cabeçalho de preço, produtos novos
+    herdam o preço-base da biblioteca e os já existentes mantêm o preço atual.
     Sem quantidade reconhecida, adiciona o produto com estoque 0.
-    SKUs duplicados têm seus estoques somados antes da importação.
+    SKUs duplicados na planilha têm seus estoques somados antes da importação.
+    Produto já no evento: a quantidade da planilha entra como entrada (soma ao estoque atual).
     """
     event = _event_or_404(event_id)
     preserved = _event_stock_return_filters_from_form()
@@ -3640,31 +4028,55 @@ def admin_event_import_xls(event_id: int):
             continue
         if from_wake:
             wake_fetched.append(sku)
+        product_id = int(product["id"])
         try:
             add_product_to_event(
                 event_id,
-                int(product["id"]),
+                product_id,
                 qty,
                 link_audit_reason=EVENT_IMPORT_XLS_MOTIVO_REF,
                 link_audit_reference=None,
                 created_by=import_actor,
             )
-            if unit_price is not None:
-                update_event_product_price(event_id, int(product["id"]), unit_price)
+            if _apply_imported_event_price(event_id, product_id, unit_price):
                 price_set_count += 1
             qty_label = f" ({qty} un.)" if qty > 0 else ""
             price_label = f" · R$ {unit_price:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".") if unit_price is not None else ""
             added.append(f"{product['name']}{qty_label}{price_label}")
             total_units_imported += qty
         except ValueError:
-            already.append(product["name"])
+            # Já no evento: soma a quantidade da planilha ao estoque atual e
+            # atualiza o preço quando a planilha traz cabeçalho de preço.
+            stock_applied = False
+            if qty > 0:
+                existing_ep = get_product_in_event(event_id, product_id)
+                if existing_ep is not None:
+                    try:
+                        register_event_stock_entry(
+                            event_id,
+                            product_id,
+                            qty,
+                            reason=EVENT_IMPORT_XLS_MOTIVO_REF,
+                            created_by=import_actor,
+                        )
+                        added.append(f"{product['name']} (+{qty} un.)")
+                        total_units_imported += qty
+                        stock_applied = True
+                    except ValueError:
+                        pass
+            price_changed = _apply_imported_event_price(event_id, product_id, unit_price)
+            if price_changed:
+                price_set_count += 1
+            if not stock_applied and not price_changed:
+                already.append(product["name"])
 
     # Monta mensagem de resultado
     parts: list[str] = []
     if added:
         units_txt = f" · {total_units_imported} unidade(s) em estoque" if total_units_imported > 0 else ""
-        price_txt = f" · {price_set_count} preço(s) definido(s)" if price_set_count > 0 else ""
-        parts.append(f"{len(added)} produto(s) adicionado(s) com sucesso{units_txt}{price_txt}")
+        parts.append(f"{len(added)} produto(s) adicionado(s) com sucesso{units_txt}")
+    if price_set_count:
+        parts.append(f"{price_set_count} preço(s) atualizado(s) no evento")
     if wake_fetched:
         parts.append(
             f"{len(wake_fetched)} variante(s) importada(s) da Wake e adicionada(s) ao catálogo: "
@@ -3678,7 +4090,10 @@ def admin_event_import_xls(event_id: int):
         parts.append(f"{len(not_found)} código(s) não encontrado(s) no catálogo nem na Wake: {', '.join(short)}{tail}")
 
     summary = " · ".join(parts) if parts else "Nenhuma alteração realizada."
-    category = "success" if added else ("error" if not_found and not already else "info")
+    category = (
+        "success" if added or price_set_count
+        else ("error" if not_found and not already else "info")
+    )
     flash(summary, category)
 
     return redirect(_url_for_admin_event_stock_list(event_id, preserved, page_override=1))
@@ -3964,6 +4379,10 @@ def _promo_rule_description(promo: dict) -> str:
     if rt == "fixed":
         return f"{label} — R$ {rv:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
     if rt == "bogo":
+        buy_sku = (promo.get("bogo_buy_sku") or "").strip()
+        free_sku = (promo.get("bogo_free_sku") or "").strip()
+        if buy_sku and free_sku and buy_sku != free_sku:
+            return f"{label} — Compre {mq} un. SKU {buy_sku}, leve {fq} un. SKU {free_sku} grátis"
         return f"{label} — Compre {mq}, Leve {mq + fq}"
     if rt in ("min_bundle", "exact_bundle"):
         brl = f"R$ {rv:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
@@ -4122,9 +4541,27 @@ def _parse_promotion_form_fields(form) -> tuple[str, float, int, int]:
         rule_value = float(form.get("rule_value_bundle") or 0)
         min_qty = int(form.get("min_qty_bundle") or 2)
         free_qty = 0
+    elif rule_type == "combo_bundle":
+        rule_value = float(form.get("rule_value_combo") or 0)
+        min_qty = 1
+        free_qty = 0
     else:
         raise ValueError(f"Tipo de regra inválido: {rule_type}")
     return rule_type, rule_value, min_qty, free_qty
+
+
+def _parse_bogo_product_ids(form, rule_type: str):
+    if rule_type != "bogo":
+        return None, None
+    try:
+        buy_id = int(form.get("bogo_buy_product_id") or 0) or None
+    except (TypeError, ValueError):
+        buy_id = None
+    try:
+        free_id = int(form.get("bogo_free_product_id") or 0) or None
+    except (TypeError, ValueError):
+        free_id = None
+    return buy_id, free_id
 
 
 @app.route("/admin/eventos/<int:event_id>/promocoes/nova", methods=["POST"])
@@ -4136,11 +4573,14 @@ def admin_event_promotion_create(event_id: int):
     try:
         name = (request.form.get("name") or "").strip()
         rule_type, rule_value, min_qty, free_qty = _parse_promotion_form_fields(request.form)
+        buy_id, free_id = _parse_bogo_product_ids(request.form, rule_type)
         product_ids = [int(p) for p in request.form.getlist("product_ids") if p]
         create_promotion(
             event_id, name, rule_type,
             rule_value=rule_value, min_qty=min_qty, free_qty=free_qty,
             product_ids=product_ids,
+            bogo_buy_product_id=buy_id,
+            bogo_free_product_id=free_id,
         )
         flash("Promoção criada com sucesso.", "success")
     except (ValueError, TypeError) as exc:
@@ -4183,6 +4623,7 @@ def admin_event_promotion_edit(event_id: int, promo_id: int):
     try:
         name = (request.form.get("name") or "").strip()
         rule_type, rule_value, min_qty, free_qty = _parse_promotion_form_fields(request.form)
+        buy_id, free_id = _parse_bogo_product_ids(request.form, rule_type)
         # Ativar/desativar é só pelo botão dedicado (admin_event_promotion_toggle).
         active = bool(int(promo.get("active") or 0))
         product_ids = [int(p) for p in request.form.getlist("product_ids") if p]
@@ -4190,6 +4631,8 @@ def admin_event_promotion_edit(event_id: int, promo_id: int):
             promo_id, name, rule_type,
             rule_value=rule_value, min_qty=min_qty, free_qty=free_qty,
             active=active, product_ids=product_ids,
+            bogo_buy_product_id=buy_id,
+            bogo_free_product_id=free_id,
         )
         flash("Promoção atualizada.", "success")
     except (ValueError, TypeError) as exc:
@@ -4357,6 +4800,86 @@ def admin_event_transaction_refund(event_id: int, tx_id: int):
 
 
 @app.route(
+    "/admin/eventos/<int:event_id>/transacoes/<int:tx_id>/observacao-nota",
+    methods=["POST"],
+)
+@admin_required
+def admin_event_transaction_note(event_id: int, tx_id: int):
+    if _event_or_404(event_id) is None:
+        flash("Evento não encontrado.", "error")
+        return redirect(url_for("admin_events"))
+    note = request.form.get("receipt_note") or ""
+    try:
+        result = update_transaction_receipt_note(
+            tx_id,
+            note,
+            expected_event_id=event_id,
+        )
+        order_label = result.get("order_number") or f"#{tx_id}"
+        if result.get("receipt_note"):
+            flash(f"Observação da nota do pedido {order_label} salva.", "success")
+        else:
+            flash(f"Observação da nota do pedido {order_label} removida.", "success")
+    except ValueError as exc:
+        flash(str(exc), "error")
+    return redirect(
+        request.referrer or url_for("admin_event_transactions", event_id=event_id)
+    )
+
+
+@app.route(
+    "/admin/transacoes/<int:tx_id>/itens/<int:item_id>/alterar",
+    methods=["POST"],
+)
+@admin_required
+def admin_transaction_replace_item(tx_id: int, item_id: int):
+    """Substitui o produto de um item confirmado (SKU + quantidade). Somente admin."""
+    sku = (request.form.get("sku") or "").strip()
+    qty_raw = request.form.get("quantity") or ""
+    try:
+        new_qty = int(qty_raw)
+    except (TypeError, ValueError):
+        flash("Informe uma quantidade válida.", "error")
+        return redirect(request.referrer or url_for("admin_events"))
+    if not sku:
+        flash("Informe o SKU do novo produto.", "error")
+        return redirect(request.referrer or url_for("admin_events"))
+
+    product, from_wake, lookup_err = _find_or_fetch_product(sku)
+    if lookup_err == "wake_token":
+        flash(_wake_token_help_message(), "error")
+        return redirect(request.referrer or url_for("admin_events"))
+    if product is None:
+        flash(f'Produto "{sku}" não encontrado no catálogo nem na Wake Commerce.', "error")
+        return redirect(request.referrer or url_for("admin_events"))
+
+    expected_event = _parse_int(request.form.get("event_id") or "", 0)
+    try:
+        result = replace_transaction_item_product(
+            tx_id,
+            item_id,
+            int(product["id"]),
+            new_qty,
+            created_by=_current_admin_user(),
+            expected_event_id=expected_event or None,
+        )
+    except ValueError as exc:
+        flash(str(exc), "error")
+        return redirect(request.referrer or url_for("admin_events"))
+
+    suffix = " (variante importada da Wake)" if from_wake else ""
+    msg = (
+        f"Item alterado no pedido {result.get('order_number') or '#' + str(tx_id)}: "
+        f"«{result['old_product_name']}» → «{result['new_product_name']}» "
+        f"(SKU {result['new_sku']}, {result['quantity']} un.){suffix}."
+    )
+    if result.get("pending"):
+        msg += f" {result['pending']} un. ficaram pendentes de retirada (sem estoque)."
+    flash(msg, "success")
+    return redirect(request.referrer or url_for("admin_events"))
+
+
+@app.route(
     "/admin/eventos/<int:event_id>/transacoes/<int:tx_id>/itens/<int:item_id>/entregar",
     methods=["POST"],
 )
@@ -4483,6 +5006,9 @@ def admin_api_event_stock(event_id: int):
             {
                 **p,
                 "id": p["product_id"],
+                "preco": float(p.get("price") or 0),
+                "preco_biblioteca": float(p.get("library_price") or 0),
+                "preco_evento_override": p.get("event_price") is not None,
                 "estoque": p["stock"],
                 "estoque_minimo": p["min_stock"],
                 "status": _event_product_status(p),

@@ -6,6 +6,7 @@
 {% from "macros/admin_tx_pending_actions.html" import admin_tx_pending_actions %}
 {% from "macros/admin_tx_item_cells.html" import admin_tx_item_cells, admin_tx_discount_summary %}
 {% from "macros/admin_tx_delivery.html" import admin_tx_delivery_badge %}
+{% from "macros/admin_tx_note.html" import admin_tx_note_form %}
 
 {% block title %}Dashboard do vendedor - Vendedor | Dental Odonto Master{% endblock %}
 
@@ -271,6 +272,9 @@
                                 <span>Total da transação</span>
                                 <strong>{{ tx.total | brl }}</strong>
                             </div>
+                        </div>
+                        <div class="admin-tx__actions">
+                            {{ admin_tx_note_form(tx, 'seller_transaction_note') }}
                         </div>
                     </div>
                 </div>
