@@ -1,6 +1,7 @@
 {# Observação impressa no rodapé da nota não fiscal. #}
-{% macro admin_tx_note_form(tx, action_endpoint) %}
+{% macro admin_tx_note_form(tx, action_endpoint, writable=True) %}
 {% set note = (tx.receipt_note or '')|trim %}
+{% if note or writable %}
 <div class="admin-tx__note" data-tx-note>
     {% if note %}
     <p class="admin-tx__note-preview">
@@ -8,6 +9,7 @@
         {{ note }}
     </p>
     {% endif %}
+    {% if writable %}
     <div class="admin-tx__note-toolbar">
         <button
             type="button"
@@ -62,5 +64,7 @@
             Salvar observação
         </button>
     </form>
+    {% endif %}
 </div>
+{% endif %}
 {% endmacro %}

@@ -9,6 +9,24 @@
     const PromoPricing = window.PromoPricing;
     if (!Cart) return;
 
+    function escapeHtml(value) {
+        const d = document.createElement('div');
+        d.textContent = value == null ? '' : String(value);
+        return d.innerHTML;
+    }
+
+    function safeMediaUrl(value) {
+        const s = String(value == null ? '' : value).trim();
+        if (!s) return '';
+        const lower = s.toLowerCase();
+        if (lower.startsWith('javascript:') || lower.startsWith('vbscript:')) return '';
+        if (lower.startsWith('data:') && !lower.startsWith('data:image/')) return '';
+        if (lower.startsWith('http://') || lower.startsWith('https://') || s.startsWith('/') || lower.startsWith('data:image/')) {
+            return s;
+        }
+        return '';
+    }
+
     const FLOW = window.__TOTEM_FLOW__ || {};
     const WAITING_URL = FLOW.paymentWaiting || '/vendedor/pagamento/aguardando';
     const CATALOG_URL = FLOW.catalog || '/vendedor/venda';
@@ -189,23 +207,23 @@
             : '';
         const backorderClass = backorderIcon ? ' payment-item--backorder' : '';
         return `
-            <article class="payment-item${backorderClass}" data-id="${item.id}">
+            <article class="payment-item${backorderClass}" data-id="${escapeHtml(item.id)}">
                 <div class="payment-item__image">
-                    <img src="${item.imagem}" alt="${item.nome}" loading="lazy">
+                    <img src="${safeMediaUrl(item.imagem)}" alt="${escapeHtml(item.nome)}" loading="lazy">
                 </div>
                 <div class="payment-item__info">
-                    <span class="payment-item__category">${item.categoria || ''}</span>
+                    <span class="payment-item__category">${escapeHtml(item.categoria || '')}</span>
                     <div class="payment-item__name-row">
-                        <h3 class="payment-item__name">${item.nome}</h3>
+                        <h3 class="payment-item__name">${escapeHtml(item.nome)}</h3>
                         ${backorderIcon}
                     </div>
-                    ${item.variante ? `<p class="payment-item__variant">${item.variante}</p>` : ''}
-                    ${item.sku ? `<p class="payment-item__sku">SKU ${item.sku}</p>` : ''}
+                    ${item.variante ? `<p class="payment-item__variant">${escapeHtml(item.variante)}</p>` : ''}
+                    ${item.sku ? `<p class="payment-item__sku">SKU ${escapeHtml(item.sku)}</p>` : ''}
                     <p class="payment-item__meta">${item.quantidade} × ${unit}</p>
                 </div>
                 <div class="payment-item__side">
                     <div class="payment-item__total">${subtotal}</div>
-                    <button type="button" class="payment-item__remove" data-payment-action="remove" aria-label="Remover ${item.nome}">
+                    <button type="button" class="payment-item__remove" data-payment-action="remove" aria-label="Remover ${escapeHtml(item.nome)}">
                         <i class="fa-solid fa-trash" aria-hidden="true"></i>
                     </button>
                 </div>
@@ -247,7 +265,7 @@
         }
         const violations = Cart.getBackorderViolations(items);
         if (!violations.length) return '';
-        const names = violations.map(i => i.nome).slice(0, 3).join(', ');
+        const names = violations.map(i => escapeHtml(i.nome)).slice(0, 3).join(', ');
         const extra = violations.length > 3 ? ` e mais ${violations.length - 3}` : '';
         return `
             <div class="payment-backorder-note payment-backorder-note--blocked" role="alert">

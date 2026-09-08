@@ -21,6 +21,7 @@ import totem_env  # noqa: F401 — carrega .env / totem.env antes da integraçã
 from receipt_tokens import sign_receipt_token, verify_receipt_token
 from functools import wraps
 from datetime import date, datetime
+from urllib.parse import unquote, urlparse
 
 try:
     import xlrd as _xlrd  # .xls legacy (BIFF)
@@ -101,14 +102,18 @@ from database import (
     count_event_product_ledger,
     count_pending_delivery_transactions,
     EXPORT_STOCK_CSV_CAP,
+    EVENT_OPERATION_TYPES,
     create_transaction,
     update_pending_transaction,
     delete_seller,
     ensure_seller_account,
     event_badge_style_pairs,
+    event_operation_noun,
+    event_operation_type_label,
     find_product_by_sku_or_id,
     get_active_event_for_seller,
     get_event,
+    event_ops_open,
     get_event_financial_report,
     get_event_sales_dashboard,
     get_event_stats,
@@ -117,6 +122,7 @@ from database import (
     get_product_events_stock_total,
     get_product_in_event,
     get_products_library_stats,
+    cancel_pending_transaction,
     cancel_pending_transaction_for_seller,
     get_pending_transaction_if_owned,
     get_pending_transaction_restore_payload,
@@ -125,6 +131,7 @@ from database import (
     get_seller_by_email,
     get_seller_by_username,
     get_stats,
+    get_transaction,
     get_transaction_by_order_number,
     init_db,
     DEFAULT_MIN_STOCK,
@@ -155,6 +162,7 @@ from database import (
     list_transactions_for_seller,
     list_transactions_summary_for_event_period,
     normalize_event_badge_color,
+    normalize_event_operation_type,
     pending_delivery_units_by_product_for_event,
     units_sold_by_product_for_event,
     units_sold_by_product_for_seller,
@@ -167,11 +175,13 @@ from database import (
     replace_seller_event_assignment,
     reset_totem_to_default_state,
     restore_event,
+    set_event_operations_closed,
     set_product_active,
     sync_catalog_from_wake,
     get_distinct_wake_product_ids,
     upsert_wake_variant,
     update_event,
+    update_event_goals,
     update_event_product_backorder_limit,
     update_event_product_price,
     update_event_product_stock,
@@ -193,9 +203,86 @@ app = Flask(__name__)
 # SECRET_KEY persistida em totem.env (totem_env.ensure_persistent_secret_key).
 app.secret_key = os.environ.get("TOTEM_SECRET_KEY") or secrets.token_hex(32)
 
-# CSRF (Flask-WTF): mesma chave da sessão; sem limite de tempo para o token na sessão atual.
-app.config.setdefault("WTF_CSRF_TIME_LIMIT", None)
+app.config.update(
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE="Lax",
+    SESSION_COOKIE_SECURE=os.environ.get("TOTEM_COOKIE_SECURE", "").strip().lower()
+    in ("1", "true", "yes", "on"),
+    WTF_CSRF_TIME_LIMIT=None,
+)
 csrf = CSRFProtect(app)
+
+
+def _env_flag(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _safe_internal_url(
+    candidate: str | None,
+    fallback: str,
+    *,
+    path_prefix: str | None = None,
+) -> str:
+    """Bloqueia open-redirect: só path relativo no mesmo host (ou URL absoluta do próprio host)."""
+    if not candidate:
+        return fallback
+    raw = str(candidate).strip()
+    if not raw or "\\" in raw or raw.startswith("\\"):
+        return fallback
+    if raw.startswith("//"):
+        return fallback
+
+    parsed = urlparse(raw)
+    if parsed.scheme or parsed.netloc:
+        if parsed.scheme not in ("http", "https"):
+            return fallback
+        try:
+            here = urlparse(request.host_url)
+        except Exception:
+            return fallback
+        if parsed.netloc.lower() != (here.netloc or "").lower():
+            return fallback
+        path = parsed.path or "/"
+    else:
+        nested = urlparse(raw)
+        if nested.scheme or nested.netloc:
+            return fallback
+        path = nested.path or ""
+        parsed = nested
+        if not path.startswith("/"):
+            return fallback
+
+    path = unquote(path)
+    if not path.startswith("/") or path.startswith("//"):
+        return fallback
+    if ".." in path.split("/"):
+        return fallback
+    if path_prefix and not (path == path_prefix or path.startswith(path_prefix + "/")):
+        return fallback
+
+    out = path
+    if parsed.query:
+        out += "?" + parsed.query
+    if parsed.fragment:
+        out += "#" + parsed.fragment
+    return out
+
+
+def _redirect_back(fallback: str):
+    """Redirect para o Referer só se for do mesmo host; senão ``fallback``."""
+    target = _safe_internal_url(request.referrer, fallback)
+    return redirect(target)
+
+
+@app.after_request
+def _security_headers(response):
+    """Cabeçalhos defensivos (CVE-2026-27205: páginas autenticadas não devem ir para cache compartilhado)."""
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
+    response.headers.setdefault("Referrer-Policy", "same-origin")
+    if not request.path.startswith("/static/"):
+        response.headers.setdefault("Cache-Control", "private, no-store")
+    return response
 
 
 @app.errorhandler(CSRFError)
@@ -217,7 +304,7 @@ def handle_csrf_error(_e):
         "Sessão expirada ou token de segurança inválido. Recarregue a página e tente novamente.",
         "error",
     )
-    return redirect(request.referrer or url_for("welcome"))
+    return _redirect_back(url_for("welcome"))
 
 # Credenciais do admin — sobrescreva em produção via variável de ambiente.
 ADMIN_USERNAME = os.environ.get("TOTEM_ADMIN_USER", "adminmaster")
@@ -356,10 +443,20 @@ def _parcelas_cartao_filter(total, payment_method, installments):
     return _card_installment_plan_text(total, payment_method, installments) or ""
 
 
+def _op_noun_filter(source, plural=False, lower=False):
+    """Filtro Jinja: ``{{ event | op_noun }}`` / ``op_noun(lower=True)`` / ``op_noun(plural=True)``."""
+    text = event_operation_noun(source, plural=bool(plural))
+    return text.lower() if lower else text
+
+
 # Registro imediato: garante o filtro Jinja mesmo com importações parciais / reload.
 app.add_template_filter(_display_created_by, "display_created_by")
 app.add_template_filter(_event_badge_style_filter, "event_badge_style")
 app.add_template_filter(_parcelas_cartao_filter, "parcelas_cartao")
+app.add_template_filter(event_operation_type_label, "event_operation_type_label")
+app.add_template_filter(_op_noun_filter, "op_noun")
+app.add_template_global(event_ops_open, "event_ops_open")
+app.add_template_global(EVENT_OPERATION_TYPES, "event_operation_types")
 
 # Inicializa o schema e popula o catálogo inicial (se vazio).
 init_db()
@@ -395,11 +492,18 @@ def _load_auth_cookie(cookie_name: str, salt: str) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
+def _auth_cookie_kwargs() -> dict:
+    opts = dict(AUTH_COOKIE_OPTIONS)
+    if _env_flag("TOTEM_COOKIE_SECURE") or request.is_secure:
+        opts["secure"] = True
+    return opts
+
+
 def _set_auth_cookie(response, cookie_name: str, salt: str, payload: dict):
     response.set_cookie(
         cookie_name,
         _auth_serializer(salt).dumps(payload),
-        **AUTH_COOKIE_OPTIONS,
+        **_auth_cookie_kwargs(),
     )
     return response
 
@@ -523,6 +627,68 @@ def seller_required(view):
     return wrapped
 
 
+EVENT_OPS_CLOSED_MSG = (
+    "As operações deste evento foram encerradas. "
+    "Estoque, vendas e transações ficam disponíveis apenas para consulta."
+)
+
+
+def _response_event_ops_closed(event_id: int | None = None, *, seller: bool = False):
+    """403 JSON ou flash+redirect quando o evento está só para consulta."""
+    wants_json = False
+    if has_request_context():
+        wants_json = (
+            _wants_json_response()
+            or request.path.startswith("/api/")
+            or request.path.startswith("/vendedor/api/")
+        )
+        seller = seller or request.path.startswith("/vendedor/")
+    if wants_json:
+        return jsonify({"error": EVENT_OPS_CLOSED_MSG}), 403
+    flash(EVENT_OPS_CLOSED_MSG, "error")
+    if seller:
+        return redirect(url_for("seller_sale"))
+    if event_id:
+        return _redirect_back(url_for("admin_event_detail", event_id=event_id))
+    return _redirect_back( url_for("admin_events"))
+
+
+def _reject_if_event_ops_closed(event):
+    """Retorna resposta 403/redirect se o evento não estiver com operações abertas."""
+    if event is not None and not event_ops_open(event):
+        try:
+            eid = int(event["id"])
+        except (KeyError, TypeError, ValueError):
+            eid = None
+        return _response_event_ops_closed(eid)
+    return None
+
+
+def require_event_ops_open(view):
+    """Bloqueia POST de evento com operações encerradas (consulta apenas)."""
+    @wraps(view)
+    def wrapped(*args, **kwargs):
+        event_id = kwargs.get("event_id")
+        if event_id is not None:
+            blocked = _reject_if_event_ops_closed(get_event(int(event_id)))
+            if blocked is not None:
+                return blocked
+        return view(*args, **kwargs)
+
+    return wrapped
+
+
+def _reject_if_tx_event_ops_closed(tx_id: int):
+    """Bloqueia mutação de transação cujo evento está encerrado."""
+    tx = get_transaction(int(tx_id))
+    if not tx:
+        return None
+    eid = tx.get("event_id")
+    if not eid:
+        return None
+    return _reject_if_event_ops_closed(get_event(int(eid)))
+
+
 # ---------------------------------------------------------------------------
 # Rotas do cliente
 # ---------------------------------------------------------------------------
@@ -614,6 +780,8 @@ def api_create_transaction():
         # Busca o evento ativo do vendedor (se houver)
         active_event = get_active_event_for_seller(int(seller["id"]))
         event_id = int(active_event["id"]) if active_event else None
+        if active_event is not None and not event_ops_open(active_event):
+            return jsonify({"error": EVENT_OPS_CLOSED_MSG}), 403
 
         result = create_transaction(
             items,
@@ -680,6 +848,10 @@ def api_update_pending_transaction(tx_id: int):
         row = get_seller(int(auth["seller_id"]))
         if row is None or not row.get("active"):
             raise ValueError("Sessão de vendedor inválida ou inativa.")
+
+        seller_ev = get_active_event_for_seller(int(row["id"]))
+        if seller_ev is not None and not event_ops_open(seller_ev):
+            return jsonify({"error": EVENT_OPS_CLOSED_MSG}), 403
 
         result = update_pending_transaction(
             int(tx_id),
@@ -773,9 +945,11 @@ def admin_login():
         username = (request.form.get("username") or "").strip()
         password = request.form.get("password") or ""
         if username == ADMIN_USERNAME and password == ADMIN_PASSWORD:
-            next_url = request.args.get("next") or _admin_home_url()
-            if not next_url.startswith("/"):
-                next_url = _admin_home_url()
+            next_url = _safe_internal_url(
+                request.args.get("next"),
+                _admin_home_url(),
+                path_prefix="/admin",
+            )
             response = redirect(next_url)
             return _set_auth_cookie(
                 response,
@@ -820,9 +994,11 @@ def seller_login():
             seller["password_hash"], password
         ):
             update_seller_last_login(int(seller["id"]))
-            next_url = request.args.get("next") or _seller_home_url()
-            if not next_url.startswith("/vendedor"):
-                next_url = _seller_home_url()
+            next_url = _safe_internal_url(
+                request.args.get("next"),
+                _seller_home_url(),
+                path_prefix="/vendedor",
+            )
             login_id = seller.get("username") or seller.get("email") or username
             response = redirect(next_url)
             return _set_auth_cookie(
@@ -886,6 +1062,14 @@ def _get_seller_event():
     return get_active_event_for_seller(seller_id)
 
 
+def _reject_if_seller_event_ops_closed():
+    """Bloqueia ações de venda se o evento do vendedor estiver encerrado."""
+    ev = _get_seller_event()
+    if ev is None or event_ops_open(ev):
+        return None
+    return _response_event_ops_closed(int(ev["id"]), seller=True)
+
+
 def _seller_pending_sales_count(seller_id: int, seller_ev) -> int:
     """Conta vendas pendentes do vendedor (escopo do evento quando houver)."""
     if seller_ev:
@@ -908,6 +1092,10 @@ def _seller_totem_flow() -> dict:
         ),
         "catalog": _seller_home_url(),
         "home": _seller_home_url(),
+        "checkoutUnlock": _url_if_registered(
+            "seller_checkout_unlock",
+            fallback="/vendedor/api/checkout/desbloquear",
+        ),
     }
 
 
@@ -973,13 +1161,41 @@ def seller_sale():
         totem_flow=_seller_totem_flow(),
         catalog_stock_api_url=catalog_stock_api_url,
         catalog_promo_refresh_api_url=catalog_promo_refresh_api_url,
+        catalog_readonly=bool(seller_ev) and not event_ops_open(seller_ev),
         **_seller_shell_context(active_section="venda"),
     )
+
+
+@app.route(
+    "/vendedor/api/checkout/desbloquear",
+    methods=["POST"],
+    endpoint="seller_checkout_unlock",
+)
+def seller_checkout_unlock():
+    """Valida a senha do vendedor logado para desbloquear o checkout inativo."""
+    auth = _seller_auth()
+    if not auth:
+        return jsonify({"error": "Sessão expirada. Faça login novamente."}), 401
+    seller = get_seller(int(auth["seller_id"]))
+    if seller is None or not seller.get("active"):
+        return jsonify({"error": "Sessão expirada. Faça login novamente."}), 401
+    payload = request.get_json(silent=True) or {}
+    password = payload.get("password")
+    if password is None:
+        password = request.form.get("password") or ""
+    if not isinstance(password, str) or not password:
+        return jsonify({"error": "Informe a senha de login."}), 400
+    if not check_password_hash(seller["password_hash"], password):
+        return jsonify({"error": "Senha inválida."}), 403
+    return jsonify({"ok": True})
 
 
 @app.route("/vendedor/pagamento", endpoint="seller_payment")
 @seller_required
 def seller_payment():
+    blocked = _reject_if_seller_event_ops_closed()
+    if blocked is not None:
+        return blocked
     return render_template("payment.html", **_seller_payment_page_context())
 
 
@@ -1005,6 +1221,9 @@ def seller_payment_waiting():
 @seller_required
 def seller_restore_pending_checkout(tx_id: int):
     """Restaura carrinho + formulário do cliente e envia à tela de pagamento (pedido pendente de AUT)."""
+    blocked = _reject_if_seller_event_ops_closed()
+    if blocked is not None:
+        return blocked
     sid = _current_seller_id()
     payload = get_pending_transaction_restore_payload(tx_id, sid)
     if not payload or not payload.get("cart_items"):
@@ -1028,6 +1247,9 @@ def seller_restore_pending_checkout(tx_id: int):
 @seller_required
 def seller_cancel_pending_transaction(tx_id: int):
     """Descarta pedido pendente (marca como cancelado); não altera estoque nem faturamento."""
+    blocked = _reject_if_tx_event_ops_closed(tx_id)
+    if blocked is not None:
+        return blocked
     try:
         cancel_pending_transaction_for_seller(tx_id, _current_seller_id())
         flash("Pedido pendente descartado.", "success")
@@ -1043,6 +1265,9 @@ def seller_cancel_pending_transaction(tx_id: int):
 @seller_required
 def seller_transaction_note(tx_id: int):
     """Vendedor grava observação impressa na nota do próprio pedido."""
+    blocked = _reject_if_tx_event_ops_closed(tx_id)
+    if blocked is not None:
+        return blocked
     note = request.form.get("receipt_note") or ""
     try:
         result = update_transaction_receipt_note(
@@ -1057,7 +1282,7 @@ def seller_transaction_note(tx_id: int):
             flash(f"Observação da nota do pedido {order_label} removida.", "success")
     except ValueError as exc:
         flash(str(exc), "error")
-    return redirect(request.referrer or url_for("seller_dashboard"))
+    return _redirect_back( url_for("seller_dashboard"))
 
 
 def _seller_dashboard_transactions_view() -> tuple:
@@ -1527,6 +1752,8 @@ def api_cart_promo_quote():
     seller_ev = _get_seller_event()
     if seller_ev is None:
         return jsonify({"error": "Cotação disponível apenas para vendas em evento."}), 404
+    if not event_ops_open(seller_ev):
+        return jsonify({"error": EVENT_OPS_CLOSED_MSG}), 403
     payload = request.get_json(silent=True) or {}
     items = payload.get("items") or payload.get("itens") or []
     try:
@@ -1593,8 +1820,14 @@ def _parse_new_seller_post(form) -> tuple[dict[str, str], dict[str, str]]:
 
     if event_id <= 0:
         errors["event_id"] = "Selecione o evento ao qual este vendedor será associado."
-    elif get_event(event_id) is None:
-        errors["event_id"] = "Evento não encontrado."
+    else:
+        ev = get_event(event_id)
+        if ev is None:
+            errors["event_id"] = "Evento não encontrado."
+        elif not event_ops_open(ev):
+            errors["event_id"] = (
+                "Não é possível associar o vendedor a um evento com operações encerradas."
+            )
 
     if "username" not in errors and username and get_seller_by_username(username):
         errors["username"] = "Já existe um vendedor com este usuário."
@@ -1636,8 +1869,16 @@ def _parse_edit_seller_post(form, _seller_id: int) -> tuple[dict[str, str], dict
         eid = _parse_int(event_id_raw, 0)
         if eid <= 0:
             errors["event_id"] = "Selecione um evento válido ou «Sem evento»."
-        elif get_event(eid) is None:
-            errors["event_id"] = "Evento não encontrado."
+        else:
+            ev = get_event(eid)
+            if ev is None:
+                errors["event_id"] = "Evento não encontrado."
+            else:
+                current = get_seller_admin_event_selection_id(_seller_id)
+                if int(current or 0) != eid and not event_ops_open(ev):
+                    errors["event_id"] = (
+                        "Não é possível associar o vendedor a um evento com operações encerradas."
+                    )
 
     repop = {
         "name": "" if "name" in errors else name,
@@ -1891,6 +2132,9 @@ def admin_seller_confirm_item_delivery(seller_id: int, tx_id: int, item_id: int)
     if seller is None:
         flash("Vendedor não encontrado.", "error")
         return redirect(url_for("admin_sellers"))
+    blocked = _reject_if_tx_event_ops_closed(tx_id)
+    if blocked is not None:
+        return blocked
     try:
         result = confirm_item_delivery(
             tx_id,
@@ -1907,9 +2151,7 @@ def admin_seller_confirm_item_delivery(seller_id: int, tx_id: int, item_id: int)
         flash(msg, "success")
     except ValueError as exc:
         flash(str(exc), "error")
-    return redirect(
-        request.referrer or url_for("admin_seller_detail", seller_id=seller_id)
-    )
+    return _redirect_back(url_for("admin_seller_detail", seller_id=seller_id))
 
 
 @app.route(
@@ -1923,6 +2165,9 @@ def admin_seller_confirm_items_delivery(seller_id: int, tx_id: int):
     if seller is None:
         flash("Vendedor não encontrado.", "error")
         return redirect(url_for("admin_sellers"))
+    blocked = _reject_if_tx_event_ops_closed(tx_id)
+    if blocked is not None:
+        return blocked
     item_ids = request.form.getlist("item_ids")
     try:
         result = confirm_items_delivery(
@@ -1944,9 +2189,7 @@ def admin_seller_confirm_items_delivery(seller_id: int, tx_id: int):
             flash(msg, "success")
     except ValueError as exc:
         flash(str(exc), "error")
-    return redirect(
-        request.referrer or url_for("admin_seller_detail", seller_id=seller_id)
-    )
+    return _redirect_back(url_for("admin_seller_detail", seller_id=seller_id))
 
 
 @app.route(
@@ -1960,14 +2203,15 @@ def admin_seller_confirm_transaction_handover(seller_id: int, tx_id: int):
     if seller is None:
         flash("Vendedor não encontrado.", "error")
         return redirect(url_for("admin_sellers"))
+    blocked = _reject_if_tx_event_ops_closed(tx_id)
+    if blocked is not None:
+        return blocked
     try:
         confirm_transaction_handover(tx_id, seller_id=seller_id)
         flash("Pedido marcado como entregue.", "success")
     except ValueError as exc:
         flash(str(exc), "error")
-    return redirect(
-        request.referrer or url_for("admin_seller_detail", seller_id=seller_id)
-    )
+    return _redirect_back(url_for("admin_seller_detail", seller_id=seller_id))
 
 
 @app.route(
@@ -1980,6 +2224,9 @@ def admin_seller_transaction_note(seller_id: int, tx_id: int):
     if seller is None:
         flash("Vendedor não encontrado.", "error")
         return redirect(url_for("admin_sellers"))
+    blocked = _reject_if_tx_event_ops_closed(tx_id)
+    if blocked is not None:
+        return blocked
     note = request.form.get("receipt_note") or ""
     try:
         result = update_transaction_receipt_note(
@@ -1994,9 +2241,7 @@ def admin_seller_transaction_note(seller_id: int, tx_id: int):
             flash(f"Observação da nota do pedido {order_label} removida.", "success")
     except ValueError as exc:
         flash(str(exc), "error")
-    return redirect(
-        request.referrer or url_for("admin_seller_detail", seller_id=seller_id)
-    )
+    return _redirect_back(url_for("admin_seller_detail", seller_id=seller_id))
 
 
 @app.route(
@@ -2039,6 +2284,42 @@ def _parse_fin_filters():
     except ValueError:
         ev_id = None
     return ev_id, date_from or None, date_to or None
+
+
+def _parse_event_revenue_goal(raw) -> float | None:
+    """Interpreta meta de faturamento em formato BR (1.250,50) ou ponto decimal. Vazio = sem meta."""
+    s = (raw or "").strip()
+    if not s:
+        return None
+    s = s.replace("R$", "").replace(" ", "")
+    if "," in s and "." in s:
+        s = s.replace(".", "").replace(",", ".")
+    elif "," in s:
+        s = s.replace(",", ".")
+    elif s.count(".") > 1:
+        s = s.replace(".", "")
+    try:
+        value = round(float(s), 2)
+    except (TypeError, ValueError):
+        raise ValueError("Informe um valor numérico válido para a meta de faturamento.")
+    if value < 0:
+        raise ValueError("A meta de faturamento não pode ser negativa.")
+    return value
+
+
+def _parse_event_volume_goal(raw) -> int | None:
+    """Interpreta meta de volume em unidades. Vazio = sem meta."""
+    s = (raw or "").strip()
+    if not s:
+        return None
+    s = s.replace(".", "").replace(" ", "")
+    try:
+        value = int(float(s.replace(",", ".")))
+    except (TypeError, ValueError):
+        raise ValueError("Informe um número inteiro válido para a meta de volume.")
+    if value < 0:
+        raise ValueError("A meta de volume não pode ser negativa.")
+    return value
 
 
 @app.route("/admin/financeiro")
@@ -2087,6 +2368,50 @@ def admin_financeiro_pdf():
         date_to=date_to or "",
         now=datetime.now(),
     )
+
+
+@app.route("/admin/eventos/<int:event_id>/metas", methods=["POST"])
+@admin_required
+@require_event_ops_open
+def admin_event_goals(event_id: int):
+    """Grava metas de faturamento e volume do evento (seção Financeiro)."""
+    event = _event_or_404(event_id)
+    fallback = url_for("admin_financeiro", evento=event_id)
+    if event is None:
+        return redirect(url_for("admin_events"))
+    try:
+        revenue_goal = _parse_event_revenue_goal(request.form.get("revenue_goal"))
+        volume_goal = _parse_event_volume_goal(request.form.get("volume_goal"))
+    except ValueError as exc:
+        flash(str(exc), "error")
+        return _redirect_back( fallback)
+    if not update_event_goals(event_id, revenue_goal=revenue_goal, volume_goal=volume_goal):
+        flash("Não foi possível salvar as metas deste evento.", "error")
+        return _redirect_back( fallback)
+    parts = []
+    if revenue_goal:
+        brl = (
+            f"R$ {revenue_goal:,.2f}"
+            .replace(",", "X").replace(".", ",").replace("X", ".")
+        )
+        parts.append(f"faturamento {brl}")
+    if volume_goal:
+        parts.append(f"volume {volume_goal} un.")
+    if parts:
+        flash(f"Metas do evento atualizadas: {', '.join(parts)}.", "success")
+    else:
+        flash("Metas do evento removidas.", "success")
+    ret_from = (request.form.get("ret_de") or "").strip()
+    ret_to = (request.form.get("ret_ate") or "").strip()
+    kw = {"evento": event_id}
+    if ret_from:
+        kw["de"] = ret_from
+    if ret_to:
+        kw["ate"] = ret_to
+    next_page = (request.form.get("next") or "").strip()
+    if next_page == "dashboard":
+        return redirect(url_for("admin_event_detail", event_id=event_id))
+    return redirect(url_for("admin_financeiro", **kw))
 
 
 @app.route("/admin/reiniciar-sistema", methods=["POST"])
@@ -2379,7 +2704,7 @@ def admin_products():
         filters=filters,
         pagination=pagination,
         allowed_per_page=ALLOWED_ADMIN_STOCK_PER_PAGE,
-        events_for_modal=list_events(include_archived=False),
+        events_for_modal=[e for e in list_events(include_archived=False) if event_ops_open(e)],
         **_admin_shell_context(active_section="produtos"),
     )
 
@@ -2396,6 +2721,9 @@ def admin_product_add_to_event(product_id: int):
     event = get_event(event_id)
     if event is None:
         return jsonify({"error": "Evento não encontrado."}), 400
+    blocked = _reject_if_event_ops_closed(event)
+    if blocked is not None:
+        return blocked
     initial_stock = max(0, _parse_int(request.form.get("initial_stock") or "", 0))
     min_stock = max(0, _parse_int(request.form.get("min_stock") or "", DEFAULT_MIN_STOCK))
     link_note = (request.form.get("link_note") or "").strip()
@@ -2624,8 +2952,8 @@ def admin_product_toggle_active(product_id: int):
     active = request.form.get("active") == "1"
     if set_product_active(product_id, active):
         message = (
-            "Produto ativado e disponível no totem." if active
-            else "Produto desativado — não aparecerá no totem."
+            "Produto ativado e disponível no Go Sell." if active
+            else "Produto desativado — não aparecerá no Go Sell."
         )
         if _wants_json_response():
             return _json_products_library_success(message, product_id)
@@ -2634,7 +2962,7 @@ def admin_product_toggle_active(product_id: int):
         if _wants_json_response():
             return jsonify({"error": "Não foi possível atualizar o produto."}), 400
         flash("Não foi possível atualizar o produto.", "error")
-    return redirect(request.referrer or url_for("admin_product_detail", product_id=product_id))
+    return _redirect_back( url_for("admin_product_detail", product_id=product_id))
 
 
 def _admin_api_products_list_payload():
@@ -2870,7 +3198,7 @@ def admin_event_sales_export_xlsx(event_id: int):
     seller_raw = _parse_int(request.args.get("vendedor"), 0)
     seller_filter = seller_raw if seller_raw > 0 and seller_raw in event_seller_ids else None
     if seller_raw > 0 and seller_filter is None:
-        flash("Vendedor inválido para este evento.", "error")
+        flash(f"Vendedor inválido para este {_op_noun(event, lower=True)}.", "error")
         return redirect(url_for("admin_event_transactions", event_id=event_id))
     seller_name = ""
     if seller_filter is not None:
@@ -3119,6 +3447,17 @@ def _event_badge_color_from_form(form) -> str | None:
     return normalize_event_badge_color((form.get("badge_color") or "").strip())
 
 
+def _event_operation_type_from_form(form) -> str | None:
+    """Slug do tipo de operação (evento|congresso|stand) ou None se inválido."""
+    return normalize_event_operation_type(form.get("operation_type"))
+
+
+def _op_noun(event, *, plural: bool = False, lower: bool = False) -> str:
+    """Substantivo da operação para flashes e textos no servidor."""
+    text = event_operation_noun(event, plural=plural)
+    return text.lower() if lower else text
+
+
 def _event_subnav_context(event_id: int, active_tab: str) -> dict:
     """Contexto compartilhado para todas as sub-páginas do evento."""
     ev = get_event(event_id)
@@ -3212,9 +3551,15 @@ def admin_event_create():
     if not name:
         flash("O nome do evento é obrigatório.", "error")
         return redirect(url_for("admin_events"))
+    operation_type = _event_operation_type_from_form(request.form)
+    if not operation_type:
+        flash("Escolha o tipo de operação: Evento, Congresso ou Stand.", "error")
+        return redirect(url_for("admin_events"))
     badge_color = _event_badge_color_from_form(request.form)
-    event_id = create_event(name, description, badge_color=badge_color)
-    flash(f"Evento \"{name}\" criado com sucesso.", "success")
+    event_id = create_event(
+        name, description, badge_color=badge_color, operation_type=operation_type
+    )
+    flash(f"{_op_noun({'operation_type': operation_type})} \"{name}\" criado com sucesso.", "success")
     return redirect(url_for("admin_event_detail", event_id=event_id))
 
 
@@ -3241,6 +3586,7 @@ def admin_event_detail(event_id: int):
 
 @app.route("/admin/eventos/<int:event_id>/editar", methods=["POST"])
 @admin_required
+@require_event_ops_open
 def admin_event_edit(event_id: int):
     event = _event_or_404(event_id)
     if event is None:
@@ -3248,11 +3594,17 @@ def admin_event_edit(event_id: int):
     name = (request.form.get("name") or "").strip()
     description = (request.form.get("description") or "").strip()
     if not name:
-        flash("O nome do evento é obrigatório.", "error")
+        flash(f"O nome do {_op_noun(event, lower=True)} é obrigatório.", "error")
+        return redirect(url_for("admin_event_detail", event_id=event_id))
+    operation_type = _event_operation_type_from_form(request.form)
+    if not operation_type:
+        flash("Escolha o tipo de operação: Evento, Congresso ou Stand.", "error")
         return redirect(url_for("admin_event_detail", event_id=event_id))
     badge_color = _event_badge_color_from_form(request.form)
-    update_event(event_id, name, description, badge_color=badge_color)
-    flash("Evento atualizado.", "success")
+    update_event(
+        event_id, name, description, badge_color=badge_color, operation_type=operation_type
+    )
+    flash(f"{_op_noun({'operation_type': operation_type})} atualizado.", "success")
     return redirect(url_for("admin_event_detail", event_id=event_id))
 
 
@@ -3276,6 +3628,46 @@ def admin_event_restore(event_id: int):
     restore_event(event_id)
     flash(f"Evento \"{event['name']}\" reativado.", "success")
     return redirect(url_for("admin_events"))
+
+
+@app.route("/admin/eventos/<int:event_id>/encerrar-operacoes", methods=["POST"])
+@admin_required
+def admin_event_close_operations(event_id: int):
+    """Encerra vendas e edições; o evento permanece ativo só para consulta."""
+    event = _event_or_404(event_id)
+    if event is None:
+        return redirect(url_for("admin_events"))
+    if not int(event.get("active") or 0):
+        flash(f"Reative o {_op_noun(event, lower=True)} arquivado antes de gerenciar as operações.", "error")
+        return redirect(url_for("admin_event_detail", event_id=event_id))
+    if not event_ops_open(event):
+        flash(f"As operações deste {_op_noun(event, lower=True)} já estão encerradas.", "error")
+        return redirect(url_for("admin_event_detail", event_id=event_id))
+    set_event_operations_closed(event_id, True)
+    flash(
+        f"Operações do {_op_noun(event, lower=True)} \"{event['name']}\" encerradas. "
+        "Admin e vendedores passam a consultar estoque, vendas e transações apenas em modo leitura.",
+        "success",
+    )
+    return redirect(url_for("admin_event_detail", event_id=event_id))
+
+
+@app.route("/admin/eventos/<int:event_id>/reabrir-operacoes", methods=["POST"])
+@admin_required
+def admin_event_reopen_operations(event_id: int):
+    """Reabre vendas e edições de um evento ativo com operações encerradas."""
+    event = _event_or_404(event_id)
+    if event is None:
+        return redirect(url_for("admin_events"))
+    if not int(event.get("active") or 0):
+        flash(f"Reative o {_op_noun(event, lower=True)} arquivado antes de reabrir as operações.", "error")
+        return redirect(url_for("admin_event_detail", event_id=event_id))
+    if event_ops_open(event):
+        flash(f"As operações deste {_op_noun(event, lower=True)} já estão abertas.", "error")
+        return redirect(url_for("admin_event_detail", event_id=event_id))
+    set_event_operations_closed(event_id, False)
+    flash(f"Operações do {_op_noun(event, lower=True)} \"{event['name']}\" reabertas.", "success")
+    return redirect(url_for("admin_event_detail", event_id=event_id))
 
 
 @app.route(
@@ -3419,7 +3811,7 @@ def admin_event_stock_product(event_id: int, product_id: int):
         return redirect(url_for("admin_events"))
     product = get_product_in_event(event_id, product_id)
     if product is None:
-        flash("Produto não encontrado neste evento.", "error")
+        flash(f"Produto não encontrado neste {_op_noun(event, lower=True)}.", "error")
         return redirect(url_for("admin_event_stock", event_id=event_id))
 
     pending_units = pending_delivery_units_by_product_for_event(
@@ -3548,6 +3940,7 @@ def _find_or_fetch_product(sku_or_id: str) -> tuple[dict | None, bool, str | Non
 
 @app.route("/admin/eventos/<int:event_id>/produtos/adicionar", methods=["POST"])
 @admin_required
+@require_event_ops_open
 def admin_event_add_product(event_id: int):
     event = _event_or_404(event_id)
     preserved = _event_stock_return_filters_from_form()
@@ -3567,7 +3960,7 @@ def admin_event_add_product(event_id: int):
     try:
         add_product_to_event(event_id, int(product["id"]), 0)
         suffix = " (variante importada da Wake)" if from_wake else ""
-        flash(f"Produto \"{product['name']}\" adicionado ao evento{suffix}.", "success")
+        flash(f"Produto \"{product['name']}\" adicionado ao {_op_noun(event, lower=True)}{suffix}.", "success")
     except ValueError as exc:
         flash(str(exc), "error")
     return redirect(_url_for_admin_event_stock_list(event_id, preserved, page_override=1))
@@ -3686,11 +4079,8 @@ def admin_sync_catalog_wake():
 
 
 def _redirect_back_admin():
-    """Redireciona para a página de origem ou biblioteca de produtos."""
-    ref = request.referrer
-    if ref:
-        return redirect(ref)
-    return redirect(url_for("admin_products"))
+    """Redireciona para a página de origem (mesmo host) ou biblioteca de produtos."""
+    return _redirect_back(url_for("admin_products"))
 
 
 _XLS_SKU_COL_NAMES = frozenset({
@@ -3964,6 +4354,7 @@ def _apply_imported_event_price(
 
 @app.route("/admin/eventos/<int:event_id>/produtos/importar-xls", methods=["POST"])
 @admin_required
+@require_event_ops_open
 def admin_event_import_xls(event_id: int):
     """Importa produtos em lote para o evento a partir de planilha .xls ou .xlsx.
 
@@ -4101,17 +4492,20 @@ def admin_event_import_xls(event_id: int):
 
 @app.route("/admin/eventos/<int:event_id>/produtos/<int:product_id>/remover", methods=["POST"])
 @admin_required
+@require_event_ops_open
 def admin_event_remove_product(event_id: int, product_id: int):
-    if _event_or_404(event_id) is None:
+    event = _event_or_404(event_id)
+    if event is None:
         return redirect(url_for("admin_events"))
     preserved = _event_stock_return_filters_from_form()
     remove_product_from_event(event_id, product_id)
-    flash("Produto removido do evento.", "success")
+    flash(f"Produto removido do {_op_noun(event, lower=True)}.", "success")
     return redirect(_url_for_admin_event_stock_list(event_id, preserved))
 
 
 @app.route("/admin/eventos/<int:event_id>/produtos/<int:product_id>/entrada", methods=["POST"])
 @admin_required
+@require_event_ops_open
 def admin_event_stock_entry(event_id: int, product_id: int):
     if _event_or_404(event_id) is None:
         return redirect(url_for("admin_events"))
@@ -4136,11 +4530,12 @@ def admin_event_stock_entry(event_id: int, product_id: int):
         if _wants_json_response():
             return jsonify({"error": str(exc)}), 400
         flash(str(exc), "error")
-    return redirect(request.referrer or fallback)
+    return _redirect_back( fallback)
 
 
 @app.route("/admin/eventos/<int:event_id>/produtos/entrada-em-lote", methods=["POST"])
 @admin_required
+@require_event_ops_open
 def admin_event_stock_bulk_entry(event_id: int):
     """Registra entrada de estoque para vários produtos do evento de uma só vez.
 
@@ -4201,6 +4596,7 @@ def admin_event_stock_bulk_entry(event_id: int):
 
 @app.route("/admin/eventos/<int:event_id>/produtos/<int:product_id>/saida", methods=["POST"])
 @admin_required
+@require_event_ops_open
 def admin_event_stock_exit(event_id: int, product_id: int):
     if _event_or_404(event_id) is None:
         return redirect(url_for("admin_events"))
@@ -4223,11 +4619,12 @@ def admin_event_stock_exit(event_id: int, product_id: int):
         if _wants_json_response():
             return jsonify({"error": str(exc)}), 400
         flash(str(exc), "error")
-    return redirect(request.referrer or fallback)
+    return _redirect_back( fallback)
 
 
 @app.route("/admin/eventos/<int:event_id>/produtos/<int:product_id>/ajuste", methods=["POST"])
 @admin_required
+@require_event_ops_open
 def admin_event_stock_adjust(event_id: int, product_id: int):
     if _event_or_404(event_id) is None:
         return redirect(url_for("admin_events"))
@@ -4250,19 +4647,22 @@ def admin_event_stock_adjust(event_id: int, product_id: int):
         if _wants_json_response():
             return jsonify({"error": str(exc)}), 400
         flash(str(exc), "error")
-    return redirect(request.referrer or fallback)
+    return _redirect_back( fallback)
 
 
 @app.route("/admin/eventos/<int:event_id>/produtos/<int:product_id>/preco", methods=["POST"])
 @admin_required
+@require_event_ops_open
 def admin_event_stock_price(event_id: int, product_id: int):
-    if _event_or_404(event_id) is None:
+    event = _event_or_404(event_id)
+    if event is None:
         return redirect(url_for("admin_events"))
     fallback = url_for("admin_event_stock_product", event_id=event_id, product_id=product_id)
     restore = (request.form.get("restore_base") or "").strip() in {"1", "true", "on"}
+    noun_l = _op_noun(event, lower=True)
     if restore:
         stored = None
-        message = "Preço do evento restaurado para o valor da biblioteca."
+        message = f"Preço do {noun_l} restaurado para o valor da biblioteca."
     else:
         raw = (request.form.get("price") or "").strip().replace(",", ".")
         try:
@@ -4273,9 +4673,9 @@ def admin_event_stock_price(event_id: int, product_id: int):
             if _wants_json_response():
                 return jsonify({"error": "Informe um valor numérico válido para o preço."}), 400
             flash("Informe um valor numérico válido para o preço.", "error")
-            return redirect(request.referrer or fallback)
+            return _redirect_back( fallback)
         message = (
-            f"Preço do evento atualizado para R$ {stored:,.2f}"
+            f"Preço do {noun_l} atualizado para R$ {stored:,.2f}"
             .replace(",", "X").replace(".", ",").replace("X", ".")
         )
     if update_event_product_price(event_id, product_id, stored):
@@ -4283,14 +4683,16 @@ def admin_event_stock_price(event_id: int, product_id: int):
             return _json_event_stock_success(message, event_id, product_id)
         flash(message, "success")
     else:
+        err = f"Não foi possível atualizar o preço neste {noun_l}."
         if _wants_json_response():
-            return jsonify({"error": "Não foi possível atualizar o preço neste evento."}), 400
-        flash("Não foi possível atualizar o preço neste evento.", "error")
-    return redirect(request.referrer or fallback)
+            return jsonify({"error": err}), 400
+        flash(err, "error")
+    return _redirect_back( fallback)
 
 
 @app.route("/admin/eventos/<int:event_id>/produtos/<int:product_id>/minimo", methods=["POST"])
 @admin_required
+@require_event_ops_open
 def admin_event_stock_min(event_id: int, product_id: int):
     if _event_or_404(event_id) is None:
         return redirect(url_for("admin_events"))
@@ -4306,7 +4708,7 @@ def admin_event_stock_min(event_id: int, product_id: int):
     if _wants_json_response():
         return _json_event_stock_success(message, event_id, product_id)
     flash(message, "success")
-    return redirect(request.referrer or fallback)
+    return _redirect_back( fallback)
 
 
 @app.route(
@@ -4314,6 +4716,7 @@ def admin_event_stock_min(event_id: int, product_id: int):
     methods=["POST"],
 )
 @admin_required
+@require_event_ops_open
 def admin_event_stock_backorder_limit(event_id: int, product_id: int):
     if _event_or_404(event_id) is None:
         return redirect(url_for("admin_events"))
@@ -4332,7 +4735,7 @@ def admin_event_stock_backorder_limit(event_id: int, product_id: int):
     if _wants_json_response():
         return _json_event_stock_success(message, event_id, product_id)
     flash(message, "success")
-    return redirect(request.referrer or fallback)
+    return _redirect_back( fallback)
 
 
 def _get_event_product_stock(event_id: int, product_id: int) -> int:
@@ -4566,6 +4969,7 @@ def _parse_bogo_product_ids(form, rule_type: str):
 
 @app.route("/admin/eventos/<int:event_id>/promocoes/nova", methods=["POST"])
 @admin_required
+@require_event_ops_open
 def admin_event_promotion_create(event_id: int):
     event = _event_or_404(event_id)
     if event is None:
@@ -4612,6 +5016,7 @@ def admin_event_promotion_detail(event_id: int, promo_id: int):
 
 @app.route("/admin/eventos/<int:event_id>/promocoes/<int:promo_id>/editar", methods=["POST"])
 @admin_required
+@require_event_ops_open
 def admin_event_promotion_edit(event_id: int, promo_id: int):
     event = _event_or_404(event_id)
     if event is None:
@@ -4642,6 +5047,7 @@ def admin_event_promotion_edit(event_id: int, promo_id: int):
 
 @app.route("/admin/eventos/<int:event_id>/promocoes/<int:promo_id>/ativar", methods=["POST"])
 @admin_required
+@require_event_ops_open
 def admin_event_promotion_toggle(event_id: int, promo_id: int):
     promo = get_promotion(promo_id)
     if promo is None or int(promo["event_id"]) != event_id:
@@ -4653,11 +5059,12 @@ def admin_event_promotion_toggle(event_id: int, promo_id: int):
         flash(f"Promoção «{p['name']}» {status}.", "success")
     except ValueError as exc:
         flash(str(exc), "error")
-    return redirect(request.referrer or url_for("admin_event_promotions", event_id=event_id))
+    return _redirect_back( url_for("admin_event_promotions", event_id=event_id))
 
 
 @app.route("/admin/eventos/<int:event_id>/promocoes/<int:promo_id>/excluir", methods=["POST"])
 @admin_required
+@require_event_ops_open
 def admin_event_promotion_delete(event_id: int, promo_id: int):
     promo = get_promotion(promo_id)
     if promo is None or int(promo["event_id"]) != event_id:
@@ -4777,6 +5184,7 @@ def admin_event_transactions(event_id: int):
     methods=["POST"],
 )
 @admin_required
+@require_event_ops_open
 def admin_event_transaction_refund(event_id: int, tx_id: int):
     if _event_or_404(event_id) is None:
         flash("Evento não encontrado.", "error")
@@ -4794,9 +5202,7 @@ def admin_event_transaction_refund(event_id: int, tx_id: int):
         )
     except ValueError as exc:
         flash(str(exc), "error")
-    return redirect(
-        request.referrer or url_for("admin_event_transactions", event_id=event_id)
-    )
+    return _redirect_back(url_for("admin_event_transactions", event_id=event_id))
 
 
 @app.route(
@@ -4804,6 +5210,7 @@ def admin_event_transaction_refund(event_id: int, tx_id: int):
     methods=["POST"],
 )
 @admin_required
+@require_event_ops_open
 def admin_event_transaction_note(event_id: int, tx_id: int):
     if _event_or_404(event_id) is None:
         flash("Evento não encontrado.", "error")
@@ -4822,9 +5229,26 @@ def admin_event_transaction_note(event_id: int, tx_id: int):
             flash(f"Observação da nota do pedido {order_label} removida.", "success")
     except ValueError as exc:
         flash(str(exc), "error")
-    return redirect(
-        request.referrer or url_for("admin_event_transactions", event_id=event_id)
-    )
+    return _redirect_back(url_for("admin_event_transactions", event_id=event_id))
+
+
+@app.route(
+    "/admin/eventos/<int:event_id>/transacoes/<int:tx_id>/cancelar-pendente",
+    methods=["POST"],
+    endpoint="admin_event_cancel_pending_transaction",
+)
+@admin_required
+def admin_event_cancel_pending_transaction(event_id: int, tx_id: int):
+    """Descarta pedido pendente do evento (marca como cancelado); não altera estoque."""
+    if _event_or_404(event_id) is None:
+        flash("Evento não encontrado.", "error")
+        return redirect(url_for("admin_events"))
+    try:
+        cancel_pending_transaction(tx_id, expected_event_id=event_id)
+        flash("Pedido pendente descartado.", "success")
+    except ValueError as exc:
+        flash(str(exc), "error")
+    return _redirect_back(url_for("admin_event_transactions", event_id=event_id))
 
 
 @app.route(
@@ -4834,24 +5258,27 @@ def admin_event_transaction_note(event_id: int, tx_id: int):
 @admin_required
 def admin_transaction_replace_item(tx_id: int, item_id: int):
     """Substitui o produto de um item confirmado (SKU + quantidade). Somente admin."""
+    blocked = _reject_if_tx_event_ops_closed(tx_id)
+    if blocked is not None:
+        return blocked
     sku = (request.form.get("sku") or "").strip()
     qty_raw = request.form.get("quantity") or ""
     try:
         new_qty = int(qty_raw)
     except (TypeError, ValueError):
         flash("Informe uma quantidade válida.", "error")
-        return redirect(request.referrer or url_for("admin_events"))
+        return _redirect_back( url_for("admin_events"))
     if not sku:
         flash("Informe o SKU do novo produto.", "error")
-        return redirect(request.referrer or url_for("admin_events"))
+        return _redirect_back( url_for("admin_events"))
 
     product, from_wake, lookup_err = _find_or_fetch_product(sku)
     if lookup_err == "wake_token":
         flash(_wake_token_help_message(), "error")
-        return redirect(request.referrer or url_for("admin_events"))
+        return _redirect_back( url_for("admin_events"))
     if product is None:
         flash(f'Produto "{sku}" não encontrado no catálogo nem na Wake Commerce.', "error")
-        return redirect(request.referrer or url_for("admin_events"))
+        return _redirect_back( url_for("admin_events"))
 
     expected_event = _parse_int(request.form.get("event_id") or "", 0)
     try:
@@ -4865,7 +5292,7 @@ def admin_transaction_replace_item(tx_id: int, item_id: int):
         )
     except ValueError as exc:
         flash(str(exc), "error")
-        return redirect(request.referrer or url_for("admin_events"))
+        return _redirect_back( url_for("admin_events"))
 
     suffix = " (variante importada da Wake)" if from_wake else ""
     msg = (
@@ -4876,7 +5303,7 @@ def admin_transaction_replace_item(tx_id: int, item_id: int):
     if result.get("pending"):
         msg += f" {result['pending']} un. ficaram pendentes de retirada (sem estoque)."
     flash(msg, "success")
-    return redirect(request.referrer or url_for("admin_events"))
+    return _redirect_back( url_for("admin_events"))
 
 
 @app.route(
@@ -4884,6 +5311,7 @@ def admin_transaction_replace_item(tx_id: int, item_id: int):
     methods=["POST"],
 )
 @admin_required
+@require_event_ops_open
 def admin_event_confirm_item_delivery(event_id: int, tx_id: int, item_id: int):
     """Confirma a retirada de um item pendente (baixa o estoque na entrega)."""
     if _event_or_404(event_id) is None:
@@ -4905,9 +5333,7 @@ def admin_event_confirm_item_delivery(event_id: int, tx_id: int, item_id: int):
         flash(msg, "success")
     except ValueError as exc:
         flash(str(exc), "error")
-    return redirect(
-        request.referrer or url_for("admin_event_transactions", event_id=event_id)
-    )
+    return _redirect_back(url_for("admin_event_transactions", event_id=event_id))
 
 
 @app.route(
@@ -4915,6 +5341,7 @@ def admin_event_confirm_item_delivery(event_id: int, tx_id: int, item_id: int):
     methods=["POST"],
 )
 @admin_required
+@require_event_ops_open
 def admin_event_confirm_items_delivery(event_id: int, tx_id: int):
     """Confirma a retirada de vários itens pendentes de um pedido."""
     if _event_or_404(event_id) is None:
@@ -4941,9 +5368,7 @@ def admin_event_confirm_items_delivery(event_id: int, tx_id: int):
             flash(msg, "success")
     except ValueError as exc:
         flash(str(exc), "error")
-    return redirect(
-        request.referrer or url_for("admin_event_transactions", event_id=event_id)
-    )
+    return _redirect_back(url_for("admin_event_transactions", event_id=event_id))
 
 
 @app.route(
@@ -4951,6 +5376,7 @@ def admin_event_confirm_items_delivery(event_id: int, tx_id: int):
     methods=["POST"],
 )
 @admin_required
+@require_event_ops_open
 def admin_event_confirm_transaction_handover(event_id: int, tx_id: int):
     """Marca o pedido inteiro como entregue/retirado pelo cliente."""
     if _event_or_404(event_id) is None:
@@ -4961,9 +5387,7 @@ def admin_event_confirm_transaction_handover(event_id: int, tx_id: int):
         flash("Pedido marcado como entregue.", "success")
     except ValueError as exc:
         flash(str(exc), "error")
-    return redirect(
-        request.referrer or url_for("admin_event_transactions", event_id=event_id)
-    )
+    return _redirect_back(url_for("admin_event_transactions", event_id=event_id))
 
 
 # ---------------------------------------------------------------------------
@@ -5138,4 +5562,7 @@ def mov_label_filter(value):
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    debug = _env_flag("TOTEM_DEBUG")
+    bind_host = (os.environ.get("TOTEM_BIND") or "0.0.0.0").strip()
+    port = int(os.environ.get("PORT") or "5000")
+    app.run(host=bind_host, port=port, debug=debug, use_reloader=debug)

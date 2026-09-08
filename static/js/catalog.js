@@ -180,6 +180,18 @@
         return d.innerHTML;
     }
 
+    function safeMediaUrl(value) {
+        const s = String(value == null ? '' : value).trim();
+        if (!s) return '';
+        const lower = s.toLowerCase();
+        if (lower.startsWith('javascript:') || lower.startsWith('vbscript:')) return '';
+        if (lower.startsWith('data:') && !lower.startsWith('data:image/')) return '';
+        if (lower.startsWith('http://') || lower.startsWith('https://') || s.startsWith('/') || lower.startsWith('data:image/')) {
+            return s;
+        }
+        return '';
+    }
+
     function formatCatalogPriceBRL(n) {
         const x = Number(n);
         if (!Number.isFinite(x)) return 'R$ 0,00';
@@ -621,6 +633,11 @@
     /* Contador no card e adição ao carrinho                                */
     /* -------------------------------------------------------------------- */
 
+    const READONLY = !!window.__CATALOG_READONLY__;
+    if (READONLY) {
+        document.documentElement.classList.add('catalog-readonly');
+    }
+
     function handleCatalogCardClick(event) {
         const optionsBtn = event.target.closest('[data-open-options]');
         if (optionsBtn) {
@@ -628,6 +645,8 @@
             openOptionsModal(optionsBtn.getAttribute('data-open-options'));
             return;
         }
+
+        if (READONLY) return;
 
         const counterBtn = event.target.closest('.product-card__counter-btn');
         if (counterBtn) {
@@ -754,7 +773,7 @@
             ? `<span class="line-item__price-original">${Cart.formatBRL(listUnit)}</span> ${unit}`
             : unit;
         const promoHint = item.promo_aplicada && item.promo_nome
-            ? `<p class="line-item__promo"><i class="fa-solid fa-tag" aria-hidden="true"></i> ${item.promo_nome}</p>`
+            ? `<p class="line-item__promo"><i class="fa-solid fa-tag" aria-hidden="true"></i> ${escapeCatalogHtml(item.promo_nome)}</p>`
             : '';
         const stock = Number(item.estoque);
         const missing = Number.isFinite(stock) ? item.quantidade - Math.max(0, stock) : 0;
@@ -791,15 +810,15 @@
                     </button>`;
         const freeClass = isFullyFree ? ' cart-item--free' : '';
         return `
-            <article class="cart-item${freeClass}" data-id="${item.id}">
+            <article class="cart-item${freeClass}" data-id="${escapeCatalogHtml(item.id)}">
                 <div class="cart-item__image">
-                    <img src="${item.imagem}" alt="${item.nome}" loading="lazy">
+                    <img src="${safeMediaUrl(item.imagem)}" alt="${escapeCatalogHtml(item.nome)}" loading="lazy">
                 </div>
                 <div class="cart-item__info">
-                    <span class="cart-item__category">${item.categoria || ''}</span>
-                    <h3 class="cart-item__name">${item.nome}</h3>
-                    ${item.variante ? `<p class="cart-item__variant">${item.variante}</p>` : ''}
-                    ${item.sku ? `<p class="cart-item__sku">SKU ${item.sku}</p>` : ''}
+                    <span class="cart-item__category">${escapeCatalogHtml(item.categoria || '')}</span>
+                    <h3 class="cart-item__name">${escapeCatalogHtml(item.nome)}</h3>
+                    ${item.variante ? `<p class="cart-item__variant">${escapeCatalogHtml(item.variante)}</p>` : ''}
+                    ${item.sku ? `<p class="cart-item__sku">SKU ${escapeCatalogHtml(item.sku)}</p>` : ''}
                     <p class="cart-item__price">
                         ${qtyLine}
                     </p>
@@ -841,7 +860,7 @@
         }
     }
 
-    if (openCartBtn) {
+    if (openCartBtn && !READONLY) {
         openCartBtn.addEventListener('click', () => {
             renderDrawer();
             openDrawer();

@@ -670,6 +670,18 @@
             .replace(/"/g, '&quot;');
     }
 
+    function safeMediaUrl(value) {
+        const s = String(value == null ? '' : value).trim();
+        if (!s) return '';
+        const lower = s.toLowerCase();
+        if (lower.startsWith('javascript:') || lower.startsWith('vbscript:')) return '';
+        if (lower.startsWith('data:') && !lower.startsWith('data:image/')) return '';
+        if (lower.startsWith('http://') || lower.startsWith('https://') || s.startsWith('/') || lower.startsWith('data:image/')) {
+            return s;
+        }
+        return '';
+    }
+
     /**
      * Ícone minimalista para itens acima do estoque (painel do vendedor).
      * Retorna string vazia quando não há retirada posterior pendente.
@@ -752,7 +764,7 @@
         return `
             <article class="${articleClass}${backorderClass}${freeClass}" data-id="${item.id}">
                 <div class="${articleClass}__image">
-                    <img src="${item.imagem || ''}" alt="${escapeHtml(item.nome)}" loading="lazy">
+                    <img src="${safeMediaUrl(item.imagem)}" alt="${escapeHtml(item.nome)}" loading="lazy">
                 </div>
                 <div class="${articleClass}__info">
                     <span class="${articleClass}__category">${escapeHtml(item.categoria || '')}</span>

@@ -7,6 +7,7 @@
 {% from "macros/admin_tx_delivery.html" import admin_tx_delivery_badge, admin_tx_delivery_section %}
 {% from "macros/admin_tx_handover.html" import admin_tx_handover_action %}
 {% from "macros/admin_tx_note.html" import admin_tx_note_form %}
+{% from "macros/admin_tx_pending_actions.html" import admin_tx_pending_actions %}
 
 {% block title %}{{ seller.name }} - Vendedores - Admin | Dental Odonto Master{% endblock %}
 
@@ -156,7 +157,7 @@
                         value="{{ ev.id }}"
                         {% if v_event_id|string == ev.id|string %}selected{% endif %}
                     >
-                        {{ ev.name }}{% if not ev.active %} (arquivado){% endif %}
+                        {{ ev.name }}{% if not ev.active %} (arquivado){% elif ev.operations_closed %} (encerrado){% endif %}
                     </option>
                     {% endfor %}
                 </select>
@@ -214,7 +215,8 @@
     </header>
 
     <form class="admin-filters" method="get"
-          action="{{ url_for('admin_seller_detail', seller_id=seller.id) }}">
+          action="{{ url_for('admin_seller_detail', seller_id=seller.id) }}#lista"
+          data-scroll-to-table>
         <label class="admin-filter">
             <span class="admin-filter__label">Status</span>
             <select name="status" class="admin-filter__input">
@@ -295,7 +297,7 @@
 
     {% include 'partials/admin_tx_legend.html' %}
 
-    <div class="admin-table admin-table--with-payment" role="table" aria-label="Vendas do vendedor">
+    <div id="lista" class="admin-table admin-table--with-payment" role="table" aria-label="Vendas do vendedor">
         <div class="admin-table__head" role="row">
             <span class="admin-table__col admin-table__col--toggle" aria-hidden="true"></span>
             <span class="admin-table__col" role="columnheader">Pedido</span>
@@ -328,8 +330,11 @@
                         <span class="admin-tx__status-stack">
                             {{ admin_tx_status_badge(tx) }}
                             {{ admin_tx_delivery_badge(tx) }}
-                            {{ admin_tx_handover_action(tx, 'admin_seller_confirm_transaction_handover', seller_id=seller.id) }}
+                            {{ admin_tx_handover_action(tx, 'admin_seller_confirm_transaction_handover', seller_id=seller.id, writable=(not tx.event_id) or event_ops_open(tx.event_id)) }}
                             {{ admin_tx_receipt_link(tx) }}
+                            {% if tx.event_id %}
+                            {{ admin_tx_pending_actions(tx, writable=True, cancel_endpoint='admin_event_cancel_pending_transaction', show_restore=False, event_id=tx.event_id) }}
+                            {% endif %}
                         </span>
                     </span>
                 </div>
@@ -353,7 +358,7 @@
                                 <span class="admin-table__col--num">Subtotal</span>
                             </div>
                             {% for it in tx_items %}
-                            {% if tx.status == 'confirmado' and it.product_id %}
+                            {% if tx.status == 'confirmado' and it.product_id and ((not tx.event_id) or event_ops_open(tx.event_id)) %}
                             <form
                                 class="admin-tx__items-row admin-tx__items-row--editable"
                                 method="post"
@@ -376,7 +381,8 @@
                             tx,
                             'admin_seller_confirm_item_delivery',
                             seller_id=seller.id,
-                            batch_endpoint='admin_seller_confirm_items_delivery'
+                            batch_endpoint='admin_seller_confirm_items_delivery',
+                            writable=(not tx.event_id) or event_ops_open(tx.event_id)
                         ) }}
                         {{ admin_tx_client_section(tx) }}
                         <div class="admin-tx__summary">
@@ -404,7 +410,7 @@
                             </div>
                         </div>
                         <div class="admin-tx__actions">
-                            {{ admin_tx_note_form(tx, 'admin_seller_transaction_note', seller_id=seller.id) }}
+                            {{ admin_tx_note_form(tx, 'admin_seller_transaction_note', writable=(not tx.event_id) or event_ops_open(tx.event_id), seller_id=seller.id) }}
                         </div>
                     </div>
                 </div>

@@ -2,10 +2,10 @@
     Sub-navegação interna de cada página de evento.
     Requer: event, active_event_tab
 #}
-<nav class="admin-event-subnav" aria-label="Seções do evento">
+<nav class="admin-event-subnav" aria-label="Seções do {{ event|op_noun(lower=True) }}">
     {% if event %}
     {% set admin_ev_badge = event.badge_color | event_badge_style %}
-    <span class="admin-nav__event-badge admin-event-subnav__event-badge" title="{% if event.active %}Evento ativo{% else %}Evento arquivado{% endif %} — {{ event.name }}"{% if admin_ev_badge %} style="{{ admin_ev_badge }}"{% endif %}>
+    <span class="admin-nav__event-badge admin-event-subnav__event-badge" title="{% if not event.active %}{{ event|op_noun }} arquivado{% elif event.operations_closed %}Operações encerradas{% else %}{{ event|op_noun }} ativo{% endif %} — {{ event.name }}"{% if admin_ev_badge %} style="{{ admin_ev_badge }}"{% endif %}>
         {{ event.name }}
     </span>
     {% endif %}

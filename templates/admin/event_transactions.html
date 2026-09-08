@@ -3,6 +3,7 @@
 {% block title %}Transações — {{ event.name }} | Dental Odonto Master{% endblock %}
 
 {% block admin_body %}
+{% set op_noun_l = event|op_noun(lower=True) %}
 <section class="admin-section">
     <header class="admin-section__header admin-section__header--row">
         <div>
@@ -12,7 +13,7 @@
             </a>
             <h2 class="admin-section__title">Exportar vendas (planilha)</h2>
             <p class="admin-section__subtitle">
-                Pedidos confirmados com movimentação de venda neste evento.
+                Pedidos confirmados com movimentação de venda neste {{ op_noun_l }}.
                 Filtre por vendedor para baixar só as vendas dele, ou deixe em «Todos».
                 Período pela data do pedido é opcional; campos vazios exportam o histórico completo
                 (até os limites do servidor). O arquivo é baixado em .xlsx (Excel).
@@ -61,14 +62,15 @@
         <div>
             <h1 class="admin-section__title">Histórico de transações</h1>
             <p class="admin-section__subtitle">
-                Pedidos registrados neste evento (campo <em>evento</em> na transação).
+                Pedidos registrados neste {{ op_noun_l }}.
                 Toque em uma linha para ver itens e totais.
             </p>
         </div>
     </header>
 
     <form class="admin-filters" method="get"
-          action="{{ url_for('admin_event_transactions', event_id=event.id) }}">
+          action="{{ url_for('admin_event_transactions', event_id=event.id) }}#lista"
+          data-scroll-to-table>
         <label class="admin-filter">
             <span class="admin-filter__label">Venda por vendedor</span>
             <select name="vendedor" class="admin-filter__input">
@@ -150,6 +152,7 @@
     </form>
 
     <div
+        id="lista"
         data-admin-event-tx-live
         data-api-url="{{ url_for('admin_api_event_transactions', event_id=event.id) }}"
         data-poll-ms="20000"

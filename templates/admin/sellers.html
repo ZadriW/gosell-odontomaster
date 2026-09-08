@@ -68,7 +68,7 @@
                         value="{{ ev.id }}"
                         {% if (sf.event_id or '') | string == ev.id | string %}selected{% endif %}
                     >
-                        {{ ev.name }}{% if not ev.active %} (arquivado){% endif %}
+                        {{ ev.name }}{% if not ev.active %} (arquivado){% elif ev.operations_closed %} (encerrado){% endif %}
                     </option>
                     {% endfor %}
                 </select>

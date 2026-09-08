@@ -3,6 +3,7 @@
 {% block title %}{{ promo.name }} — Promoção | {{ event.name }} | Dental Odonto Master{% endblock %}
 
 {% block admin_body %}
+{% set op_noun_l = event|op_noun(lower=True) %}
 <section class="admin-section">
     <header class="admin-section__header admin-section__header--row">
         <div>
@@ -21,6 +22,7 @@
                 {% endif %}
             </p>
         </div>
+        {% if event_ops_open(event) %}
         <div style="display:flex; gap:8px; align-items:flex-start; flex-wrap:wrap;">
             <form method="post"
                   action="{{ url_for('admin_event_promotion_toggle', event_id=event.id, promo_id=promo.id) }}">
@@ -41,6 +43,7 @@
                 </button>
             </form>
         </div>
+        {% endif %}
     </header>
 
     {# ---- Formulário de edição ---- #}
@@ -55,6 +58,7 @@
               class="admin-card__form admin-promo-edit-form"
               id="formEditPromo">
             {% include 'partials/csrf_field.html' %}
+            <fieldset class="admin-promo-edit-fields" {% if not event_ops_open(event) %}disabled{% endif %}>
 
             {# Nome #}
             <div class="admin-field">
@@ -234,18 +238,21 @@
                 {% else %}
                 <p class="admin-field__hint">
                     <i class="fa-solid fa-circle-info" aria-hidden="true"></i>
-                    Nenhum produto neste evento.
+                    Nenhum produto neste {{ op_noun_l }}.
                 </p>
                 {% endif %}
             </div>
 
+            </fieldset>
             <div class="admin-card__actions">
+                {% if event_ops_open(event) %}
                 <button type="submit" class="admin-btn admin-btn--primary">
                     <i class="fa-solid fa-floppy-disk" aria-hidden="true"></i>
                     Salvar alterações
                 </button>
+                {% endif %}
                 <a href="{{ url_for('admin_event_promotions', event_id=event.id) }}"
-                   class="admin-btn admin-btn--ghost">Cancelar</a>
+                   class="admin-btn admin-btn--ghost">{{ 'Voltar' if not event_ops_open(event) else 'Cancelar' }}</a>
             </div>
         </form>
     </div>

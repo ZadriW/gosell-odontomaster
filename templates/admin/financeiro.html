@@ -83,6 +83,8 @@
         {{ report.event.name }}
         {% if not report.event.active %}
         <span class="admin-badge admin-badge--neutral">Arquivado</span>
+        {% elif report.event.operations_closed %}
+        <span class="admin-badge admin-badge--warn">Encerrado</span>
         {% else %}
         <span class="admin-badge admin-badge--success">Ativo</span>
         {% endif %}
@@ -92,6 +94,76 @@
         {{ report.period.label }}
     </span>
 </div>
+{% with event=report.event %}
+{% include 'partials/admin_event_ops_banner.html' %}
+{% endwith %}
+
+{# ── Metas do evento ─────────────────────────────────────────────────────── #}
+{% set goals = report.goals or {} %}
+<section class="admin-section admin-fin-goals">
+    <header class="admin-section__header admin-section__header--row">
+        <div>
+            <h2 class="admin-section__title">
+                <i class="fa-solid fa-bullseye" aria-hidden="true"></i>
+                Metas do evento
+            </h2>
+            <p class="admin-section__subtitle">
+                Comparação com o realizado de todo o evento (pedidos confirmados), independente do período do relatório.
+            </p>
+        </div>
+    </header>
+
+    <div class="admin-fin-goals__layout">
+        <div class="admin-fin-goals__cards">
+            {% from "macros/admin_goals.html" import goal_card %}
+            {{ goal_card(goals.revenue, 'revenue') }}
+            {{ goal_card(goals.volume, 'volume') }}
+        </div>
+
+        {% if event_ops_open(report.event) %}
+        <form
+            class="admin-fin-goals__form"
+            method="post"
+            action="{{ url_for('admin_event_goals', event_id=selected_event_id) }}"
+        >
+            {% include 'partials/csrf_field.html' %}
+            {% if date_from %}<input type="hidden" name="ret_de" value="{{ date_from }}">{% endif %}
+            {% if date_to %}<input type="hidden" name="ret_ate" value="{{ date_to }}">{% endif %}
+            <p class="admin-fin-goals__form-title">Definir metas</p>
+            <label class="admin-field">
+                <span class="admin-field__label">Meta de faturamento (R$)</span>
+                <input
+                    type="text"
+                    name="revenue_goal"
+                    class="admin-field__input"
+                    inputmode="decimal"
+                    autocomplete="off"
+                    placeholder="Ex.: 50.000,00"
+                    value="{% if goals.revenue_goal is not none %}{{ '%.2f' | format(goals.revenue_goal) | replace('.', ',') }}{% endif %}"
+                >
+            </label>
+            <label class="admin-field">
+                <span class="admin-field__label">Meta de volume (unidades)</span>
+                <input
+                    type="number"
+                    name="volume_goal"
+                    class="admin-field__input"
+                    min="0"
+                    step="1"
+                    inputmode="numeric"
+                    placeholder="Ex.: 200"
+                    value="{% if goals.volume_goal is not none %}{{ goals.volume_goal | int }}{% endif %}"
+                >
+            </label>
+            <p class="admin-fin-goals__form-hint">Deixe em branco para remover a meta.</p>
+            <button type="submit" class="admin-btn admin-btn--primary admin-btn--sm">
+                <i class="fa-solid fa-floppy-disk" aria-hidden="true"></i>
+                Salvar metas
+            </button>
+        </form>
+        {% endif %}
+    </div>
+</section>
 
 {# ── KPIs principais ─────────────────────────────────────────────────────── #}
 <section class="admin-section">

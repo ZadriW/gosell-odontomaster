@@ -3,7 +3,17 @@
 
     const PRODUCT_POLL_MS = 5000;
     const LIST_POLL_MS = 15000;
-    const PROMO_ICON_FALLBACK_TITLE = 'Produto com promoção ativa neste evento';
+    function operationNounL() {
+        const shell = document.querySelector('.admin-shell--event');
+        if (shell && shell.getAttribute('data-op-noun-l')) {
+            return shell.getAttribute('data-op-noun-l');
+        }
+        const scoped = document.querySelector('[data-op-noun-l]');
+        if (scoped && scoped.getAttribute('data-op-noun-l')) {
+            return scoped.getAttribute('data-op-noun-l');
+        }
+        return 'evento';
+    }
 
     function escapeHtml(value) {
         return String(value ?? '').replace(/[&<>"']/g, char => ({
@@ -337,9 +347,9 @@
                     ? '<i class="fa-solid fa-eye-slash" aria-hidden="true"></i> Desativar produto'
                     : '<i class="fa-solid fa-eye" aria-hidden="true"></i> Ativar produto';
                 if (product.ativo) {
-                    button.setAttribute('data-confirm', 'Desativar este produto? Ele deixará de aparecer no totem.');
+                    button.setAttribute('data-confirm', 'Desativar este produto? Ele deixará de aparecer no Go Sell.');
                 } else {
-                    button.setAttribute('data-confirm', 'Ativar este produto no totem?');
+                    button.setAttribute('data-confirm', 'Ativar este produto no Go Sell?');
                 }
             }
         }
@@ -437,7 +447,7 @@
         if (priceValue) priceValue.textContent = formatBrl(price);
         else priceCell.textContent = formatBrl(price);
         if (override) {
-            priceCell.title = `Preço personalizado neste evento. Biblioteca: ${formatBrl(libraryPrice)}`;
+            priceCell.title = `Preço personalizado neste ${operationNounL()}. Biblioteca: ${formatBrl(libraryPrice)}`;
         } else {
             priceCell.title = 'Preço da biblioteca';
         }
@@ -497,7 +507,7 @@
                             promoTipPanel.textContent = tip;
                             promoTipPanel.classList.toggle('admin-stock__promo-tooltip-panel--empty', !tip);
                         }
-                        promoIcon.title = tip || PROMO_ICON_FALLBACK_TITLE;
+                        promoIcon.title = tip || `Produto com promoção ativa neste ${operationNounL()}`;
                         if (tip) promoIcon.setAttribute('aria-label', `Promoções: ${tip}`);
                         else promoIcon.setAttribute('aria-label', 'Em promoção');
                     } else {

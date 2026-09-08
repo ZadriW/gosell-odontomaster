@@ -14,7 +14,7 @@
    ``batch_endpoint``: rota POST de vários itens (tx_id [, event_id | seller_id]).
    ``event_id``: rotas no escopo do evento.
    ``seller_id``: rotas no escopo do vendedor (admin). #}
-{% macro admin_tx_delivery_section(tx, endpoint, event_id=None, seller_id=None, batch_endpoint=None) %}
+{% macro admin_tx_delivery_section(tx, endpoint, event_id=None, seller_id=None, batch_endpoint=None, writable=True) %}
 {% if (tx.status or '')|lower == 'confirmado' %}
 {% set pending_items = [] %}
 {% for it in tx['items'] %}
@@ -32,11 +32,15 @@
     </h4>
     <p class="admin-tx__delivery-hint">
         Pagos no fechamento da venda, mas ainda não entregues.
+        {% if writable %}
         Selecione os produtos e confirme a entrega quando o cliente retirar
         (o estoque será baixado neste momento).
+        {% else %}
+        Consulta apenas — as operações deste {{ event|op_noun(lower=True) if event is defined else 'evento' }} estão encerradas.
+        {% endif %}
     </p>
 
-    {% if batch_endpoint %}
+    {% if batch_endpoint and writable %}
     <form method="post"
           id="{{ batch_form_id }}"
           {% if event_id %}
@@ -72,7 +76,7 @@
 
     {% for it, pending in pending_items %}
     <div class="admin-tx__delivery-row">
-        {% if batch_endpoint %}
+        {% if batch_endpoint and writable %}
         <label class="admin-tx__delivery-check">
             <input type="checkbox"
                    name="item_ids"
@@ -90,6 +94,7 @@
         <span class="admin-tx__delivery-qty">
             <strong>{{ pending }}</strong> de {{ it.quantity }} un. pendente{% if pending != 1 %}s{% endif %}
         </span>
+        {% if writable %}
         <form method="post"
               {% if event_id %}
               action="{{ url_for(endpoint, event_id=event_id, tx_id=tx.id, item_id=it.id) }}"
@@ -104,6 +109,7 @@
                 Confirmar entrega
             </button>
         </form>
+        {% endif %}
     </div>
     {% endfor %}
 </div>

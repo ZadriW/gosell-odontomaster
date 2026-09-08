@@ -190,6 +190,33 @@ html.admin-theme--dark .topbar__brand .admin-brand-logo--dark {
     font-size: 15px;
 }
 
+.catalog__ops-banner {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    margin: 12px 0 8px;
+    padding: 12px 14px;
+    border-radius: 12px;
+    border: 1px solid rgba(165, 98, 10, 0.28);
+    background: rgba(232, 137, 11, 0.12);
+    color: var(--color-text);
+    font-size: 14px;
+    font-weight: 600;
+    line-height: 1.45;
+}
+
+.catalog__ops-banner i {
+    margin-top: 2px;
+    color: #a5620a;
+}
+
+.catalog--readonly .product-card__counter,
+.catalog--readonly .product-card__button,
+html.catalog-readonly .product-card__counter,
+html.catalog-readonly .product-card__button {
+    display: none;
+}
+
 .product-grid {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));

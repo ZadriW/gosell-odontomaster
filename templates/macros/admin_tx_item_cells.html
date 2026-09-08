@@ -9,7 +9,7 @@
     {% elif it.product_id and event_id %}
     <a class="admin-tx__product-link"
        href="{{ url_for('admin_event_stock_product', event_id=event_id, product_id=it.product_id) }}"
-       title="Ver produto no estoque do evento">
+       title="Ver produto no estoque do {{ event|op_noun(lower=True) if event is defined else 'evento' }}">
         {{ it.product_name }}
     </a>
     {% elif it.product_id %}

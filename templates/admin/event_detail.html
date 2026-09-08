@@ -1,8 +1,12 @@
 {% extends "admin/_layout.html" %}
+{% from 'macros/admin_event_operation_type.html' import event_operation_type_field %}
 
-{% block title %}{{ event.name }} - Evento | Dental Odonto Master{% endblock %}
+{% block title %}{{ event.name }} - {{ event.operation_type | event_operation_type_label }} | Dental Odonto Master{% endblock %}
 
 {% block admin_body %}
+{% set op_noun = event|op_noun %}
+{% set op_noun_l = event|op_noun(lower=True) %}
+{% set op_nouns_l = event|op_noun(plural=True, lower=True) %}
 
 {# ============================================================ Sub-nav do evento #}
 <section class="admin-section">
@@ -10,15 +14,18 @@
         <div>
             <a class="admin-breadcrumb" href="{{ url_for('admin_events') }}">
                 <i class="fa-solid fa-arrow-left" aria-hidden="true"></i>
-                Todos os eventos
+                Todos os {{ op_nouns_l }}
             </a>
             <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-top:4px;">
                 <h1 class="admin-section__title">{{ event.name }}</h1>
-                {% if event.active %}
-                <span class="admin-badge admin-badge--success">Ativo</span>
-                {% else %}
+                {% if not event.active %}
                 <span class="admin-badge admin-badge--neutral">Arquivado</span>
+                {% elif event.operations_closed %}
+                <span class="admin-badge admin-badge--warn">Encerrado</span>
+                {% else %}
+                <span class="admin-badge admin-badge--success">Ativo</span>
                 {% endif %}
+                <span class="admin-badge admin-badge--info">{{ event.operation_type | event_operation_type_label }}</span>
             </div>
             {% if event.description %}
             <p class="admin-section__subtitle admin-event-header__desc">{{ event.description }}</p>
@@ -27,19 +34,53 @@
             {% endif %}
         </div>
         <div class="admin-event-header__actions">
+            {% if event_ops_open(event) %}
             <button type="button" class="admin-event-edit-trigger"
                     id="event-edit-open"
                     aria-haspopup="dialog"
                     aria-controls="event-edit-modal"
                     aria-expanded="false">
                 <i class="fa-solid fa-pen-to-square" aria-hidden="true"></i>
-                <span>Editar evento</span>
+                <span>Editar {{ op_noun_l }}</span>
             </button>
+            {% endif %}
             {% if event.active %}
+            {% if event_ops_open(event) %}
+            <form
+                method="post"
+                action="{{ url_for('admin_event_close_operations', event_id=event.id) }}"
+                style="display:contents;"
+                data-confirm="Encerrar as operações deste {{ op_noun_l }}? Admin e vendedores passam a consultar estoque, vendas e transações apenas em modo leitura. Novas vendas e edições ficam bloqueadas até reabrir."
+                data-confirm-title="Encerrar operações de {{ event.name|e }}?"
+                data-confirm-label="Encerrar operações"
+            >
+                {% include 'partials/csrf_field.html' %}
+                <button type="submit" class="admin-btn admin-btn--warn">
+                    <i class="fa-solid fa-lock" aria-hidden="true"></i>
+                    Encerrar operações
+                </button>
+            </form>
+            {% else %}
+            <form
+                method="post"
+                action="{{ url_for('admin_event_reopen_operations', event_id=event.id) }}"
+                style="display:contents;"
+                data-confirm="Reabrir as operações deste {{ op_noun_l }}? Vendas e edições voltam a ser permitidas."
+                data-confirm-title="Reabrir operações de {{ event.name|e }}?"
+                data-confirm-label="Reabrir"
+                data-confirm-destructive="false"
+            >
+                {% include 'partials/csrf_field.html' %}
+                <button type="submit" class="admin-btn admin-btn--ghost">
+                    <i class="fa-solid fa-lock-open" aria-hidden="true"></i>
+                    Reabrir operações
+                </button>
+            </form>
+            {% endif %}
             <form method="post" action="{{ url_for('admin_event_archive', event_id=event.id) }}" style="display:contents;">
                 {% include 'partials/csrf_field.html' %}
                 <button type="submit" class="admin-btn admin-btn--ghost"
-                    onclick="return confirm('Arquivar o evento {{ event.name|e }}?');">
+                    onclick="return confirm('Arquivar o {{ op_noun_l }} {{ event.name|e }}?');">
                     <i class="fa-solid fa-box-archive" aria-hidden="true"></i>
                     Arquivar
                 </button>
@@ -57,16 +98,16 @@
                 method="post"
                 action="{{ url_for('admin_event_delete', event_id=event.id) }}"
                 class="admin-event-header__delete-form"
-                data-confirm="{{ ('Serão removidos produtos do evento, promoções, vínculos com vendedores, transações e movimentações de estoque. Esta ação não pode ser desfeita.') | e }}"
-                data-confirm-title="Excluir evento {{ event.name|e }}?"
+                data-confirm="{{ ('Serão removidos produtos do ' ~ op_noun_l ~ ', promoções, vínculos com vendedores, transações e movimentações de estoque. Esta ação não pode ser desfeita.') | e }}"
+                data-confirm-title="Excluir {{ op_noun_l }} {{ event.name|e }}?"
                 data-confirm-label="Excluir"
             >
                 {% include 'partials/csrf_field.html' %}
                 <button
                     type="submit"
                     class="admin-btn admin-btn--danger admin-btn--icon-only"
-                    title="Excluir evento"
-                    aria-label="Excluir evento {{ event.name }}"
+                    title="Excluir {{ op_noun_l }}"
+                    aria-label="Excluir {{ op_noun_l }} {{ event.name }}"
                 >
                     <i class="fa-solid fa-trash-can" aria-hidden="true"></i>
                 </button>
@@ -78,7 +119,7 @@
     <div class="admin-kpis">
         <article class="kpi">
             <span class="kpi__icon"><i class="fa-solid fa-tags" aria-hidden="true"></i></span>
-            <span class="kpi__label">Produtos no evento</span>
+            <span class="kpi__label">Produtos no {{ op_noun_l }}</span>
             <span class="kpi__value">{{ stats.products_count }}</span>
             <span class="kpi__hint">Adicionados manualmente</span>
         </article>
@@ -87,7 +128,7 @@
             <span class="kpi__icon"><i class="fa-solid fa-warehouse" aria-hidden="true"></i></span>
             <span class="kpi__label">Unidades em estoque</span>
             <span class="kpi__value">{{ stats.units_in_stock }}</span>
-            <span class="kpi__hint">Somatório do evento</span>
+            <span class="kpi__hint">Somatório do {{ op_noun_l }}</span>
         </article>
 
         <article class="kpi kpi--success">
@@ -109,7 +150,7 @@
         <div class="admin-event-dash-sales__intro">
             <h2 id="event-dash-sales-title" class="admin-event-dash-sales__title">Desempenho de vendas</h2>
             <p class="admin-event-dash-sales__subtitle">
-                Pedidos confirmados no totem com estoque baixado neste evento.
+                Pedidos confirmados no Go Sell com estoque baixado neste {{ op_noun_l }}.
                 Ticket médio = receita ÷ quantidade de pedidos.
             </p>
         </div>
@@ -117,7 +158,7 @@
         <div class="admin-kpis admin-kpis--sales-dash">
             <article class="kpi kpi--primary">
                 <span class="kpi__icon"><i class="fa-solid fa-receipt" aria-hidden="true"></i></span>
-                <span class="kpi__label">Pedidos no evento</span>
+                <span class="kpi__label">Pedidos no {{ op_noun_l }}</span>
                 <span class="kpi__value">{{ sales_dashboard.orders_count }}</span>
                 <span class="kpi__hint">Total histórico</span>
             </article>
@@ -141,6 +182,26 @@
             </article>
         </div>
 
+        {% set dash_goals = sales_dashboard.goals or {} %}
+        <div class="admin-event-dash-sales__goals">
+            <div class="admin-event-dash-sales__goals-head">
+                <h3 class="admin-event-dash-sales__panel-title">
+                    <i class="fa-solid fa-bullseye" aria-hidden="true"></i>
+                    Metas do {{ op_noun_l }}
+                </h3>
+                <a class="admin-event-dash-sales__goals-link"
+                   href="{{ url_for('admin_financeiro', evento=event.id) }}">
+                    Definir no Financeiro
+                    <i class="fa-solid fa-arrow-right" aria-hidden="true"></i>
+                </a>
+            </div>
+            <div class="admin-event-dash-sales__goals-cards">
+                {% from "macros/admin_goals.html" import goal_card %}
+                {{ goal_card(dash_goals.revenue, 'revenue', compact=true) }}
+                {{ goal_card(dash_goals.volume, 'volume', compact=true) }}
+            </div>
+        </div>
+
         <div class="admin-event-dash-sales__grid">
             <div class="admin-event-dash-sales__panel">
                 <h3 class="admin-event-dash-sales__panel-title">
@@ -148,7 +209,7 @@
                     Vendas por dia
                 </h3>
                 <p class="admin-event-dash-sales__panel-hint">
-                    Dias com pedidos no evento, mais recentes primeiro (até {{ sales_dashboard.sales_days_limit }} dias).
+                    Dias com pedidos no {{ op_noun_l }}, mais recentes primeiro (até {{ sales_dashboard.sales_days_limit }} dias).
                 </p>
                 {% if sales_dashboard.sales_by_day %}
                 <div class="admin-table admin-event-dash-sales__table admin-event-dash-sales__table--by-day" role="table" aria-label="Vendas por dia">
@@ -206,7 +267,7 @@
                 </nav>
                 {% endif %}
                 {% else %}
-                <p class="admin-event-dash-sales__empty">Nenhuma venda registrada neste evento ainda.</p>
+                <p class="admin-event-dash-sales__empty">Nenhuma venda registrada neste {{ op_noun_l }} ainda.</p>
                 {% endif %}
             </div>
 
@@ -215,7 +276,7 @@
                     <i class="fa-solid fa-ranking-star" aria-hidden="true"></i>
                     Top 5 produtos (SKU)
                 </h3>
-                <p class="admin-event-dash-sales__panel-hint">Por quantidade de unidades vendidas no evento.</p>
+                <p class="admin-event-dash-sales__panel-hint">Por quantidade de unidades vendidas no {{ op_noun_l }}.</p>
                 {% if sales_dashboard.top_products %}
                 <div class="admin-table admin-event-dash-sales__table admin-event-dash-sales__table--top-skus" role="table" aria-label="Produtos mais vendidos">
                     <div class="admin-table__head admin-event-dash-sales__row admin-event-dash-sales__row--top" role="row">
@@ -249,10 +310,11 @@
     </div>
 </section>
 
+{% if event_ops_open(event) %}
 <dialog class="admin-modal" id="event-edit-modal" aria-labelledby="event-edit-modal-title">
     <div class="admin-modal__panel">
         <header class="admin-modal__header">
-            <h2 class="admin-modal__title" id="event-edit-modal-title">Editar evento</h2>
+            <h2 class="admin-modal__title" id="event-edit-modal-title">Editar {{ op_noun_l }}</h2>
             <button type="button" class="admin-modal__close" id="event-edit-close" aria-label="Fechar">
                 <i class="fa-solid fa-xmark" aria-hidden="true"></i>
             </button>
@@ -260,10 +322,11 @@
         <form method="post" action="{{ url_for('admin_event_edit', event_id=event.id) }}" class="admin-modal__body">
             {% include 'partials/csrf_field.html' %}
             <div class="admin-field">
-                <label class="admin-field__label" for="event-modal-name">Nome do evento <span aria-hidden="true">*</span></label>
+                <label class="admin-field__label" for="event-modal-name">Nome do {{ op_noun_l }} <span aria-hidden="true">*</span></label>
                 <input id="event-modal-name" type="text" name="name" class="admin-field__input"
                     value="{{ event.name }}" required maxlength="200" autocomplete="off">
             </div>
+            {{ event_operation_type_field('event-modal-operation-type', event.operation_type or 'evento') }}
             <div class="admin-field">
                 <label class="admin-field__label" for="event-modal-desc">Descrição (opcional)</label>
                 <input id="event-modal-desc" type="text" name="description" class="admin-field__input"
@@ -303,12 +366,13 @@
         </form>
     </div>
 </dialog>
+{% endif %}
 
 {# Vendedores associados #}
 <section class="admin-section">
     <header class="admin-section__header admin-section__header--row">
         <div>
-            <h2 class="admin-section__title">Vendedores no evento</h2>
+            <h2 class="admin-section__title">Vendedores no {{ op_noun_l }}</h2>
             <p class="admin-section__subtitle">{{ sellers | length }} vendedor(es) associado(s).</p>
         </div>
         <a class="admin-btn admin-btn--ghost" href="{{ url_for('admin_sellers') }}">

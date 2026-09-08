@@ -15,7 +15,8 @@
         </div>
     </header>
 
-    <form class="admin-filters" method="get" action="{{ url_for('admin_stock') }}">
+    <form class="admin-filters" method="get" action="{{ url_for('admin_stock') }}#lista"
+          data-scroll-to-table>
         <label class="admin-filter">
             <span class="admin-filter__label">Buscar</span>
             <span class="admin-filter__wrap">
@@ -71,6 +72,7 @@
     </form>
 
     <div
+        id="lista"
         class="admin-table admin-stock"
         role="table"
         aria-label="Produtos em estoque"

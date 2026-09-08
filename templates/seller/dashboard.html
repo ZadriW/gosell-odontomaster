@@ -14,7 +14,13 @@
 {% if seller_event %}
 <div class="seller-event-banner">
     <i class="fa-solid fa-calendar-star" aria-hidden="true"></i>
-    <span>Você está operando no evento <strong>{{ seller_event.name }}</strong>. Os dados exibidos são exclusivos deste evento.</span>
+    <span>
+        {% if event_ops_open(seller_event) %}
+        Você está operando no evento <strong>{{ seller_event.name }}</strong>. Os dados exibidos são exclusivos deste evento.
+        {% else %}
+        Evento <strong>{{ seller_event.name }}</strong> com operações encerradas. Consulta apenas — vendas e edições bloqueadas.
+        {% endif %}
+    </span>
 </div>
 {% endif %}
 
@@ -108,7 +114,8 @@
         </div>
     </header>
 
-    <form class="admin-filters" method="get" action="{{ url_for('seller_dashboard') }}">
+    <form class="admin-filters" method="get" action="{{ url_for('seller_dashboard') }}#lista"
+          data-scroll-to-table>
         <label class="admin-filter">
             <span class="admin-filter__label">Status</span>
             <select name="status" class="admin-filter__input">
@@ -184,7 +191,7 @@
 
     {% include 'partials/admin_tx_legend.html' %}
 
-    <div class="admin-table admin-table--with-payment" role="table" aria-label="Histórico de transações do vendedor">
+    <div id="lista" class="admin-table admin-table--with-payment" role="table" aria-label="Histórico de transações do vendedor">
         <div class="admin-table__head" role="row">
             <span class="admin-table__col admin-table__col--toggle" aria-hidden="true"></span>
             <span class="admin-table__col" role="columnheader">Pedido</span>
@@ -219,7 +226,7 @@
                             {{ admin_tx_status_badge(tx) }}
                             {{ admin_tx_delivery_badge(tx) }}
                             {{ admin_tx_receipt_link(tx) }}
-                            {{ admin_tx_pending_actions(tx) }}
+                            {{ admin_tx_pending_actions(tx, writable=event_ops_open(seller_event) if seller_event else true) }}
                         </span>
                     </span>
                 </div>
@@ -274,7 +281,7 @@
                             </div>
                         </div>
                         <div class="admin-tx__actions">
-                            {{ admin_tx_note_form(tx, 'seller_transaction_note') }}
+                            {{ admin_tx_note_form(tx, 'seller_transaction_note', writable=event_ops_open(seller_event) if seller_event else true) }}
                         </div>
                     </div>
                 </div>

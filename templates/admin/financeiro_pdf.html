@@ -68,6 +68,33 @@
         </div>
     </section>
 
+    {% set pdf_goals = report.goals or {} %}
+    {% if pdf_goals.has_any %}
+    <section class="fin-pdf__section">
+        <div class="fin-pdf__section-title">Metas do evento</div>
+        <div class="fin-pdf__kpis">
+            {% if pdf_goals.revenue %}
+            <div class="fin-pdf__kpi">
+                <div class="fin-pdf__kpi-label">Faturamento</div>
+                <div class="fin-pdf__kpi-value">{{ pdf_goals.revenue.percent }}%</div>
+                <div class="fin-pdf__kpi-hint">
+                    {{ pdf_goals.revenue.actual | brl }} de {{ pdf_goals.revenue.goal | brl }}
+                </div>
+            </div>
+            {% endif %}
+            {% if pdf_goals.volume %}
+            <div class="fin-pdf__kpi">
+                <div class="fin-pdf__kpi-label">Volume</div>
+                <div class="fin-pdf__kpi-value">{{ pdf_goals.volume.percent }}%</div>
+                <div class="fin-pdf__kpi-hint">
+                    {{ pdf_goals.volume.actual | int }} de {{ pdf_goals.volume.goal | int }} un.
+                </div>
+            </div>
+            {% endif %}
+        </div>
+    </section>
+    {% endif %}
+
     {# ── Estoque ────────────────────────────────────────────────────────── #}
     <section class="fin-pdf__section">
         <div class="fin-pdf__section-title">Movimentação de Estoque</div>

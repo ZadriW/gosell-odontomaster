@@ -6,6 +6,7 @@
 {% block head %}
 {% include 'partials/totem_theme_head.html' %}
 <link rel="stylesheet" href="{{ url_for('static', filename='css/payment.css') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/idle-timeout.css') }}">
 {% endblock %}
 
 {% block body %}
@@ -417,16 +418,19 @@
         </div>
     </main>
 </div>
+{% include 'partials/checkout_idle_lock.html' %}
 {% endblock %}
 
 {% block scripts %}
 <script src="{{ url_for('static', filename='js/totem-api-errors.js') }}"></script>
-<script>
-window.__TOTEM_FLOW__ = {{ (totem_flow or {}) | tojson }};
-window.__SELLER_BACKORDER__ = {{ (seller_backorder or false) | tojson }};
-</script>
+{% set boot_payload = {
+    '__TOTEM_FLOW__': totem_flow or {},
+    '__SELLER_BACKORDER__': seller_backorder or false
+} %}
+{% include 'partials/json_boot.html' %}
 <script src="{{ url_for('static', filename='js/promo-pricing.js') }}"></script>
 <script src="{{ url_for('static', filename='js/cart.js') }}"></script>
 <script src="{{ url_for('static', filename='js/payment-form.js') }}"></script>
 <script src="{{ url_for('static', filename='js/payment.js') }}"></script>
+<script src="{{ url_for('static', filename='js/idle-timeout.js') }}"></script>
 {% endblock %}

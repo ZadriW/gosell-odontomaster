@@ -15,23 +15,88 @@ from .products import (
 from .sku_helpers import _default_sku_for_id
 import product_images
 
+# Classificação operacional do cadastro (não altera o fluxo de vendas).
+EVENT_OPERATION_TYPES: Tuple[Tuple[str, str], ...] = (
+    ("evento", "Evento"),
+    ("congresso", "Congresso"),
+    ("stand", "Stand"),
+)
+EVENT_OPERATION_TYPE_DEFAULT = "evento"
+_EVENT_OPERATION_TYPE_KEYS = {key for key, _ in EVENT_OPERATION_TYPES}
+_EVENT_OPERATION_TYPE_LABELS = dict(EVENT_OPERATION_TYPES)
+
+
+def normalize_event_operation_type(raw: Optional[str]) -> Optional[str]:
+    """Devolve o slug válido (evento|congresso|stand) ou None se inválido."""
+    key = (raw or "").strip().lower()
+    if key in _EVENT_OPERATION_TYPE_KEYS:
+        return key
+    return None
+
+
+def event_operation_type_label(raw: Optional[str]) -> str:
+    """Rótulo de exibição; valores ausentes ou antigos caem em Evento."""
+    key = normalize_event_operation_type(raw) or EVENT_OPERATION_TYPE_DEFAULT
+    return _EVENT_OPERATION_TYPE_LABELS[key]
+
+
+def event_operation_noun(source=None, *, plural: bool = False) -> str:
+    """Substantivo da operação (Evento/Congresso/Stand), no singular ou plural."""
+    if isinstance(source, dict):
+        raw = source.get("operation_type")
+    else:
+        raw = source
+    label = event_operation_type_label(raw)
+    if not plural:
+        return label
+    if label == "Stand":
+        return "Stands"
+    return f"{label}s"
+
+
 def create_event(
     name: str,
     description: str = "",
     *,
     badge_color: Optional[str] = None,
+    operation_type: Optional[str] = None,
 ) -> int:
     """Cria um novo evento e retorna o id gerado."""
     now = _now_iso()
+    op_type = normalize_event_operation_type(operation_type) or EVENT_OPERATION_TYPE_DEFAULT
     with get_conn() as conn:
         cur = conn.execute(
             """
-            INSERT INTO events (name, description, badge_color, active, created_at, updated_at)
-            VALUES (?, ?, ?, 1, ?, ?)
+            INSERT INTO events (
+                name, description, badge_color, operation_type, active, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, 1, ?, ?)
             """,
-            (name.strip(), (description or "").strip(), badge_color, now, now),
+            (name.strip(), (description or "").strip(), badge_color, op_type, now, now),
         )
         return int(cur.lastrowid)
+
+
+def event_ops_open(event) -> bool:
+    """True se o evento está ativo e com operações abertas (vendas e edições).
+
+    Aceita o dict do evento ou um id numérico. Sem evento / id inválido → False.
+    """
+    if isinstance(event, (int, float)):
+        event = get_event(int(event))
+    elif isinstance(event, str) and event.strip().isdigit():
+        event = get_event(int(event.strip()))
+    if not event:
+        return False
+    try:
+        if int(event.get("active") or 0) != 1:
+            return False
+    except (TypeError, ValueError, AttributeError):
+        return False
+    try:
+        return int(event.get("operations_closed") or 0) == 0
+    except (TypeError, ValueError, AttributeError):
+        return True
 
 
 def list_events(include_archived: bool = False) -> List[Dict]:
@@ -41,7 +106,8 @@ def list_events(include_archived: bool = False) -> List[Dict]:
         rows = conn.execute(
             f"""
             SELECT
-                e.id, e.name, e.description, e.badge_color, e.active,
+                e.id, e.name, e.description, e.badge_color, e.operation_type,
+                e.active, e.operations_closed, e.operations_closed_at,
                 e.created_at, e.updated_at,
                 (SELECT COUNT(*) FROM event_products ep WHERE ep.event_id = e.id) AS products_count,
                 (SELECT COUNT(*) FROM event_sellers es WHERE es.event_id = e.id) AS sellers_count
@@ -68,17 +134,127 @@ def update_event(
     description: str = "",
     *,
     badge_color: Optional[str] = None,
+    operation_type: Optional[str] = None,
 ) -> None:
-    """Atualiza nome, descrição e cor opcional do badge."""
+    """Atualiza nome, descrição, tipo de operação e cor opcional do badge."""
+    now = _now_iso()
+    op_type = normalize_event_operation_type(operation_type) or EVENT_OPERATION_TYPE_DEFAULT
+    with get_conn() as conn:
+        conn.execute(
+            """
+            UPDATE events
+               SET name = ?, description = ?, badge_color = ?, operation_type = ?, updated_at = ?
+             WHERE id = ?
+            """,
+            (name.strip(), (description or "").strip(), badge_color, op_type, now, event_id),
+        )
+
+
+def set_event_operations_closed(event_id: int, closed: bool) -> None:
+    """Encerra ou reabre as operações do evento (sem arquivar)."""
     now = _now_iso()
     with get_conn() as conn:
         conn.execute(
             """
-            UPDATE events SET name = ?, description = ?, badge_color = ?, updated_at = ?
+            UPDATE events
+               SET operations_closed = ?,
+                   operations_closed_at = ?,
+                   updated_at = ?
              WHERE id = ?
             """,
-            (name.strip(), (description or "").strip(), badge_color, now, event_id),
+            (
+                1 if closed else 0,
+                now if closed else None,
+                now,
+                int(event_id),
+            ),
         )
+
+
+def update_event_goals(
+    event_id: int,
+    *,
+    revenue_goal: Optional[float] = None,
+    volume_goal: Optional[int] = None,
+) -> bool:
+    """Define ou limpa as metas de faturamento e volume do evento.
+
+    ``None`` remove a meta correspondente. Valores negativos são rejeitados.
+    """
+    stored_revenue: Optional[float] = None
+    if revenue_goal is not None:
+        stored_revenue = round(float(revenue_goal), 2)
+        if stored_revenue < 0:
+            return False
+        if stored_revenue == 0:
+            stored_revenue = None
+    stored_volume: Optional[int] = None
+    if volume_goal is not None:
+        stored_volume = int(volume_goal)
+        if stored_volume < 0:
+            return False
+        if stored_volume == 0:
+            stored_volume = None
+    now = _now_iso()
+    with get_conn() as conn:
+        cur = conn.execute(
+            """
+            UPDATE events
+               SET revenue_goal = ?, volume_goal = ?, updated_at = ?
+             WHERE id = ?
+            """,
+            (stored_revenue, stored_volume, now, int(event_id)),
+        )
+        return cur.rowcount > 0
+
+
+def _goal_metric(actual: float, goal) -> Optional[Dict]:
+    """Compara realizado × meta. ``None`` se a meta não estiver definida."""
+    try:
+        goal_val = float(goal) if goal is not None else 0.0
+    except (TypeError, ValueError):
+        goal_val = 0.0
+    if goal_val <= 0:
+        return None
+    actual_val = float(actual or 0)
+    pct = (actual_val / goal_val) * 100.0 if goal_val else 0.0
+    return {
+        "goal": goal_val,
+        "actual": actual_val,
+        "remaining": max(0.0, goal_val - actual_val),
+        "percent": round(pct, 1),
+        "bar_percent": min(100.0, max(0.0, pct)),
+        "reached": actual_val + 1e-9 >= goal_val,
+    }
+
+
+def get_event_goal_progress(event_id: int) -> Dict:
+    """Metas do evento vs. vendas confirmadas do evento (sem filtro de período)."""
+    ev = get_event(event_id) or {}
+    with get_conn() as conn:
+        row = conn.execute(
+            """
+            SELECT COUNT(*) AS orders,
+                   COALESCE(SUM(t.total), 0) AS revenue,
+                   COALESCE(SUM(t.items_count), 0) AS items_sold
+              FROM transactions t
+             WHERE t.status = 'confirmado' AND t.event_id = ?
+            """,
+            (int(event_id),),
+        ).fetchone()
+    revenue = float(row["revenue"] or 0) if row else 0.0
+    items_sold = int(row["items_sold"] or 0) if row else 0
+    revenue_prog = _goal_metric(revenue, ev.get("revenue_goal"))
+    volume_prog = _goal_metric(items_sold, ev.get("volume_goal"))
+    return {
+        "revenue": revenue_prog,
+        "volume": volume_prog,
+        "has_any": revenue_prog is not None or volume_prog is not None,
+        "revenue_goal": ev.get("revenue_goal"),
+        "volume_goal": ev.get("volume_goal"),
+        "actual_revenue": revenue,
+        "actual_volume": items_sold,
+    }
 
 
 def archive_event(event_id: int) -> None:
@@ -729,6 +905,7 @@ def get_event_sales_dashboard(
         "sales_by_day_pagination": sales_by_day_pagination,
         "top_products": top_products,
         "sales_days_limit": lim_days,
+        "goals": get_event_goal_progress(eid),
     }
 # Limites para exportações CSV (painel admin).
 EXPORT_MOVEMENTS_CSV_CAP = 100_000
@@ -883,7 +1060,7 @@ def get_event_financial_report(
     with get_conn() as conn:
         # ---------- dados do evento ----------------------------------
         ev_row = conn.execute(
-            "SELECT id, name, active, created_at, description FROM events WHERE id = ?",
+            "SELECT id, name, active, operations_closed, created_at, description FROM events WHERE id = ?",
             (eid,),
         ).fetchone()
         event_data = dict(ev_row) if ev_row else {}
@@ -1068,6 +1245,7 @@ def get_event_financial_report(
             "refunds_count": refunds_count,
             "refunds_value": refunds_value,
         },
+        "goals": get_event_goal_progress(eid),
         "payment_methods": payment_methods,
         "stock_summary": stock_summary,
         "top_skus": top_skus,

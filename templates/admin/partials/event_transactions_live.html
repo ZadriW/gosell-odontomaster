@@ -2,10 +2,11 @@
 {% from "macros/admin_tx_order_cell.html" import admin_tx_order_cell %}
 {% from "macros/admin_tx_receipt_link.html" import admin_tx_receipt_link %}
 {% from "macros/admin_tx_status_badge.html" import admin_tx_status_badge %}
-{% from "macros/admin_tx_item_cells.html" import admin_tx_item_cells, admin_tx_discount_summary %}
-{% from "macros/admin_tx_delivery.html" import admin_tx_delivery_badge, admin_tx_delivery_section %}
+{% from "macros/admin_tx_item_cells.html" import admin_tx_item_cells, admin_tx_discount_summary with context %}
+{% from "macros/admin_tx_delivery.html" import admin_tx_delivery_badge, admin_tx_delivery_section with context %}
 {% from "macros/admin_tx_handover.html" import admin_tx_handover_action %}
 {% from "macros/admin_tx_note.html" import admin_tx_note_form %}
+{% from "macros/admin_tx_pending_actions.html" import admin_tx_pending_actions %}
 
 <header class="admin-section__header admin-section__header--row" style="margin-top: 8px;">
     <div>
@@ -23,7 +24,7 @@
 
 {% include 'partials/admin_tx_legend.html' %}
 
-<div class="admin-table admin-table--tx-wide" role="table" aria-label="Histórico de transações do evento">
+<div class="admin-table admin-table--tx-wide" role="table" aria-label="Histórico de transações do {{ event|op_noun(lower=True) }}">
     <div class="admin-table__head" role="row">
         <span class="admin-table__col admin-table__col--toggle" aria-hidden="true"></span>
         <span class="admin-table__col" role="columnheader">Pedido</span>
@@ -64,8 +65,9 @@
                     <span class="admin-tx__status-stack">
                         {{ admin_tx_status_badge(tx) }}
                         {{ admin_tx_delivery_badge(tx) }}
-                        {{ admin_tx_handover_action(tx, 'admin_event_confirm_transaction_handover', event_id=event.id) }}
+                        {{ admin_tx_handover_action(tx, 'admin_event_confirm_transaction_handover', event_id=event.id, writable=event_ops_open(event)) }}
                         {{ admin_tx_receipt_link(tx) }}
+                        {{ admin_tx_pending_actions(tx, writable=True, cancel_endpoint='admin_event_cancel_pending_transaction', show_restore=False, event_id=event.id) }}
                     </span>
                 </span>
             </div>
@@ -93,7 +95,7 @@
                             <span class="admin-table__col--num">Subtotal</span>
                         </div>
                         {% for it in tx_items %}
-                        {% if tx.status == 'confirmado' and it.product_id %}
+                        {% if tx.status == 'confirmado' and it.product_id and event_ops_open(event) %}
                         <form
                             class="admin-tx__items-row admin-tx__items-row--editable"
                             method="post"
@@ -110,7 +112,7 @@
                         {% endif %}
                         {% endfor %}
                     </div>
-                    {{ admin_tx_delivery_section(tx, 'admin_event_confirm_item_delivery', event_id=event.id, batch_endpoint='admin_event_confirm_items_delivery') }}
+                    {{ admin_tx_delivery_section(tx, 'admin_event_confirm_item_delivery', event_id=event.id, batch_endpoint='admin_event_confirm_items_delivery', writable=event_ops_open(event)) }}
                     {{ admin_tx_client_section(tx) }}
                     <div class="admin-tx__summary">
                         <div class="admin-tx__summary-row">
@@ -137,8 +139,9 @@
                         </div>
                     </div>
                     <div class="admin-tx__actions">
-                        {{ admin_tx_note_form(tx, 'admin_event_transaction_note', event_id=event.id) }}
-                        {% if tx.status == 'confirmado' %}
+                        {{ admin_tx_note_form(tx, 'admin_event_transaction_note', writable=event_ops_open(event), event_id=event.id) }}
+                        {{ admin_tx_pending_actions(tx, writable=True, cancel_endpoint='admin_event_cancel_pending_transaction', show_restore=False, event_id=event.id, variant='button') }}
+                        {% if tx.status == 'confirmado' and event_ops_open(event) %}
                         <form
                             method="post"
                             action="{{ url_for('admin_event_transaction_refund', event_id=event.id, tx_id=tx.id) }}"

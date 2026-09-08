@@ -23,6 +23,7 @@
         type="button"
         id="openCartBtn"
         aria-label="Abrir carrinho"
+        {% if catalog_readonly %}hidden{% endif %}
     >
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <circle cx="9" cy="21" r="1"></circle>
@@ -47,9 +48,15 @@
     <span class="catalog-toast__text">Produto adicionado ao carrinho!</span>
 </div>
 
-<main class="catalog">
+<main class="catalog{% if catalog_readonly %} catalog--readonly{% endif %}">
     <div class="catalog__header">
         <h1 class="catalog__title">Catálogo de Produtos</h1>
+        {% if catalog_readonly %}
+        <p class="catalog__ops-banner" role="status">
+            <i class="fa-solid fa-lock" aria-hidden="true"></i>
+            Operações encerradas — consulta de estoque e preços apenas. Novas vendas estão bloqueadas.
+        </p>
+        {% endif %}
         <p class="catalog__subtitle" id="resultsInfo">{{ products|rejectattr('catalog_oculto')|list|length }} produtos disponíveis</p>
     </div>
 

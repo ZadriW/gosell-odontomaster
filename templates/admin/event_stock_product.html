@@ -4,16 +4,18 @@
 {% block title %}{{ product.nome }} — Estoque — {{ event.name }} | Dental Odonto Master{% endblock %}
 
 {% block admin_body %}
+{% set op_noun_l = event|op_noun(lower=True) %}
 <section
     class="admin-section"
     data-admin-product
+    data-op-noun-l="{{ op_noun_l }}"
     data-api-url="{{ url_for('admin_api_event_stock_product', event_id=event.id, product_id=product.id) }}"
 >
     <header class="admin-section__header admin-section__header--row">
         <div>
             <a class="admin-breadcrumb" href="{{ url_for('admin_event_stock', event_id=event.id) }}">
                 <i class="fa-solid fa-arrow-left" aria-hidden="true"></i>
-                Voltar ao estoque do evento
+                Voltar ao estoque do {{ op_noun_l }}
             </a>
             <h1 class="admin-section__title">
                 {{ product.nome }}
@@ -61,13 +63,20 @@
                     <dt>SKU</dt>
                     <dd><code>{{ product.sku }}</code></dd>
                 </div>
+                {% if event_ops_open(event) %}
                 {% include 'partials/admin_product_price_form.html' %}
+                {% else %}
                 <div>
-                    <dt>Estoque atual (evento)</dt>
+                    <dt>Preço neste {{ op_noun_l }}</dt>
+                    <dd><strong>{{ product.preco | brl }}</strong></dd>
+                </div>
+                {% endif %}
+                <div>
+                    <dt>Estoque atual ({{ op_noun_l }})</dt>
                     <dd data-product-stock><strong>{{ product.estoque }}</strong> un.</dd>
                 </div>
                 <div>
-                    <dt>Estoque mínimo (evento)</dt>
+                    <dt>Estoque mínimo ({{ op_noun_l }})</dt>
                     <dd data-product-min-stock>{{ product.estoque_minimo }} un.</dd>
                 </div>
                 <div>
@@ -88,6 +97,7 @@
                 </div>
             </dl>
 
+            {% if event_ops_open(event) %}
             <form method="post"
                   action="{{ url_for('admin_event_stock_min', event_id=event.id, product_id=product.id) }}"
                   class="admin-product__inline-form"
@@ -123,7 +133,7 @@
                     </button>
                 </div>
                 <p class="admin-field__hint">
-                    0 bloqueia entregas pendentes deste produto neste evento.
+                    0 bloqueia entregas pendentes deste produto neste {{ op_noun_l }}.
                     Use <i class="fa-solid fa-infinity" aria-hidden="true"></i> para não ter limite.
                 </p>
             </form>
@@ -135,7 +145,7 @@
                 {% if product.ativo %}
                     <input type="hidden" name="active" value="0">
                     <button type="submit" class="admin-btn admin-btn--ghost admin-btn--danger"
-                            data-confirm="Desativar este produto? Ele deixará de aparecer no totem.">
+                            data-confirm="Desativar este produto? Ele deixará de aparecer no Go Sell.">
                         <i class="fa-solid fa-eye-slash" aria-hidden="true"></i>
                         Desativar produto
                     </button>
@@ -147,8 +157,10 @@
                     </button>
                 {% endif %}
             </form>
+            {% endif %}
         </aside>
 
+        {% if event_ops_open(event) %}
         <div class="admin-product__forms">
             <article class="admin-card admin-card--entrada admin-card--collapsible">
                 <button
@@ -162,7 +174,7 @@
                     <i class="fa-solid fa-down-long admin-card__icon admin-card__icon--positive" aria-hidden="true"></i>
                     <div>
                         <h2 class="admin-card__title">Entrada de estoque</h2>
-                        <p class="admin-card__subtitle">Compra, reposição ou recebimento do fornecedor (somente neste evento).</p>
+                        <p class="admin-card__subtitle">Compra, reposição ou recebimento do fornecedor (somente neste {{ op_noun_l }}).</p>
                     </div>
                     <span class="admin-card__toggle-chevron" aria-hidden="true">
                         <i class="fa-solid fa-chevron-down"></i>
@@ -238,6 +250,7 @@
                 </div>
             </article>
         </div>
+        {% endif %}
     </div>
 </section>
 
@@ -245,7 +258,7 @@
     <header class="admin-section__header">
         <h2 class="admin-section__title">Histórico de movimentações</h2>
         <p class="admin-section__subtitle">
-            Movimentações deste produto no evento <strong>{{ event.name }}</strong>.
+            Movimentações deste produto no {{ op_noun_l }} <strong>{{ event.name }}</strong>.
             {% if pagination.total > 0 %}
                 Mostrando {{ pagination.showing_from }}–{{ pagination.showing_to }} de {{ pagination.total }}.
             {% else %}
@@ -255,7 +268,8 @@
     </header>
 
     <form class="admin-filters" method="get"
-          action="{{ url_for('admin_event_stock_product', event_id=event.id, product_id=product.id) }}">
+          action="{{ url_for('admin_event_stock_product', event_id=event.id, product_id=product.id) }}#lista"
+          data-scroll-to-table>
         <label class="admin-filter admin-filter--wide">
             <span class="admin-filter__label">Código do pedido</span>
             <span class="admin-filter__wrap">
@@ -306,9 +320,10 @@
     </form>
 
     <div
+        id="lista"
         class="admin-table"
         role="table"
-        aria-label="Movimentações do produto no evento"
+        aria-label="Movimentações do produto no {{ op_noun_l }}"
         data-product-movements
         data-movements-cap="{{ pagination.per_page }}"
         {% if pagination.page == 1 and filters.tipo == 'todos' and not filters.pedido and filters.vendedor == 0 %}

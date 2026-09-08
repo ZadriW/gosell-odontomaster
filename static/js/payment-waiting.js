@@ -18,18 +18,36 @@
 
     const Cart = window.Cart;
     const PromoPricing = window.PromoPricing;
+    const FLOW = window.__TOTEM_FLOW__ || {};
+    const CATALOG_URL = FLOW.catalog || '/vendedor/venda';
     if (!isResumeMode && !Cart) return;
     if (isResumeMode && (!Cart || typeof Cart.getItems !== 'function')) {
         window.location.assign(CATALOG_URL);
         return;
     }
 
-    const FLOW = window.__TOTEM_FLOW__ || {};
     const SUMMARY_URL = FLOW.payment || '/vendedor/pagamento';
-    const CATALOG_URL = FLOW.catalog || '/vendedor/venda';
     const HOME_URL = FLOW.home || '/';
     const SUCCESS_REDIRECT_MS = 30000;
     const CASH_AUT = 'DINHEIRO';
+
+    function escapeHtml(value) {
+        const d = document.createElement('div');
+        d.textContent = value == null ? '' : String(value);
+        return d.innerHTML;
+    }
+
+    function safeMediaUrl(value) {
+        const s = String(value == null ? '' : value).trim();
+        if (!s) return '';
+        const lower = s.toLowerCase();
+        if (lower.startsWith('javascript:') || lower.startsWith('vbscript:')) return '';
+        if (lower.startsWith('data:') && !lower.startsWith('data:image/')) return '';
+        if (lower.startsWith('http://') || lower.startsWith('https://') || s.startsWith('/') || lower.startsWith('data:image/')) {
+            return s;
+        }
+        return '';
+    }
 
     const RESUME_PENDING_TX_KEY = 'totem_resume_pending_tx_id';
 
@@ -120,7 +138,7 @@
                 ? 'Receba o valor em <strong>espécie</strong> do cliente conforme o total do pedido. '
                     + 'Depois de conferir o recebimento, toque no botão abaixo para registrar a venda '
                     + 'e liberar a nota de retirada.'
-                : 'Utilize a <strong>maquininha</strong> ao lado do totem para concluir o pagamento '
+                : 'Utilize a <strong>maquininha</strong> ao lado do Go Sell para concluir o pagamento '
                     + '(<strong>PIX</strong> ou <strong>cartão</strong>, conforme selecionado no passo anterior). '
                     + 'Quando a operação for aprovada na maquininha, toque no botão abaixo para registrar '
                     + 'a venda e liberar a nota de retirada.';
@@ -140,15 +158,15 @@
         const subtotal = Cart.formatBRL(item.subtotal != null ? item.subtotal : item.preco * item.quantidade);
         const unit     = Cart.formatBRL(item.preco);
         return `
-            <article class="payment-item" data-id="${item.id}">
+            <article class="payment-item" data-id="${escapeHtml(item.id)}">
                 <div class="payment-item__image">
-                    <img src="${item.imagem}" alt="${item.nome}" loading="lazy">
+                    <img src="${safeMediaUrl(item.imagem)}" alt="${escapeHtml(item.nome)}" loading="lazy">
                 </div>
                 <div class="payment-item__info">
-                    <span class="payment-item__category">${item.categoria || ''}</span>
-                    <h3 class="payment-item__name">${item.nome}</h3>
-                    ${item.variante ? `<p class="payment-item__variant">${item.variante}</p>` : ''}
-                    ${item.sku ? `<p class="payment-item__sku">SKU ${item.sku}</p>` : ''}
+                    <span class="payment-item__category">${escapeHtml(item.categoria || '')}</span>
+                    <h3 class="payment-item__name">${escapeHtml(item.nome)}</h3>
+                    ${item.variante ? `<p class="payment-item__variant">${escapeHtml(item.variante)}</p>` : ''}
+                    ${item.sku ? `<p class="payment-item__sku">SKU ${escapeHtml(item.sku)}</p>` : ''}
                     <p class="payment-item__meta">${item.quantidade} × ${unit}</p>
                 </div>
                 <div class="payment-item__total">${subtotal}</div>
@@ -280,7 +298,7 @@
             return;
         }
         const rows = pending
-            .map(p => `<li><strong>${p.pending}×</strong> ${p.product_name}</li>`)
+            .map(p => `<li><strong>${escapeHtml(p.pending)}×</strong> ${escapeHtml(p.product_name)}</li>`)
             .join('');
         box.innerHTML = `
             <i class="fa-solid fa-box-open" aria-hidden="true"></i>

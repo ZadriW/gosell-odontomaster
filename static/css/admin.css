@@ -153,6 +153,10 @@
     box-shadow: 0 0 0 4px rgba(14, 22, 122, 0.10);
 }
 
+select.admin-field__input {
+    cursor: pointer;
+}
+
 .admin-field__input--invalid,
 .admin-field__input--invalid:focus {
     border-color: #c62828;
@@ -935,6 +939,11 @@ a.kpi:hover .kpi__link-arrow,
     overflow: hidden;
 }
 
+/* Âncora dos filtros (Aplicar → #lista): não fica escondida sob a topbar sticky */
+#lista {
+    scroll-margin-top: calc(var(--admin-topbar-height, 68px) + 12px);
+}
+
 .admin-table__head,
 .admin-tx__row {
     display: grid;
@@ -1282,7 +1291,20 @@ a.kpi:hover .kpi__link-arrow,
 /* Histórico de transações (admin dashboard): coluna Vendedor ao lado do Status */
 .admin-table--tx-wide > .admin-table__head,
 .admin-table--tx-wide .admin-tx__row {
-    grid-template-columns: 40px 1.05fr 0.95fr 0.48fr 0.7fr 0.72fr 0.95fr 0.65fr;
+    grid-template-columns: 40px 1.05fr 0.95fr 0.48fr 0.7fr 0.72fr 0.95fr minmax(7.5rem, 0.85fr);
+}
+
+.admin-table--tx-wide .admin-tx__status {
+    overflow: visible;
+}
+
+.admin-table--tx-wide .admin-tx__status-stack {
+    flex-wrap: wrap;
+    justify-content: flex-end;
+}
+
+.admin-tx__discard-form--action {
+    display: inline-flex;
 }
 
 .admin-table--tx-wide .admin-table__col--seller {
@@ -2703,7 +2725,7 @@ html.admin-theme--dark .admin-tx__delivery-check-all {
    Tabela de estoque
    ========================================================================== */
 
-/* Legenda acima da tabela de estoque (promoção e retirada pendente) */
+/* Legenda acima da tabela de estoque (promoção, preço e retirada pendente) */
 .admin-stock-legend {
     margin: 0 0 14px;
     padding: 12px 14px;
@@ -2744,6 +2766,11 @@ html.admin-theme--dark .admin-tx__delivery-check-all {
 
 .admin-stock-legend__sample--delivery .admin-stock__delivery-wrap {
     pointer-events: none;
+}
+
+.admin-stock-legend__sample--price .admin-stock__price-flag {
+    font-size: 16px;
+    line-height: 1;
 }
 
 .admin-stock-legend__sample--tx-delivery .admin-tx__delivery-badge {
@@ -3996,9 +4023,17 @@ html.admin-theme--dark .admin-mov__order-link:hover code {
             gap: 4px;
         }
 
+        .admin-topbar__brand .admin-event-nav__badge--archived {
+            max-width: 168px;
+        }
+
         .admin-topbar__brand .admin-event-nav__select {
             max-width: 72px;
             font-size: 10px;
+        }
+
+        .admin-topbar__brand .admin-event-nav__badge--archived .admin-event-nav__select {
+            max-width: 118px;
         }
 
         .admin-topbar__event-badge--in-brand {
@@ -5194,6 +5229,10 @@ html.admin-theme--dark .admin-mov__order-link:hover code {
         max-width: 160px;
     }
 
+    .admin-topbar__brand .admin-event-nav__badge--archived {
+        max-width: 230px;
+    }
+
     .admin-topbar__meta {
         order: 2;
         flex: 0 1 auto;
@@ -5851,7 +5890,11 @@ html.admin-theme--dark .admin-mov__order-link:hover code {
     background: rgba(14, 22, 122, 0.12);
     color: var(--color-primary);
     border: 1.5px solid rgba(14, 22, 122, 0.18);
-    max-width: 260px;
+    max-width: 220px;
+}
+
+.admin-event-nav__badge--archived {
+    max-width: 320px;
 }
 
 .admin-event-nav__badge-icon {
@@ -5890,11 +5933,17 @@ html.admin-theme--dark .admin-mov__order-link:hover code {
     cursor: pointer;
     letter-spacing: 0.03em;
     min-width: 0;
-    max-width: 200px;
+    max-width: 160px;
     overflow: hidden;
     text-overflow: ellipsis;
     padding: 0;
     line-height: 1.3;
+    field-sizing: content;
+}
+
+.admin-event-nav__badge--archived .admin-event-nav__select,
+.admin-event-nav__badge--closed .admin-event-nav__select {
+    max-width: 250px;
 }
 
 .admin-event-nav__select option {
@@ -5910,6 +5959,38 @@ html.admin-theme--dark .admin-mov__order-link:hover code {
     gap: 10px;
     flex-wrap: wrap;
     justify-content: flex-end;
+}
+
+.admin-ops-banner {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    margin: 0 0 16px;
+    padding: 12px 14px;
+    border-radius: var(--radius-md);
+    border: 1px solid rgba(165, 98, 10, 0.28);
+    background: rgba(232, 137, 11, 0.12);
+    color: var(--color-text);
+    font-size: 14px;
+    font-weight: 500;
+    line-height: 1.45;
+}
+
+.admin-ops-banner > i {
+    margin-top: 2px;
+    color: #a5620a;
+}
+
+.admin-ops-banner strong {
+    display: inline;
+    font-weight: 700;
+}
+
+.admin-promo-edit-fields {
+    border: 0;
+    margin: 0;
+    padding: 0;
+    min-width: 0;
 }
 
 .admin-event-header__desc {
@@ -6459,9 +6540,15 @@ html.admin-theme--dark .admin-mov__order-link:hover code {
         font-size: 11px;
         padding: 4px 8px;
     }
+    .admin-event-nav__badge--archived {
+        max-width: 230px;
+    }
     .admin-event-nav__select {
         max-width: 110px;
         font-size: 11px;
+    }
+    .admin-event-nav__badge--archived .admin-event-nav__select {
+        max-width: 170px;
     }
     .admin-event-nav__chevron {
         font-size: 9px;
@@ -7235,6 +7322,15 @@ html.admin-theme--dark .admin-flash--error {
     color: var(--admin-danger);
 }
 
+html.admin-theme--dark .admin-ops-banner {
+    border-color: rgba(245, 180, 40, 0.28);
+    background: rgba(245, 180, 40, 0.10);
+}
+
+html.admin-theme--dark .admin-ops-banner > i {
+    color: #f5b428;
+}
+
 /* Botões */
 html.admin-theme--dark .admin-btn--primary {
     background: var(--color-primary);
@@ -7692,6 +7788,191 @@ html.admin-theme--dark .seller-restore-msg {
     color: var(--color-text-muted);
 }
 
+.admin-fin-goals {
+    margin-top: 8px;
+}
+
+.admin-fin-goals__layout {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(240px, 300px);
+    gap: 20px;
+    align-items: start;
+}
+
+@media (max-width: 900px) {
+    .admin-fin-goals__layout {
+        grid-template-columns: 1fr;
+    }
+}
+
+.admin-fin-goals__cards {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+
+.admin-fin-goals__form {
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    padding: 18px 18px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.admin-fin-goals__form-title {
+    margin: 0;
+    font-size: 14px;
+    font-weight: 800;
+    color: var(--color-text);
+}
+
+.admin-fin-goals__form-hint {
+    margin: 0;
+    font-size: 12px;
+    color: var(--color-text-muted);
+}
+
+.admin-goal-card {
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    padding: 16px 18px 14px;
+    min-width: 0;
+}
+
+.admin-goal-card--reached {
+    border-color: rgba(12, 138, 77, 0.35);
+}
+
+.admin-goal-card__head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 10px;
+    flex-wrap: wrap;
+}
+
+.admin-goal-card__icon {
+    color: var(--color-primary);
+    width: 1.25em;
+    text-align: center;
+}
+
+.admin-goal-card__label {
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--color-text);
+    flex: 1 1 auto;
+}
+
+.admin-goal-card__values {
+    margin: 0 0 10px;
+    font-size: 14px;
+    color: var(--color-text-muted);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 8px;
+    align-items: baseline;
+}
+
+.admin-goal-card__values strong {
+    font-size: 20px;
+    font-weight: 800;
+    color: var(--color-text);
+    letter-spacing: -0.02em;
+}
+
+.admin-goal-card__bar {
+    height: 8px;
+    border-radius: 99px;
+    background: rgba(14, 22, 122, 0.1);
+    overflow: hidden;
+}
+
+.admin-goal-card__bar-fill {
+    display: block;
+    height: 100%;
+    border-radius: inherit;
+    background: var(--color-primary);
+    min-width: 0;
+}
+
+.admin-goal-card--reached .admin-goal-card__bar-fill {
+    background: #0c8a4d;
+}
+
+.admin-goal-card__meta {
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+    margin: 8px 0 0;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--color-text-muted);
+}
+
+.admin-goal-card--empty {
+    opacity: 0.85;
+}
+
+.admin-goal-card__empty-text {
+    margin: 0;
+    font-size: 13px;
+    color: var(--color-text-muted);
+}
+
+.admin-goal-card--compact {
+    padding: 12px 14px 10px;
+}
+
+.admin-goal-card--compact .admin-goal-card__values strong {
+    font-size: 16px;
+}
+
+.admin-event-dash-sales__goals {
+    margin: 0 0 22px;
+}
+
+.admin-event-dash-sales__goals-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+    margin-bottom: 12px;
+}
+
+.admin-event-dash-sales__goals-head .admin-event-dash-sales__panel-title {
+    margin: 0;
+}
+
+.admin-event-dash-sales__goals-link {
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--color-primary);
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.admin-event-dash-sales__goals-link:hover {
+    text-decoration: underline;
+}
+
+.admin-event-dash-sales__goals-cards {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 14px;
+}
+
+@media (max-width: 700px) {
+    .admin-event-dash-sales__goals-cards {
+        grid-template-columns: 1fr;
+    }
+}
+
 /* KPIs financeiros */
 .admin-kpis--fin {
     grid-template-columns: repeat(4, 1fr);
@@ -8033,6 +8314,14 @@ html.admin-theme--dark .seller-restore-msg {
 html.admin-theme--dark .admin-fin__report-header {
     background: var(--color-surface);
     border-color: var(--color-border);
+}
+
+html.admin-theme--dark .admin-goal-card__bar {
+    background: rgba(255, 255, 255, 0.08);
+}
+
+html.admin-theme--dark .admin-goal-card--reached {
+    border-color: rgba(52, 211, 153, 0.35);
 }
 
 html.admin-theme--dark .admin-fin__stock-row--header {

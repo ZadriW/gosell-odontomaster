@@ -3,6 +3,7 @@
 {% block title %}Promoções — {{ event.name }} | Dental Odonto Master{% endblock %}
 
 {% block admin_body %}
+{% set op_noun_l = event|op_noun(lower=True) %}
 <section class="admin-section">
     <header class="admin-section__header admin-section__header--row">
         <div>
@@ -29,7 +30,7 @@
 
     {# ---- Lista de promoções ---- #}
     {% if promotions %}
-    <div class="admin-table admin-promos-list" role="table" aria-label="Promoções do evento">
+    <div class="admin-table admin-promos-list" role="table" aria-label="Promoções do {{ op_noun_l }}">
         <div class="admin-table__head admin-promos-list__row" role="row">
             <span role="columnheader">Nome</span>
             <span role="columnheader">Regra</span>
@@ -89,9 +90,10 @@
             <span class="admin-promos-list__actions">
                 <a class="admin-btn admin-btn--ghost admin-btn--sm"
                    href="{{ url_for('admin_event_promotion_detail', event_id=event.id, promo_id=promo.id) }}"
-                   title="Editar promoção">
-                    <i class="fa-solid fa-pen-to-square" aria-hidden="true"></i>
+                   title="{{ 'Ver promoção' if not event_ops_open(event) else 'Editar promoção' }}">
+                    <i class="fa-solid fa-{{ 'eye' if not event_ops_open(event) else 'pen-to-square' }}" aria-hidden="true"></i>
                 </a>
+                {% if event_ops_open(event) %}
                 <form method="post"
                       action="{{ url_for('admin_event_promotion_toggle', event_id=event.id, promo_id=promo.id) }}"
                       style="display:contents;">
@@ -113,6 +115,7 @@
                         <i class="fa-solid fa-trash" aria-hidden="true"></i>
                     </button>
                 </form>
+                {% endif %}
             </span>
         </div>
         {% endfor %}
@@ -120,12 +123,12 @@
     {% else %}
     <div class="admin-empty">
         <i class="fa-solid fa-tag" aria-hidden="true"></i>
-        <p>Nenhuma promoção cadastrada para este evento.</p>
+        <p>Nenhuma promoção cadastrada para este {{ op_noun_l }}.</p>
     </div>
     {% endif %}
 
     {# ---- Criar nova promoção ---- #}
-    {% if event.active %}
+    {% if event_ops_open(event) %}
     <div class="admin-card admin-card--form admin-promo-form" id="nova-promocao" style="margin-top:32px;">
         <h2 class="admin-card__title">
             <i class="fa-solid fa-plus" aria-hidden="true"></i>
@@ -291,7 +294,7 @@
                 {% else %}
                 <p class="admin-field__hint">
                     <i class="fa-solid fa-circle-info" aria-hidden="true"></i>
-                    Adicione produtos ao evento antes de criar promoções.
+                    Adicione produtos ao {{ op_noun_l }} antes de criar promoções.
                 </p>
                 {% endif %}
             </div>

@@ -12,6 +12,7 @@
 {% block title %}Estoque — {{ event.name }} | Dental Odonto Master{% endblock %}
 
 {% block admin_body %}
+{% set op_noun_l = event|op_noun(lower=True) %}
 <section class="admin-section">
     <header class="admin-section__header admin-section__header--row">
         <div>
@@ -31,17 +32,17 @@
             <form method="post" action="{{ url_for('admin_sync_catalog_wake') }}">
                 {% include 'partials/csrf_field.html' %}
                 <button type="submit" class="admin-btn admin-btn--ghost"
-                        title="Atualiza nomes, SKUs, preços e imagens a partir da Wake Commerce. Estoque e eventos não são alterados."
+                        title="Atualiza nomes, SKUs, preços e imagens a partir da Wake Commerce. Estoque e operações não são alterados."
                         onclick="return confirm('Sincronizar catálogo com a Wake Commerce?\n\nIsso atualiza nomes, SKUs, preços-base e imagens.\nEstoque, vendas e promoções NÃO serão afetados.');">
                     <i class="fa-solid fa-arrows-rotate" aria-hidden="true"></i>
-                    Sincronizar Wake
+                    Sincronizar com ERP
                 </button>
             </form>
             <form method="post" action="{{ url_for('admin_event_cache_product_images', event_id=event.id) }}">
                 {% include 'partials/csrf_field.html' %}
                 {{ event_stock_preserved_filters(filters, pagination) }}
                 <button type="submit" class="admin-btn admin-btn--ghost"
-                        title="Baixa as fotos da Wake para este computador. Use com internet antes do evento.">
+                        title="Baixa as fotos da Wake para este computador. Use com internet antes do {{ op_noun_l }}.">
                     <i class="fa-solid fa-images" aria-hidden="true"></i>
                     Salvar imagens (offline)
                 </button>
@@ -55,7 +56,8 @@
         </div>
     </header>
 
-    <form class="admin-filters" method="get" action="{{ url_for('admin_event_stock', event_id=event.id) }}">
+    <form class="admin-filters" method="get" action="{{ url_for('admin_event_stock', event_id=event.id) }}#lista"
+          data-scroll-to-table>
         <label class="admin-filter admin-filter--search">
             <span class="admin-filter__label">Buscar</span>
             <span class="admin-filter__wrap">
@@ -120,11 +122,11 @@
     </form>
 
     {# ---- Adicionar produto ---- #}
-    {% if event.active %}
+    {% if event_ops_open(event) %}
     <div class="admin-card admin-card--form" style="margin-bottom:16px;">
         <h2 class="admin-card__title">
             <i class="fa-solid fa-plus" aria-hidden="true"></i>
-            Adicionar produto ao evento
+            Adicionar produto ao {{ op_noun_l }}
         </h2>
         <form method="post"
               action="{{ url_for('admin_event_add_product', event_id=event.id) }}"
@@ -164,10 +166,10 @@
             coluna <strong>A</strong> = SKU, coluna <strong>E</strong> = quantidade (opcional).
             O preço só é atualizado se houver cabeçalho explícito
             (<strong>PREÇO</strong>, <strong>VALOR UNITÁRIO</strong> ou <strong>VALOR UNIDADE</strong>).
-            Planilha só de estoque não altera preços já definidos no evento.
+            Planilha só de estoque não altera preços já definidos no {{ op_noun_l }}.
             Sem cabeçalho de preço, produtos novos usam o preço-base da biblioteca.
             Sem quantidade, sobe com estoque 0. Duplicatas na planilha são somadas.
-            Se o produto já estiver no evento, a quantidade importada é somada ao estoque atual.
+            Se o produto já estiver no {{ op_noun_l }}, a quantidade importada é somada ao estoque atual.
         </p>
         <form method="post"
               action="{{ url_for('admin_event_import_xls', event_id=event.id) }}"
@@ -206,9 +208,11 @@
     {% endif %}
 
     {# ---- Tabela de produtos ---- #}
+    {% with show_price=true %}
     {% include 'partials/admin_stock_legend.html' %}
+    {% endwith %}
 
-    {% if event.active %}
+    {% if event_ops_open(event) %}
     <div class="admin-stock__toolbar">
         <button type="button"
                 class="admin-btn admin-btn--primary"
@@ -222,28 +226,28 @@
     {% endif %}
 
     <div
+        id="lista"
         class="admin-table admin-stock"
         role="table"
-        aria-label="Produtos do evento {{ event.name }}"
+        aria-label="Produtos do {{ op_noun_l }} {{ event.name }}"
         data-admin-event-stock
+        data-op-noun-l="{{ op_noun_l }}"
         data-api-url="{{ url_for('admin_api_event_stock', event_id=event.id, q=filters.q, categoria=filters.categoria, status=filters.status, entrega=filters.entrega, per_page=filters.per_page, page=pagination.page) }}"
     >
         <div class="admin-table__head admin-stock__row admin-event__row" role="row">
             <span role="columnheader" class="admin-stock__product-head">
-                {% if event.active %}
+                {% if event_ops_open(event) %}
                 <input type="checkbox" class="admin-stock__select-checkbox" id="bulk-stock-select-all"
                        data-bulk-select-all aria-label="Selecionar todos os produtos desta página">
                 {% endif %}
                 Produto
             </span>
-            <span class="admin-table__col--num" role="columnheader" title="Preço de venda neste evento">Preço</span>
-            <span class="admin-table__col--num" role="columnheader" title="Unidades vendidas neste evento (pedidos confirmados)">Vendas</span>
+            <span class="admin-table__col--num" role="columnheader" title="Preço de venda neste {{ op_noun_l }}">Preço</span>
+            <span class="admin-table__col--num" role="columnheader" title="Unidades vendidas neste {{ op_noun_l }} (pedidos confirmados)">Vendas</span>
             <span class="admin-table__col--num" role="columnheader" data-stock-qty>Estoque</span>
             <span class="admin-table__col--num" role="columnheader">Mínimo</span>
             <span role="columnheader">Situação</span>
-            {% if event.active %}
             <span role="columnheader" class="admin-stock__actions-head">Ações</span>
-            {% endif %}
         </div>
 
         {% if products %}
@@ -251,7 +255,7 @@
             <div class="admin-stock__row admin-event__row" data-product-id="{{ p.product_id }}">
 
                 <span class="admin-stock__product">
-                    {% if event.active %}
+                    {% if event_ops_open(event) %}
                     <input type="checkbox" class="admin-stock__select-checkbox"
                            data-bulk-select
                            data-product-id="{{ p.product_id }}"
@@ -283,7 +287,7 @@
                                   {% if p.product_id not in promo_product_ids %}hidden{% endif %}>
                                 <span class="admin-stock__promo-tag-icon"
                                       data-stock-promo-icon
-                                      title="{{ (promo_tip or 'Produto com promoção ativa neste evento')|e }}"
+                                      title="{{ (promo_tip or ('Produto com promoção ativa neste ' ~ op_noun_l))|e }}"
                                       role="img"
                                       tabindex="0"
                                       aria-label="{{ ('Promoções: ' ~ promo_tip)|e if promo_tip else 'Em promoção' }}">
@@ -305,15 +309,15 @@
                 <span class="admin-table__col--num admin-stock__price"
                       data-stock-price
                       {% if p.event_price is not none %}
-                      title="Preço personalizado neste evento. Biblioteca: {{ p.library_price | brl }}"
+                      title="Preço personalizado neste {{ op_noun_l }}. Biblioteca: {{ p.library_price | brl }}"
                       {% else %}
                       title="Preço da biblioteca"
                       {% endif %}>
-                    <span data-stock-price-value>{{ p.price | brl }}</span>{% if p.event_price is not none %}<span class="admin-stock__price-flag" data-stock-price-flag aria-hidden="true" title="Preço personalizado no evento">*</span>{% else %}<span class="admin-stock__price-flag" data-stock-price-flag hidden aria-hidden="true">*</span>{% endif %}
+                    <span data-stock-price-value>{{ p.price | brl }}</span>{% if p.event_price is not none %}<span class="admin-stock__price-flag" data-stock-price-flag aria-hidden="true" title="Preço personalizado no {{ op_noun_l }}">*</span>{% else %}<span class="admin-stock__price-flag" data-stock-price-flag hidden aria-hidden="true">*</span>{% endif %}
                 </span>
 
                 <span class="admin-table__col--num" data-stock-sales
-                      title="Unidades vendidas neste evento (pedidos confirmados)">{{ p.units_sold or 0 }}</span>
+                      title="Unidades vendidas neste {{ op_noun_l }} (pedidos confirmados)">{{ p.units_sold or 0 }}</span>
 
                 <span class="admin-table__col--num admin-stock__qty" data-stock-qty>
                     <strong>{{ p.stock }}</strong>
@@ -339,14 +343,14 @@
                     </span>
                 </span>
 
-                {% if event.active %}
                 <span class="admin-stock__actions">
                     <a class="admin-btn admin-btn--ghost admin-btn--sm"
                        href="{{ url_for('admin_event_stock_product', event_id=event.id, product_id=p.product_id) }}"
-                       title="Gerenciar"
-                       aria-label="Gerenciar {{ p.name }} no evento">
-                        <i class="fa-solid fa-sliders" aria-hidden="true"></i>
+                       title="{{ 'Consultar' if not event_ops_open(event) else 'Gerenciar' }}"
+                       aria-label="{{ 'Consultar' if not event_ops_open(event) else 'Gerenciar' }} {{ p.name }} no {{ op_noun_l }}">
+                        <i class="fa-solid fa-{{ 'eye' if not event_ops_open(event) else 'sliders' }}" aria-hidden="true"></i>
                     </a>
+                    {% if event_ops_open(event) %}
                     <form method="post"
                           action="{{ url_for('admin_event_remove_product', event_id=event.id, product_id=p.product_id) }}"
                           style="display:contents;">
@@ -354,14 +358,14 @@
                         {{ event_stock_preserved_filters(filters, pagination) }}
                         <button type="submit"
                                 class="admin-btn admin-btn--ghost admin-btn--sm admin-btn--danger"
-                                title="Remover do evento"
-                                aria-label="Remover {{ p.name }} do evento"
-                                onclick="return confirm('Remover {{ p.name|e }} deste evento?');">
+                                title="Remover do {{ op_noun_l }}"
+                                aria-label="Remover {{ p.name }} do {{ op_noun_l }}"
+                                onclick="return confirm('Remover {{ p.name|e }} deste {{ op_noun_l }}?');">
                             <i class="fa-solid fa-trash" aria-hidden="true"></i>
                         </button>
                     </form>
+                    {% endif %}
                 </span>
-                {% endif %}
             </div>
 
             {% endfor %}
@@ -369,7 +373,11 @@
             <div class="admin-empty">
                 <i class="fa-regular fa-folder-open" aria-hidden="true"></i>
                 {% if stats.products_count == 0 %}
-                    <p>Nenhum produto neste evento. Use o formulário acima para adicionar pelo SKU ou ID.</p>
+                    {% if event_ops_open(event) %}
+                    <p>Nenhum produto neste {{ op_noun_l }}. Use o formulário acima para adicionar pelo SKU ou ID.</p>
+                    {% else %}
+                    <p>Nenhum produto neste {{ op_noun_l }}.</p>
+                    {% endif %}
                 {% else %}
                     <p>Nenhum produto corresponde aos filtros aplicados.</p>
                 {% endif %}
@@ -378,7 +386,7 @@
     </div>
 
     {% if pagination.total > 0 %}
-    <nav class="admin-pagination" aria-label="Paginação da listagem de estoque do evento">
+    <nav class="admin-pagination" aria-label="Paginação da listagem de estoque do {{ op_noun_l }}">
         <p class="admin-pagination__summary">
             Mostrando
             <strong>{{ pagination.showing_from }}–{{ pagination.showing_to }}</strong>
@@ -417,7 +425,7 @@
     {% endif %}
 </section>
 
-{% if event.active %}
+{% if event_ops_open(event) %}
 {# Modal de entrada de estoque em lote (fora de <section> para evitar overflow/clip) #}
 <dialog class="admin-modal admin-modal--bulk-stock" id="bulk-stock-modal" aria-labelledby="bulk-stock-modal-title" aria-modal="true">
     <div class="admin-modal__panel">

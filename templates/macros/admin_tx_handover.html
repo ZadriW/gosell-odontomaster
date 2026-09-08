@@ -1,7 +1,7 @@
 {# Confirmação de entrega do pedido inteiro (retirada no balcão pelo cliente).
    Independente da retirada pendente por item (que continua exigindo baixa de
    estoque via admin_tx_delivery). Fica à esquerda do ícone da nota. #}
-{% macro admin_tx_handover_action(tx, endpoint, event_id=None, seller_id=None) -%}
+{% macro admin_tx_handover_action(tx, endpoint, event_id=None, seller_id=None, writable=True) -%}
 {% if (tx.status or '')|lower == 'confirmado' %}
 {% if (tx.handover_status or '')|lower == 'entregue' %}
 <span class="admin-tx__handover-done"
@@ -9,7 +9,7 @@
       aria-label="Pedido entregue">
     <i class="fa-solid fa-circle-check" aria-hidden="true"></i>
 </span>
-{% else %}
+{% elif writable %}
 <form method="post"
       {% if event_id %}
       action="{{ url_for(endpoint, event_id=event_id, tx_id=tx.id) }}"

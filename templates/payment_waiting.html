@@ -6,6 +6,7 @@
 {% block head %}
 {% include 'partials/totem_theme_head.html' %}
 <link rel="stylesheet" href="{{ url_for('static', filename='css/payment.css') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/idle-timeout.css') }}">
 {% endblock %}
 
 {% block body %}
@@ -27,7 +28,7 @@
             </div>
             <h1 class="payment-wait__title" id="waitingTitle">Aguardando pagamento</h1>
             <p class="payment-wait__lead" id="waitingLead">
-                Utilize a <strong>maquininha</strong> ao lado do totem para concluir o pagamento
+                Utilize a <strong>maquininha</strong> ao lado do Go Sell para concluir o pagamento
                 (<strong>PIX</strong> ou <strong>cartão</strong>, conforme selecionado no passo anterior).
                 Quando a operação for aprovada na maquininha, toque no botão abaixo para registrar
                 a venda e liberar a nota de retirada.
@@ -105,7 +106,7 @@
             <p class="payment__success-text">
                 Retire a nota impressa e apresente no balcão para retirar seus produtos.
                 <br>
-                O totem retornará ao painel do vendedor em <span id="successCountdown">30</span>s.
+                O Go Sell retornará ao painel do vendedor em <span id="successCountdown">30</span>s.
             </p>
             <div class="payment__success-order" id="successOrder">Pedido #—</div>
             <div class="payment-backorder-note" id="successPendingDelivery" hidden></div>
@@ -121,16 +122,19 @@
         </div>
     </section>
 </div>
+{% include 'partials/checkout_idle_lock.html' %}
 {% endblock %}
 
 {% block scripts %}
 <script src="{{ url_for('static', filename='js/totem-api-errors.js') }}"></script>
-<script>
-window.__TOTEM_FLOW__ = {{ (totem_flow or {}) | tojson }};
-window.__PENDING_AUT_RESUME__ = {{ resume_pending_aut | tojson }};
-</script>
+{% set boot_payload = {
+    '__TOTEM_FLOW__': totem_flow or {},
+    '__PENDING_AUT_RESUME__': resume_pending_aut
+} %}
+{% include 'partials/json_boot.html' %}
 <script src="{{ url_for('static', filename='js/promo-pricing.js') }}"></script>
 <script src="{{ url_for('static', filename='js/cart.js') }}"></script>
 <script src="{{ url_for('static', filename='js/payment-form.js') }}"></script>
 <script src="{{ url_for('static', filename='js/payment-waiting.js') }}"></script>
+<script src="{{ url_for('static', filename='js/idle-timeout.js') }}"></script>
 {% endblock %}

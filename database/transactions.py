@@ -918,7 +918,7 @@ def confirm_transaction_with_aut(tx_id: int, aut: str, *, created_by: str = "tot
                     product_id=pid,
                     movement_type="venda",
                     delta=-qty,
-                    reason="Venda no totem",
+                    reason="Venda no Go Sell",
                     reference=order_number,
                     transaction_id=tx_id,
                     created_by=created_by,
@@ -929,7 +929,7 @@ def confirm_transaction_with_aut(tx_id: int, aut: str, *, created_by: str = "tot
                     product_id=pid,
                     movement_type="venda",
                     delta=-qty,
-                    reason="Venda no totem",
+                    reason="Venda no Go Sell",
                     reference=order_number,
                     transaction_id=tx_id,
                     created_by=created_by,
@@ -2275,17 +2275,27 @@ def get_pending_transaction_restore_payload(tx_id: int, seller_id: int) -> Optio
     }
 
 
-def cancel_pending_transaction_for_seller(tx_id: int, seller_id: int) -> Dict:
-    """Marca uma transação **pendente** como ``cancelado`` (somente o vendedor dono)."""
+def cancel_pending_transaction(
+    tx_id: int,
+    *,
+    expected_seller_id: Optional[int] = None,
+    expected_event_id: Optional[int] = None,
+) -> Dict:
+    """Marca uma transação **pendente** como ``cancelado``."""
     with get_conn() as conn:
         row = conn.execute(
-            "SELECT id, seller_id, status FROM transactions WHERE id = ?",
+            "SELECT id, seller_id, status, event_id FROM transactions WHERE id = ?",
             (int(tx_id),),
         ).fetchone()
         if row is None:
             raise ValueError("Transação não encontrada.")
-        if int(row["seller_id"] or 0) != int(seller_id):
-            raise ValueError("Você não pode alterar esta transação.")
+        if expected_seller_id is not None:
+            if int(row["seller_id"] or 0) != int(expected_seller_id):
+                raise ValueError("Você não pode alterar esta transação.")
+        if expected_event_id is not None:
+            event_id = row["event_id"]
+            if event_id is None or int(event_id) != int(expected_event_id):
+                raise ValueError("Transação não pertence a este evento.")
         if str(row["status"] or "").lower() != "pendente":
             raise ValueError("Somente pedidos pendentes podem ser descartados.")
         conn.execute(
@@ -2293,6 +2303,11 @@ def cancel_pending_transaction_for_seller(tx_id: int, seller_id: int) -> Dict:
             (int(tx_id),),
         )
     return {"id": int(tx_id), "status": "cancelado"}
+
+
+def cancel_pending_transaction_for_seller(tx_id: int, seller_id: int) -> Dict:
+    """Marca uma transação **pendente** como ``cancelado`` (somente o vendedor dono)."""
+    return cancel_pending_transaction(tx_id, expected_seller_id=seller_id)
 
 
 def _items_for(conn: sqlite3.Connection, tx_id: int) -> List[Dict]:

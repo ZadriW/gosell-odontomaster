@@ -188,6 +188,46 @@
     openAdminTxFromHash();
     window.addEventListener('hashchange', openAdminTxFromHash);
 
+    /** Após Aplicar filtros (GET + ``#lista``), rola até a tabela sem conflitar com ``#tx-<id>``. */
+    const FILTER_LIST_HASH = '#lista';
+
+    function scrollAdminFilterTable(behavior) {
+        if ((window.location.hash || '') !== FILTER_LIST_HASH) return;
+        const target = document.getElementById('lista');
+        if (!target) return;
+        target.scrollIntoView({
+            behavior: behavior || 'smooth',
+            block: 'start',
+        });
+    }
+
+    function scheduleAdminFilterTableScroll() {
+        if ((window.location.hash || '') !== FILTER_LIST_HASH) return;
+        if ('scrollRestoration' in history) {
+            history.scrollRestoration = 'manual';
+        }
+        requestAnimationFrame(() => {
+            requestAnimationFrame(() => scrollAdminFilterTable('smooth'));
+        });
+        window.addEventListener('load', () => {
+            scrollAdminFilterTable('smooth');
+        }, { once: true });
+    }
+
+    document.addEventListener('submit', event => {
+        const form = event.target;
+        if (!(form instanceof HTMLFormElement)) return;
+        if ((form.getAttribute('method') || 'get').toLowerCase() !== 'get') return;
+        if (!form.classList.contains('admin-filters')) return;
+        if (!form.hasAttribute('data-scroll-to-table')) return;
+        const raw = form.getAttribute('action') || window.location.pathname;
+        const hashless = String(raw).split('#')[0];
+        form.setAttribute('action', `${hashless}${FILTER_LIST_HASH}`);
+    });
+
+    scheduleAdminFilterTableScroll();
+    window.addEventListener('hashchange', () => scrollAdminFilterTable('smooth'));
+
     // --- 2. Diálogo de confirmação (substitui window.confirm) ---------------
     const confirmDialog = document.getElementById('admin-confirm-dialog');
     const confirmMessageEl = document.getElementById('admin-confirm-message');
@@ -483,5 +523,9 @@
         } else {
             window.addEventListener('resize', syncAdminTopbarHeight, { passive: true });
         }
+    }
+
+    if ((window.location.hash || '') === FILTER_LIST_HASH) {
+        scrollAdminFilterTable('smooth');
     }
 })();

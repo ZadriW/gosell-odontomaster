@@ -1,8 +1,13 @@
 {# Bootstrap do modo escuro antes do paint — escopo por login (admin vs vendedor). #}
 {% if totem_theme_scope %}
+<script type="application/json" id="totem-theme-boot">{{ totem_theme_scope | tojson }}</script>
 <script>
 (function () {
-    var scope = {{ totem_theme_scope | tojson }};
+    var el = document.getElementById('totem-theme-boot');
+    var scope = '';
+    try {
+        scope = JSON.parse((el && el.textContent) || '""');
+    } catch (e) { return; }
     window.__TOTEM_THEME_SCOPE__ = scope;
     try {
         var key = 'totem-theme:' + scope;

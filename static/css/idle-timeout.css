@@ -61,6 +61,61 @@ body.idle-modal-open {
     margin-bottom: 28px;
 }
 
+.idle-modal-dialog--lock {
+    text-align: left;
+}
+
+.idle-modal-dialog--lock .idle-modal-dialog__icon,
+.idle-modal-dialog--lock .idle-modal-dialog__title,
+.idle-modal-dialog--lock .idle-modal-dialog__text {
+    text-align: center;
+}
+
+.idle-modal-dialog__form {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    margin: 0;
+}
+
+.idle-modal-dialog__field {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin: 0;
+}
+
+.idle-modal-dialog__label {
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--color-text);
+}
+
+.idle-modal-dialog__input {
+    width: 100%;
+    padding: 12px 14px;
+    border: 1.5px solid var(--color-border);
+    border-radius: var(--radius-md, 10px);
+    font-size: 16px;
+    font-family: inherit;
+    color: var(--color-text);
+    background: var(--color-bg);
+}
+
+.idle-modal-dialog__input:focus {
+    outline: none;
+    border-color: var(--color-primary);
+    box-shadow: 0 0 0 3px rgba(14, 22, 122, 0.12);
+}
+
+.idle-modal-dialog__error {
+    margin: 0;
+    font-size: 13px;
+    font-weight: 600;
+    color: #c0392b;
+    line-height: 1.4;
+}
+
 .idle-modal-dialog__actions {
     display: flex;
     flex-direction: column;

@@ -5,7 +5,7 @@
 {% if seller_event %}
 {% set seller_ev_badge = seller_event.badge_color | event_badge_style %}
 <span class="admin-topbar__event-badge {{ extra_class }}"
-      title="{{ seller_event.name }} — evento ativo"
+      title="{{ seller_event.name }}{% if seller_event.operations_closed %} — operações encerradas (consulta){% else %} — evento ativo{% endif %}"
       {% if seller_ev_badge %} style="{{ seller_ev_badge }}"{% endif %}>
     <span class="admin-topbar__event-badge-text">{{ seller_event.name }}</span>
 </span>
@@ -94,6 +94,12 @@
             </div>
             {% endif %}
         {% endwith %}
+
+        {% if seller_event and seller_event.operations_closed %}
+        {% with event=seller_event %}
+        {% include 'partials/admin_event_ops_banner.html' %}
+        {% endwith %}
+        {% endif %}
 
         {% block seller_body %}{% endblock %}
     </main>

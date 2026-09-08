@@ -156,7 +156,10 @@ Com SQLite, use **um worker** (`-w 1`) para evitar conflitos de escrita. Para m�
 | Variável | Obrigatória | Descrição |
 |----------|-------------|-----------|
 | `WAKE_TOKEN` | Para importação Wake | Token TCS-Access-Token da Storefront API |
-| `TOTEM_SECRET_KEY` | Recomendada em produção | Chave de sessão Flask e assinatura de notas |
+| `TOTEM_SECRET_KEY` | **Sim em produção** | Chave de sessão Flask e assinatura de notas |
+| `TOTEM_DEBUG` | Não | `1` liga o debugger Werkzeug. **Deixe desligado** em evento/produção. |
+| `TOTEM_BIND` | Não | Host do `python app.py` (padrão `0.0.0.0` na LAN). |
+| `TOTEM_COOKIE_SECURE` | HTTPS | `1` marca cookies `Secure` (obrigatório atrás de HTTPS). |
 | `TOTEM_ADMIN_USER` | Opcional | Usuário do admin (padrão no código — **altere em produção**) |
 | `TOTEM_ADMIN_PASS` | Opcional | Senha do admin |
 | `TOTEM_SELLER_NAME` | Opcional | Nome da conta vendedor inicial (seed) |

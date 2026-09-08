@@ -88,7 +88,8 @@
             </header>
 
             <form class="admin-filters" method="get"
-                  action="{{ url_for('seller_stock_product', product_id=product.id) }}">
+                  action="{{ url_for('seller_stock_product', product_id=product.id) }}#lista"
+                  data-scroll-to-table>
                 <label class="admin-filter admin-filter--wide">
                     <span class="admin-filter__label">Código do pedido</span>
                     <span class="admin-filter__wrap">
@@ -115,7 +116,7 @@
                 </div>
             </form>
 
-            <div class="admin-table admin-table--seller-product-sales{% if not seller_event %} admin-table--seller-product-sales-events{% endif %}" role="table" aria-label="Minhas vendas do produto">
+            <div id="lista" class="admin-table admin-table--seller-product-sales{% if not seller_event %} admin-table--seller-product-sales-events{% endif %}" role="table" aria-label="Minhas vendas do produto">
                 <div class="admin-table__head admin-mov__row" role="row">
                     <span role="columnheader">Data/Hora</span>
                     <span role="columnheader">Tipo</span>

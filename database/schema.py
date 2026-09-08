@@ -6,6 +6,7 @@ from typing import List
 
 from .connection import DEFAULT_MIN_STOCK, _now_iso, get_conn
 from .sku_helpers import _default_sku_for_id
+from .sqlutil import sql_ident
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS products (
@@ -93,6 +94,11 @@ CREATE TABLE IF NOT EXISTS events (
     name         TEXT    NOT NULL,
     description  TEXT,
     badge_color  TEXT,
+    operation_type TEXT NOT NULL DEFAULT 'evento',
+    revenue_goal REAL,
+    volume_goal  INTEGER,
+    operations_closed INTEGER NOT NULL DEFAULT 0,
+    operations_closed_at TEXT,
     active       INTEGER NOT NULL DEFAULT 1,
     created_at   TEXT    NOT NULL,
     updated_at   TEXT    NOT NULL
@@ -157,7 +163,8 @@ CREATE INDEX IF NOT EXISTS idx_promotions_event
 
 
 def _table_columns(conn: sqlite3.Connection, table: str) -> set:
-    return {r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    ident = sql_ident(table)
+    return {r[1] for r in conn.execute(f"PRAGMA table_info({ident})").fetchall()}
 
 def _ensure_products_sku_column(conn: sqlite3.Connection) -> None:
     """Bases antigas: adiciona ``sku``; preenche valores; garante índice único."""
@@ -217,7 +224,7 @@ def _ensure_transactions_client_columns(conn: sqlite3.Connection) -> None:
     ]
     for field in client_fields:
         if field not in cols:
-            conn.execute(f"ALTER TABLE transactions ADD COLUMN {field} TEXT")
+            conn.execute(f"ALTER TABLE transactions ADD COLUMN {sql_ident(field)} TEXT")
     if "seller_id" not in cols:
         conn.execute("ALTER TABLE transactions ADD COLUMN seller_id INTEGER")
     if "seller_name" not in cols:
@@ -236,7 +243,7 @@ def _ensure_transactions_cro_columns(conn: sqlite3.Connection) -> None:
     }
     for field, ddl in cro_fields.items():
         if field not in cols:
-            conn.execute(f"ALTER TABLE transactions ADD COLUMN {field} {ddl}")
+            conn.execute(f"ALTER TABLE transactions ADD COLUMN {sql_ident(field)} {ddl}")
 
 
 def _ensure_events_tables(conn: sqlite3.Connection) -> None:
@@ -247,6 +254,11 @@ def _ensure_events_tables(conn: sqlite3.Connection) -> None:
             name         TEXT    NOT NULL,
             description  TEXT,
             badge_color  TEXT,
+            operation_type TEXT NOT NULL DEFAULT 'evento',
+            revenue_goal REAL,
+            volume_goal  INTEGER,
+            operations_closed INTEGER NOT NULL DEFAULT 0,
+            operations_closed_at TEXT,
             active       INTEGER NOT NULL DEFAULT 1,
             created_at   TEXT    NOT NULL,
             updated_at   TEXT    NOT NULL
@@ -275,6 +287,36 @@ def _ensure_events_badge_color(conn: sqlite3.Connection) -> None:
     if "badge_color" in _table_columns(conn, "events"):
         return
     conn.execute("ALTER TABLE events ADD COLUMN badge_color TEXT")
+
+
+def _ensure_events_goals(conn: sqlite3.Connection) -> None:
+    """Metas comerciais do evento: faturamento (R$) e volume (unidades)."""
+    cols = _table_columns(conn, "events")
+    if "revenue_goal" not in cols:
+        conn.execute("ALTER TABLE events ADD COLUMN revenue_goal REAL")
+    if "volume_goal" not in cols:
+        conn.execute("ALTER TABLE events ADD COLUMN volume_goal INTEGER")
+
+
+def _ensure_events_operations_closed(conn: sqlite3.Connection) -> None:
+    """Modo consulta: evento permanece ativo, mas sem vendas nem edições."""
+    cols = _table_columns(conn, "events")
+    if "operations_closed" not in cols:
+        conn.execute(
+            "ALTER TABLE events ADD COLUMN operations_closed INTEGER NOT NULL DEFAULT 0"
+        )
+    if "operations_closed_at" not in cols:
+        conn.execute("ALTER TABLE events ADD COLUMN operations_closed_at TEXT")
+
+
+def _ensure_events_operation_type(conn: sqlite3.Connection) -> None:
+    """Classificação operacional: evento, congresso ou stand."""
+    cols = _table_columns(conn, "events")
+    if "operation_type" in cols:
+        return
+    conn.execute(
+        "ALTER TABLE events ADD COLUMN operation_type TEXT NOT NULL DEFAULT 'evento'"
+    )
 
 
 def _ensure_event_products_price(conn: sqlite3.Connection) -> None:
@@ -500,7 +542,7 @@ def _ensure_sellers_columns(conn: sqlite3.Connection) -> None:
         "last_login_at": "TEXT",
     }.items():
         if field not in cols:
-            conn.execute(f"ALTER TABLE sellers ADD COLUMN {field} {ddl}")
+            conn.execute(f"ALTER TABLE sellers ADD COLUMN {sql_ident(field)} {ddl}")
     used: set[str] = set()
     rows = conn.execute("SELECT id, email, username FROM sellers").fetchall()
     for row in rows:
@@ -538,7 +580,7 @@ def _ensure_products_wake_columns(conn: sqlite3.Connection) -> None:
         "subtitle": "TEXT",
     }.items():
         if field not in cols:
-            conn.execute(f"ALTER TABLE products ADD COLUMN {field} {ddl}")
+            conn.execute(f"ALTER TABLE products ADD COLUMN {sql_ident(field)} {ddl}")
 
 
 def _ensure_product_sku_aliases_table(conn: sqlite3.Connection) -> None:
@@ -688,6 +730,9 @@ def init_db() -> None:
         _ensure_promotions_extended_rule_types(conn)
         _ensure_promotions_bogo_product_columns(conn)
         _ensure_events_badge_color(conn)
+        _ensure_events_goals(conn)
+        _ensure_events_operations_closed(conn)
+        _ensure_events_operation_type(conn)
         _ensure_event_extensions(conn)
         _ensure_event_products_backorder_limit(conn)
         _ensure_event_products_backorder_omit_insert_unlimited(conn)

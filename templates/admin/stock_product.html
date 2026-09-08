@@ -67,6 +67,7 @@
                   action="{{ url_for('admin_stock_min', product_id=product.id) }}"
                   class="admin-product__inline-form"
                   data-live-stock-form>
+                {% include 'partials/csrf_field.html' %}
                 <label class="admin-field__label" for="min_stock">Novo estoque mínimo</label>
                 <div class="admin-product__inline-wrap">
                     <input id="min_stock" type="number" name="min_stock" min="0" step="1"
@@ -79,10 +80,11 @@
                   action="{{ url_for('admin_stock_toggle_active', product_id=product.id) }}"
                   class="admin-product__toggle"
                   data-live-stock-form>
+                {% include 'partials/csrf_field.html' %}
                 {% if product.ativo %}
                     <input type="hidden" name="active" value="0">
                     <button type="submit" class="admin-btn admin-btn--ghost admin-btn--danger"
-                            data-confirm="Desativar este produto? Ele deixará de aparecer no totem.">
+                            data-confirm="Desativar este produto? Ele deixará de aparecer no Go Sell.">
                         <i class="fa-solid fa-eye-slash" aria-hidden="true"></i>
                         Desativar produto
                     </button>
@@ -109,6 +111,7 @@
                       action="{{ url_for('admin_stock_entry', product_id=product.id) }}"
                       class="admin-card__form"
                       data-live-stock-form>
+                    {% include 'partials/csrf_field.html' %}
                     <div class="admin-field">
                         <label class="admin-field__label" for="entrada-qty">Quantidade</label>
                         <input id="entrada-qty" type="number" name="quantity" min="1" step="1"
@@ -144,6 +147,7 @@
                       class="admin-card__form"
                       data-confirm="Confirmar saída manual de estoque?"
                       data-live-stock-form>
+                    {% include 'partials/csrf_field.html' %}
                     <div class="admin-field">
                         <label class="admin-field__label" for="saida-qty">Quantidade</label>
                         <input id="saida-qty" type="number" name="quantity" min="1" step="1"
@@ -177,6 +181,7 @@
                       class="admin-card__form"
                       data-confirm="Ajustar o estoque para o valor informado?"
                       data-live-stock-form>
+                    {% include 'partials/csrf_field.html' %}
                     <div class="admin-field">
                         <label class="admin-field__label" for="ajuste-stock">Novo saldo</label>
                         <input id="ajuste-stock" type="number" name="new_stock" min="0" step="1"

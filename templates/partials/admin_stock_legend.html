@@ -1,4 +1,4 @@
-{# Legenda dos ícones exibidos na tabela admin-stock (promoção e retirada pendente). #}
+{# Legenda dos ícones exibidos na tabela admin-stock (promoção, preço e retirada pendente). #}
 <div class="admin-stock-legend" role="note" aria-label="Legenda dos ícones da tabela de estoque">
     <ul class="admin-stock-legend__list">
         <li class="admin-stock-legend__item">
@@ -9,6 +9,14 @@
             </span>
             <span class="admin-stock-legend__text">— Produto com condições promocionais</span>
         </li>
+        {% if show_price | default(false) %}
+        <li class="admin-stock-legend__item">
+            <span class="admin-stock-legend__sample admin-stock-legend__sample--price" aria-hidden="true">
+                <span class="admin-stock__price-flag">*</span>
+            </span>
+            <span class="admin-stock-legend__text">— Produto com preço alterado manualmente pelo Administrador</span>
+        </li>
+        {% endif %}
         {% if show_delivery | default(true) %}
         <li class="admin-stock-legend__item">
             <span class="admin-stock-legend__sample admin-stock-legend__sample--delivery">
