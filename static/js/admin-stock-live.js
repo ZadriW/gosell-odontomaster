@@ -100,7 +100,7 @@
         return '<span class="admin-mov__event-cell"><span class="admin-mov__event-none" title="Movimentação no estoque global do catálogo (sem evento)">—</span></span>';
     }
 
-    function renderProductMovementRow(movement, { withEvent = false } = {}) {
+    function movementReasonHtml(movement) {
         const reasonParts = [];
         const ref = String(movement.reference || '').trim();
         const txUrl = String(movement.tx_url || '').trim();
@@ -117,29 +117,66 @@
             }
         }
         reasonParts.push(escapeHtml(movement.reason || '-'));
-        const rowClass = withEvent ? 'admin-mov__row admin-mov__row--with-event' : 'admin-mov__row';
+        return reasonParts.join(' ');
+    }
+
+    function movementProductCell(movement) {
+        const name = String(movement.product_name || '').trim()
+            || (movement.product_id ? `Produto #${movement.product_id}` : 'Produto');
+        const url = String(movement.product_url || '').trim();
+        const variant = String(movement.product_variant || '').trim();
+        const sku = String(movement.product_sku || '').trim();
+        const title = url
+            ? `<a href="${escapeHtml(url)}">${escapeHtml(name)}</a>`
+            : `<span>${escapeHtml(name)}</span>`;
+        let meta = '';
+        if (variant || sku) {
+            meta = '<small>';
+            if (variant) meta += escapeHtml(variant);
+            if (sku) meta += ` <code class="admin-mov__sku">SKU ${escapeHtml(sku)}</code>`;
+            meta += '</small>';
+        }
+        return `<span class="admin-mov__product">${title}${meta}</span>`;
+    }
+
+    function renderProductMovementRow(movement, { withEvent = false, wideEvents = false, wide = false } = {}) {
         const pendingAttr = movement.is_pending_delivery || movement.movement_type === 'pendente'
             ? ' data-pending-delivery'
             : '';
+        const typeCell = `
+                    <span class="admin-mov__type-cell">
+                        <span class="admin-badge admin-mov__badge admin-mov__badge--${escapeHtml(movement.movement_type)}">
+                            ${escapeHtml(movement.movement_label)}
+                        </span>
+                    </span>`;
+        const deltaCell = `
+                    <span class="admin-table__col--num admin-mov__delta admin-mov__delta--${escapeHtml(movement.delta_kind)}">
+                        ${escapeHtml(movement.delta_display)}
+                    </span>`;
+        const balanceCell = `<span class="admin-table__col--num"><strong>${escapeHtml(movement.balance_after)}</strong></span>`;
+        const reasonCell = `<span class="admin-mov__reason">${movementReasonHtml(movement)}</span>`;
+        const userCell = `
+                    <span class="admin-mov__user-cell">
+                        ${escapeHtml(movement.created_by_display || movement.seller_name || movement.created_by || '-')}
+                    </span>`;
+        let rowClass = 'admin-mov__row';
+        if (wideEvents) rowClass += ' admin-mov__row--wide-events';
+        else if (wide) rowClass += ' admin-mov__row--wide';
+        else if (withEvent) rowClass += ' admin-mov__row--with-event';
+        let midBody = typeCell;
+        if (wideEvents) midBody = `${movementProductCell(movement)}${typeCell}${eventCell(movement)}`;
+        else if (wide) midBody = `${movementProductCell(movement)}${typeCell}`;
+        else if (withEvent) midBody = `${typeCell}${eventCell(movement)}`;
 
         return `
             <div class="admin-mov__wrapper" data-movement-id="${escapeHtml(movement.id)}"${pendingAttr}>
                 <div class="${rowClass}" role="row">
                     <span>${escapeHtml(movement.created_at_display)}</span>
-                    <span class="admin-mov__type-cell">
-                        <span class="admin-badge admin-mov__badge admin-mov__badge--${escapeHtml(movement.movement_type)}">
-                            ${escapeHtml(movement.movement_label)}
-                        </span>
-                    </span>
-                    ${withEvent ? eventCell(movement) : ''}
-                    <span class="admin-table__col--num admin-mov__delta admin-mov__delta--${escapeHtml(movement.delta_kind)}">
-                        ${escapeHtml(movement.delta_display)}
-                    </span>
-                    <span class="admin-table__col--num"><strong>${escapeHtml(movement.balance_after)}</strong></span>
-                    <span class="admin-mov__reason">${reasonParts.join(' ')}</span>
-                    <span class="admin-mov__user-cell">
-                        ${escapeHtml(movement.created_by_display || movement.created_by || '-')}
-                    </span>
+                    ${midBody}
+                    ${deltaCell}
+                    ${balanceCell}
+                    ${reasonCell}
+                    ${userCell}
                 </div>
             </div>
         `;
@@ -157,6 +194,8 @@
             if (!ids.has(String(el.dataset.movementId))) el.remove();
         });
         const withEvent = movementsTableWithEvent(table);
+        const wideEvents = movementsTableWideEvents(table);
+        const wide = movementsTableWide(table);
         const toAdd = pending.filter(m => {
             const id = String(m.id).replace(/"/g, '');
             return !table.querySelector(`.admin-mov__wrapper[data-movement-id="${id}"]`);
@@ -165,7 +204,7 @@
         table.querySelector('.admin-empty')?.remove();
         head.insertAdjacentHTML(
             'afterend',
-            toAdd.map(movement => renderProductMovementRow(movement, { withEvent })).join(''),
+            toAdd.map(movement => renderProductMovementRow(movement, { withEvent, wideEvents, wide })).join(''),
         );
     }
 
@@ -186,6 +225,23 @@
         return Boolean(
             table.hasAttribute('data-movements-with-event')
             || head?.classList.contains('admin-mov__row--with-event'),
+        );
+    }
+
+    function movementsTableWideEvents(table) {
+        const head = table.querySelector('.admin-table__head');
+        return Boolean(
+            table.hasAttribute('data-movements-wide-events')
+            || head?.classList.contains('admin-mov__row--wide-events'),
+        );
+    }
+
+    function movementsTableWide(table) {
+        if (movementsTableWideEvents(table)) return false;
+        const head = table.querySelector('.admin-table__head');
+        return Boolean(
+            table.hasAttribute('data-movements-wide')
+            || head?.classList.contains('admin-mov__row--wide'),
         );
     }
 
@@ -216,6 +272,8 @@
         if (nextLatest <= prevLatest) return;
 
         const withEvent = movementsTableWithEvent(table);
+        const wideEvents = movementsTableWideEvents(table);
+        const wide = movementsTableWide(table);
         const newItems = [];
         for (let i = 0; i < list.length; i += 1) {
             const movement = list[i];
@@ -231,7 +289,7 @@
         table.querySelector('.admin-empty')?.remove();
         head.insertAdjacentHTML(
             'afterend',
-            newItems.map(movement => renderProductMovementRow(movement, { withEvent })).join(''),
+            newItems.map(movement => renderProductMovementRow(movement, { withEvent, wideEvents, wide })).join(''),
         );
 
         const trimCap = movementsTableCap(table);
@@ -539,6 +597,27 @@
         setInterval(refreshStockList, LIST_POLL_MS);
     }
 
+    async function refreshAdminMovementsList() {
+        const root = document.querySelector('[data-admin-movements][data-api-url]');
+        if (!root) return;
+        const table = root.querySelector('[data-product-movements][data-movements-live]');
+        if (!table) return;
+        const url = root.dataset.apiUrl;
+        if (!url) return;
+        const response = await fetch(url, fetchJsonOpts);
+        if (!response.ok) return;
+        const data = await response.json();
+        mergeProductMovements(table, data.movements || []);
+    }
+
+    function setupAdminMovementsList() {
+        const root = document.querySelector('[data-admin-movements][data-api-url]');
+        if (!root) return;
+        if (!root.querySelector('[data-product-movements][data-movements-live]')) return;
+        setInterval(refreshAdminMovementsList, PRODUCT_POLL_MS);
+    }
+
     setupProductForms();
     setupStockList();
+    setupAdminMovementsList();
 })();

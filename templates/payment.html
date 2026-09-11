@@ -425,12 +425,14 @@
 <script src="{{ url_for('static', filename='js/totem-api-errors.js') }}"></script>
 {% set boot_payload = {
     '__TOTEM_FLOW__': totem_flow or {},
-    '__SELLER_BACKORDER__': seller_backorder or false
+    '__SELLER_BACKORDER__': seller_backorder or false,
+    '__CHECKOUT_HOLD_MODE__': 'publish'
 } %}
 {% include 'partials/json_boot.html' %}
 <script src="{{ url_for('static', filename='js/promo-pricing.js') }}"></script>
 <script src="{{ url_for('static', filename='js/cart.js') }}"></script>
 <script src="{{ url_for('static', filename='js/payment-form.js') }}"></script>
 <script src="{{ url_for('static', filename='js/payment.js') }}"></script>
+<script src="{{ url_for('static', filename='js/checkout-hold.js') }}"></script>
 <script src="{{ url_for('static', filename='js/idle-timeout.js') }}"></script>
 {% endblock %}

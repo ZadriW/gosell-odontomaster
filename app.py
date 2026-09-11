@@ -137,6 +137,7 @@ from database import (
     DEFAULT_MIN_STOCK,
     list_active_event_product_stocks,
     list_active_product_stocks,
+    list_checkout_stock_conflicts,
     list_distinct_product_categories,
     count_event_products_filtered,
     count_stock_movements,
@@ -167,6 +168,7 @@ from database import (
     units_sold_by_product_for_event,
     units_sold_by_product_for_seller,
     refund_transaction,
+    release_seller_checkout_holds,
     replace_transaction_item_product,
     register_event_stock_adjustment,
     register_event_stock_entry,
@@ -178,6 +180,7 @@ from database import (
     set_event_operations_closed,
     set_product_active,
     sync_catalog_from_wake,
+    sync_seller_checkout_holds,
     get_distinct_wake_product_ids,
     upsert_wake_variant,
     update_event,
@@ -599,6 +602,20 @@ def _current_admin_user() -> str:
 def _current_seller_id() -> int:
     auth = _seller_auth() or {}
     return int(auth["seller_id"])
+
+
+def _current_seller_display_name() -> str:
+    auth = _seller_auth() or {}
+    name = str(auth.get("seller_name") or "").strip()
+    if name:
+        return name
+    try:
+        seller = get_seller(_current_seller_id())
+    except (KeyError, TypeError, ValueError):
+        seller = None
+    if seller:
+        return str(seller.get("name") or "Vendedor").strip() or "Vendedor"
+    return "Vendedor"
 
 
 def admin_required(view):
@@ -1096,6 +1113,18 @@ def _seller_totem_flow() -> dict:
             "seller_checkout_unlock",
             fallback="/vendedor/api/checkout/desbloquear",
         ),
+        "checkoutHold": _url_if_registered(
+            "seller_api_checkout_hold",
+            fallback="/vendedor/api/checkout/reserva",
+        ),
+        "checkoutHoldRelease": _url_if_registered(
+            "seller_api_checkout_hold_release",
+            fallback="/vendedor/api/checkout/liberar",
+        ),
+        "checkoutHoldConflicts": _url_if_registered(
+            "seller_api_checkout_hold_conflicts",
+            fallback="/vendedor/api/checkout/conflitos",
+        ),
     }
 
 
@@ -1188,6 +1217,86 @@ def seller_checkout_unlock():
     if not check_password_hash(seller["password_hash"], password):
         return jsonify({"error": "Senha inválida."}), 403
     return jsonify({"ok": True})
+
+
+def _seller_checkout_hold_items():
+    payload = request.get_json(silent=True) or {}
+    items = payload.get("items")
+    if items is None:
+        items = payload.get("itens")
+    return items if isinstance(items, list) else []
+
+
+def _seller_checkout_hold_seq() -> int:
+    payload = request.get_json(silent=True) or {}
+    raw = payload.get("seq")
+    try:
+        seq = int(raw)
+    except (TypeError, ValueError):
+        seq = 0
+    return max(0, seq)
+
+
+@app.route(
+    "/vendedor/api/checkout/reserva",
+    methods=["POST"],
+    endpoint="seller_api_checkout_hold",
+)
+@seller_required
+def seller_api_checkout_hold():
+    """Publica o carrinho da tela de pagamento e devolve conflitos visíveis."""
+    blocked = _reject_if_seller_event_ops_closed()
+    if blocked is not None:
+        return blocked
+    seller_ev = _get_seller_event()
+    if seller_ev is None:
+        return jsonify({"ok": True, "conflicts": []})
+    conflicts = sync_seller_checkout_holds(
+        int(seller_ev["id"]),
+        _current_seller_id(),
+        _current_seller_display_name(),
+        _seller_checkout_hold_items(),
+        seq=_seller_checkout_hold_seq(),
+    )
+    return jsonify({"ok": True, "conflicts": conflicts})
+
+
+@app.route(
+    "/vendedor/api/checkout/liberar",
+    methods=["POST"],
+    endpoint="seller_api_checkout_hold_release",
+)
+@seller_required
+def seller_api_checkout_hold_release():
+    """Remove as reservas do vendedor (volta ao catálogo ou carrinho vazio)."""
+    seller_ev = _get_seller_event()
+    if seller_ev is None:
+        return jsonify({"ok": True, "conflicts": []})
+    release_seller_checkout_holds(
+        int(seller_ev["id"]),
+        _current_seller_id(),
+        seq=_seller_checkout_hold_seq(),
+    )
+    return jsonify({"ok": True, "conflicts": []})
+
+
+@app.route(
+    "/vendedor/api/checkout/conflitos",
+    methods=["POST"],
+    endpoint="seller_api_checkout_hold_conflicts",
+)
+@seller_required
+def seller_api_checkout_hold_conflicts():
+    """Consulta conflitos no catálogo sem publicar reserva deste caixa."""
+    seller_ev = _get_seller_event()
+    if seller_ev is None:
+        return jsonify({"ok": True, "conflicts": []})
+    conflicts = list_checkout_stock_conflicts(
+        int(seller_ev["id"]),
+        _current_seller_id(),
+        _seller_checkout_hold_items(),
+    )
+    return jsonify({"ok": True, "conflicts": conflicts})
 
 
 @app.route("/vendedor/pagamento", endpoint="seller_payment")
@@ -2709,6 +2818,142 @@ def admin_products():
     )
 
 
+_ADMIN_MOVEMENT_TYPE_FILTERS = frozenset({"todos", "entrada", "saida", "venda"})
+
+
+def _admin_movements_list_filters(*, event_id: int) -> dict:
+    """Lê GET da listagem de movimentações de um evento."""
+    q = (request.args.get("q") or "").strip()
+    tipo_raw = (request.args.get("tipo") or "todos").strip().lower()
+    tipo = tipo_raw if tipo_raw in _ADMIN_MOVEMENT_TYPE_FILTERS else "todos"
+    pedido = (request.args.get("pedido") or "").strip()
+    seller_raw = _parse_int(request.args.get("vendedor"), 0)
+    event_seller_ids = {int(s["id"]) for s in list_event_sellers(event_id)}
+    seller_id = seller_raw if seller_raw > 0 and seller_raw in event_seller_ids else 0
+    date_from = _parse_tx_filter_date_arg(request.args.get("de"))
+    date_to = _parse_tx_filter_date_arg(request.args.get("ate"))
+    if date_from and date_to and date_from > date_to:
+        date_from, date_to = date_to, date_from
+    per_page = _parse_int(request.args.get("per_page"), DEFAULT_ADMIN_MOVEMENTS_PER_PAGE)
+    if per_page not in ALLOWED_ADMIN_STOCK_PER_PAGE:
+        per_page = DEFAULT_ADMIN_MOVEMENTS_PER_PAGE
+    page = max(1, _parse_int(request.args.get("page"), 1))
+    return {
+        "q": q,
+        "tipo": tipo,
+        "pedido": pedido,
+        "vendedor": seller_id,
+        "de": date_from or "",
+        "ate": date_to or "",
+        "per_page": per_page,
+        "page": page,
+    }
+
+
+def _admin_movements_query_kwargs(filters: dict, *, event_id: int) -> dict:
+    tipo = filters["tipo"]
+    seller_id = filters["vendedor"] or None
+    if seller_id and tipo not in ("todos", "venda"):
+        seller_id = None
+    return {
+        "product_search": filters["q"] or None,
+        "movement_type": None if tipo == "todos" else tipo,
+        "reference": filters["pedido"] or None,
+        "event_id": int(event_id),
+        "seller_id": seller_id,
+        "date_from": filters["de"] or None,
+        "date_to": filters["ate"] or None,
+    }
+
+
+def _admin_movements_page_data(event_id: int):
+    filters = _admin_movements_list_filters(event_id=event_id)
+    kwargs = _admin_movements_query_kwargs(filters, event_id=event_id)
+    total = count_stock_movements(**kwargs)
+    per_page = filters["per_page"]
+    total_pages = max(1, (total + per_page - 1) // per_page) if total > 0 else 1
+    page = min(filters["page"], total_pages)
+    filters["page"] = page
+    offset = (page - 1) * per_page
+    movements = list_stock_movements(**kwargs, limit=per_page, offset=offset)
+    showing_from = offset + 1 if total > 0 else 0
+    showing_to = min(offset + len(movements), total) if total > 0 else 0
+    pagination = {
+        "page": page,
+        "per_page": per_page,
+        "total": total,
+        "total_pages": total_pages,
+        "has_prev": page > 1,
+        "has_next": page < total_pages,
+        "showing_from": showing_from,
+        "showing_to": showing_to,
+    }
+    return filters, movements, pagination
+
+
+def _admin_movements_has_active_filters(filters: dict) -> bool:
+    return bool(
+        filters.get("q")
+        or filters.get("tipo") not in (None, "", "todos")
+        or filters.get("pedido")
+        or int(filters.get("vendedor") or 0) > 0
+        or filters.get("de")
+        or filters.get("ate")
+    )
+
+
+@app.route("/admin/movimentacoes", endpoint="admin_movements")
+@admin_required
+def admin_movements_legacy_redirect():
+    """A listagem passou a ser por evento; atalho antigo cai na lista de eventos."""
+    return redirect(url_for("admin_events"), code=302)
+
+
+@app.route("/admin/api/movimentacoes", endpoint="admin_api_movements")
+@admin_required
+def admin_api_movements_legacy():
+    return jsonify({"error": "A listagem de movimentações agora é por evento."}), 404
+
+
+@app.route("/admin/eventos/<int:event_id>/movimentacoes", endpoint="admin_event_movements")
+@admin_required
+def admin_event_movements(event_id: int):
+    """Histórico de estoque do evento: vendas, entradas e saídas de todos os produtos."""
+    event = _event_or_404(event_id)
+    if event is None:
+        return redirect(url_for("admin_events"))
+    filters, movements, pagination = _admin_movements_page_data(event_id)
+    live = pagination["page"] == 1
+    return render_template(
+        "admin/movements.html",
+        event=event,
+        movements=movements,
+        filters=filters,
+        pagination=pagination,
+        allowed_per_page=ALLOWED_ADMIN_STOCK_PER_PAGE,
+        movement_filter_sellers=list_event_sellers(event_id),
+        movements_live=live,
+        filters_active=_admin_movements_has_active_filters(filters),
+        active_event_tab="movimentacoes",
+        **_admin_shell_context(active_section="eventos"),
+    )
+
+
+@app.route("/admin/api/eventos/<int:event_id>/movimentacoes", endpoint="admin_api_event_movements")
+@admin_required
+def admin_api_event_movements(event_id: int):
+    """Polling da listagem de movimentações do evento (mesmos filtros da página)."""
+    if _event_or_404(event_id) is None:
+        return jsonify({"error": "Evento não encontrado."}), 404
+    filters, movements, pagination = _admin_movements_page_data(event_id)
+    return jsonify({
+        "ok": True,
+        "filters": filters,
+        "pagination": pagination,
+        "movements": [_admin_movement_list_payload(m, event_id=event_id) for m in movements],
+    })
+
+
 @app.route("/admin/produtos/<int:product_id>/adicionar-ao-evento", methods=["POST"])
 @admin_required
 def admin_product_add_to_event(product_id: int):
@@ -2856,17 +3101,92 @@ def _movement_payload(movement: dict) -> dict:
         delta_kind = "negative"
     else:
         delta_kind = "neutral"
+    created_by_display = _display_created_by(movement.get("created_by"))
+    if not created_by_display:
+        created_by_display = str(movement.get("seller_name") or "").strip()
+    try:
+        pid_int = int(movement.get("product_id") or 0)
+    except (TypeError, ValueError):
+        pid_int = 0
+    product_url = url_for("admin_product_detail", product_id=pid_int) if pid_int > 0 else ""
+    tx_url = ""
+    ref = str(movement.get("reference") or "").strip()
+    try:
+        eid_int = int(movement.get("event_id") or 0)
+    except (TypeError, ValueError):
+        eid_int = 0
+    try:
+        tid_int = int(movement.get("transaction_id") or 0)
+    except (TypeError, ValueError):
+        tid_int = 0
+    if eid_int > 0 and ref and tid_int > 0:
+        tx_url = (
+            url_for("admin_event_transactions", event_id=eid_int, pedido=ref)
+            + f"#tx-{tid_int}"
+        )
     return {
         **movement,
         "event_badge_bg": ev_bg,
         "event_badge_fg": ev_fg,
-        "created_by_display": _display_created_by(movement.get("created_by")),
+        "created_by_display": created_by_display,
         "created_at_display": datahora_filter(movement.get("created_at")),
         "movement_label": mov_label_filter(movement_type),
         "delta_display": signed_filter(movement.get("delta")),
         "delta_kind": delta_kind,
-        "product_url": url_for("admin_product_detail", product_id=movement["product_id"]),
+        "product_url": product_url,
+        "tx_url": tx_url,
     }
+
+
+_ADMIN_MOVEMENT_LIST_KEYS = (
+    "id",
+    "product_id",
+    "product_name",
+    "product_variant",
+    "product_sku",
+    "movement_type",
+    "delta",
+    "balance_after",
+    "reason",
+    "reference",
+    "transaction_id",
+    "event_id",
+    "event_name",
+    "event_badge_color",
+    "created_by",
+    "created_at",
+    "seller_id",
+    "seller_name",
+    "order_number",
+)
+
+
+def _admin_movement_list_payload(movement: dict, *, event_id: int | None = None) -> dict:
+    """Payload da listagem do evento: sem dados de cliente da transação."""
+    slim = {key: movement.get(key) for key in _ADMIN_MOVEMENT_LIST_KEYS}
+    payload = _movement_payload(slim)
+    try:
+        pid_int = int(movement.get("product_id") or 0)
+    except (TypeError, ValueError):
+        pid_int = 0
+    if event_id and pid_int > 0:
+        payload["product_url"] = url_for(
+            "admin_event_stock_product",
+            event_id=int(event_id),
+            product_id=pid_int,
+        )
+    if event_id:
+        ref = str(movement.get("reference") or "").strip()
+        try:
+            tid_int = int(movement.get("transaction_id") or 0)
+        except (TypeError, ValueError):
+            tid_int = 0
+        if ref and tid_int > 0:
+            payload["tx_url"] = (
+                url_for("admin_event_transactions", event_id=int(event_id), pedido=ref)
+                + f"#tx-{tid_int}"
+            )
+    return payload
 
 
 def _products_library_detail_payload(product_id: int, *, limit: int = 100) -> dict:

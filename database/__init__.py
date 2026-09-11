@@ -42,6 +42,11 @@ from .badges import (
     event_badge_style_pairs,
     normalize_event_badge_color,
 )
+from .checkout_holds import (
+    list_checkout_stock_conflicts,
+    release_seller_checkout_holds,
+    sync_seller_checkout_holds,
+)
 from .connection import DB_PATH, DEFAULT_MIN_STOCK, get_conn
 from .events import (
     EXPORT_MOVEMENTS_CSV_CAP,
@@ -248,6 +253,7 @@ __all__ = [
     "get_transaction_by_order_number",
     "init_db",
     "is_unsellable_variant_parent",
+    "list_checkout_stock_conflicts",
     "list_active_event_product_stocks",
     "list_active_product_stocks",
     "list_distinct_product_categories",
@@ -278,6 +284,7 @@ __all__ = [
     "pending_delivery_units_by_product_for_event",
     "units_sold_by_product_for_event",
     "units_sold_by_product_for_seller",
+    "release_seller_checkout_holds",
     "refund_transaction",
     "replace_transaction_item_product",
     "register_event_stock_adjustment",
@@ -293,6 +300,7 @@ __all__ = [
     "set_event_operations_closed",
     "event_ops_open",
     "set_product_active",
+    "sync_seller_checkout_holds",
     "sync_products_from_wake",
     "sync_catalog_from_wake",
     "get_distinct_wake_product_ids",

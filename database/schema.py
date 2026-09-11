@@ -132,6 +132,32 @@ CREATE INDEX IF NOT EXISTS idx_sellers_email
 CREATE INDEX IF NOT EXISTS idx_event_products_event
     ON event_products(event_id);
 
+CREATE TABLE IF NOT EXISTS checkout_holds (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id     INTEGER NOT NULL,
+    seller_id    INTEGER NOT NULL,
+    seller_name  TEXT    NOT NULL DEFAULT 'Vendedor',
+    product_id   INTEGER NOT NULL,
+    quantity     INTEGER NOT NULL DEFAULT 1,
+    created_at   TEXT    NOT NULL,
+    updated_at   TEXT    NOT NULL,
+    UNIQUE (event_id, seller_id, product_id),
+    FOREIGN KEY (event_id)   REFERENCES events(id)   ON DELETE CASCADE,
+    FOREIGN KEY (seller_id)  REFERENCES sellers(id)  ON DELETE CASCADE,
+    FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_checkout_holds_event_product
+    ON checkout_holds(event_id, product_id);
+CREATE INDEX IF NOT EXISTS idx_checkout_holds_updated
+    ON checkout_holds(updated_at);
+
+CREATE TABLE IF NOT EXISTS checkout_hold_sync (
+    event_id  INTEGER NOT NULL,
+    seller_id INTEGER NOT NULL,
+    sync_seq  INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (event_id, seller_id)
+);
+
 CREATE TABLE IF NOT EXISTS promotions (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     event_id    INTEGER NOT NULL,
@@ -317,6 +343,48 @@ def _ensure_events_operation_type(conn: sqlite3.Connection) -> None:
     conn.execute(
         "ALTER TABLE events ADD COLUMN operation_type TEXT NOT NULL DEFAULT 'evento'"
     )
+
+
+def _ensure_checkout_holds_table(conn: sqlite3.Connection) -> None:
+    """Reservas temporárias de carrinho na tela de pagamento (bases antigas)."""
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS checkout_holds (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            event_id     INTEGER NOT NULL,
+            seller_id    INTEGER NOT NULL,
+            seller_name  TEXT    NOT NULL DEFAULT 'Vendedor',
+            product_id   INTEGER NOT NULL,
+            quantity     INTEGER NOT NULL DEFAULT 1,
+            created_at   TEXT    NOT NULL DEFAULT '',
+            updated_at   TEXT    NOT NULL,
+            UNIQUE (event_id, seller_id, product_id),
+            FOREIGN KEY (event_id)   REFERENCES events(id)   ON DELETE CASCADE,
+            FOREIGN KEY (seller_id)  REFERENCES sellers(id)  ON DELETE CASCADE,
+            FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_checkout_holds_event_product
+            ON checkout_holds(event_id, product_id);
+        CREATE INDEX IF NOT EXISTS idx_checkout_holds_updated
+            ON checkout_holds(updated_at);
+        CREATE TABLE IF NOT EXISTS checkout_hold_sync (
+            event_id  INTEGER NOT NULL,
+            seller_id INTEGER NOT NULL,
+            sync_seq  INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (event_id, seller_id)
+        );
+    """)
+    cols = _table_columns(conn, "checkout_holds")
+    if "created_at" not in cols:
+        conn.execute("ALTER TABLE checkout_holds ADD COLUMN created_at TEXT")
+        cols = _table_columns(conn, "checkout_holds")
+    if "created_at" in cols:
+        conn.execute(
+            """
+            UPDATE checkout_holds
+               SET created_at = updated_at
+             WHERE created_at IS NULL OR TRIM(created_at) = ''
+            """
+        )
 
 
 def _ensure_event_products_price(conn: sqlite3.Connection) -> None:
@@ -734,6 +802,7 @@ def init_db() -> None:
         _ensure_events_operations_closed(conn)
         _ensure_events_operation_type(conn)
         _ensure_event_extensions(conn)
+        _ensure_checkout_holds_table(conn)
         _ensure_event_products_backorder_limit(conn)
         _ensure_event_products_backorder_omit_insert_unlimited(conn)
         _ensure_event_products_price(conn)

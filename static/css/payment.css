@@ -164,6 +164,11 @@ button.payment__back {
     margin: 6px 0;
     padding-left: 18px;
     text-align: left;
+    font-weight: 600;
+}
+
+.payment-backorder-note div {
+    min-width: 0;
 }
 
 .payment-item:last-child {
@@ -238,6 +243,21 @@ button.payment__back {
     padding-left: 4px;
     padding-right: 4px;
     border-radius: var(--radius-sm);
+}
+
+.payment-item__stock-split {
+    display: flex;
+    align-items: flex-start;
+    gap: 6px;
+    margin: 6px 0 0;
+    padding: 4px 8px;
+    font-size: 12px;
+    font-weight: 700;
+    color: #92400e;
+    background: rgba(232, 137, 11, 0.12);
+    border: 1px solid rgba(232, 137, 11, 0.4);
+    border-radius: 8px;
+    line-height: 1.35;
 }
 
 .payment-item__variant {

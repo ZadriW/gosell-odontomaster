@@ -23,10 +23,13 @@
     '__PRODUCTS__': products,
     '__CATALOG_STOCK_API__': catalog_stock_api_url,
     '__CATALOG_PROMO_REFRESH_API__': catalog_promo_refresh_api_url,
-    '__CATALOG_READONLY__': catalog_readonly or false
+    '__CATALOG_READONLY__': catalog_readonly or false,
+    '__CHECKOUT_HOLD_MODE__': '' if catalog_readonly else 'watch'
 } %}
 {% include 'partials/json_boot.html' %}
 <script src="{{ url_for('static', filename='js/promo-pricing.js') }}"></script>
 <script src="{{ url_for('static', filename='js/cart.js') }}"></script>
 <script src="{{ url_for('static', filename='js/catalog.js') }}"></script>
+<script src="{{ url_for('static', filename='js/stock-conflict-modal.js') }}"></script>
+<script src="{{ url_for('static', filename='js/checkout-hold.js') }}"></script>
 {% endblock %}

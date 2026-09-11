@@ -182,7 +182,10 @@
             return;
         }
         const totals = Cart.getTotals();
-        itemsEl.innerHTML = items.map(renderItem).join('');
+        const notice = window.StockConflict && typeof window.StockConflict.noticeHtml === 'function'
+            ? window.StockConflict.noticeHtml(items)
+            : '';
+        itemsEl.innerHTML = notice + items.map(renderItem).join('');
         countEl.textContent = totals.count;
         const clientData = loadClientData();
         const payable = clientData && clientData.seller_total != null
@@ -298,7 +301,15 @@
             return;
         }
         const rows = pending
-            .map(p => `<li><strong>${escapeHtml(p.pending)}×</strong> ${escapeHtml(p.product_name)}</li>`)
+            .map(p => {
+                const pendingQty = Number(p.pending) || 0;
+                const deliveredQty = Number(p.delivered) || 0;
+                const name = escapeHtml(p.product_name);
+                if (deliveredQty > 0) {
+                    return `<li><strong>${escapeHtml(String(deliveredQty))} agora</strong> · <strong>${escapeHtml(String(pendingQty))} pendente${pendingQty === 1 ? '' : 's'}</strong> — ${name}</li>`;
+                }
+                return `<li><strong>${escapeHtml(String(pendingQty))}×</strong> ${name}</li>`;
+            })
             .join('');
         box.innerHTML = `
             <i class="fa-solid fa-box-open" aria-hidden="true"></i>
@@ -493,6 +504,12 @@
     } else {
         Cart.subscribe(() => {
             if (!success.hidden) return;
+            renderWaiting();
+        });
+        window.addEventListener('checkout-hold:conflicts', () => {
+            if (success && !success.hidden) return;
+            if (!Cart || typeof Cart.getItems !== 'function') return;
+            if (!Cart.getItems().length) return;
             renderWaiting();
         });
         renderWaiting();

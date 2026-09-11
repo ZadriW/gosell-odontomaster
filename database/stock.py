@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import sqlite3
+from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
 from .connection import _now_iso, get_conn
@@ -213,8 +214,9 @@ def _stock_movements_product_search_sql(product_search: Optional[str]) -> Tuple[
         "LOWER(p.name) LIKE ?",
         "LOWER(COALESCE(p.description, '')) LIKE ?",
         "LOWER(COALESCE(p.sku, '')) LIKE ?",
+        "LOWER(COALESCE(p.variant_name, '')) LIKE ?",
     ]
-    or_params: List = [like, like, like]
+    or_params: List = [like, like, like, like]
     id_part = ps.lstrip("#").strip()
     if id_part.isdigit():
         or_parts.append("m.product_id = ?")
@@ -222,6 +224,18 @@ def _stock_movements_product_search_sql(product_search: Optional[str]) -> Tuple[
         or_parts.append("INSTR(CAST(m.product_id AS TEXT), ?) > 0")
         or_params.append(id_part)
     return " AND (" + " OR ".join(or_parts) + ")", or_params
+
+
+def _normalize_iso_date(value: Optional[str]) -> Optional[str]:
+    """``YYYY-MM-DD`` válido ou ``None``."""
+    s = (value or "").strip()
+    if len(s) != 10:
+        return None
+    try:
+        datetime.strptime(s, "%Y-%m-%d")
+    except ValueError:
+        return None
+    return s
 
 
 def _stock_movements_filter_sql(
@@ -232,6 +246,8 @@ def _stock_movements_filter_sql(
     reference: Optional[str] = None,
     seller_id: Optional[int] = None,
     event_id: Optional[int] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
 ) -> Tuple[str, List]:
     """Trecho ``AND ...`` + parâmetros compartilhado por list/count/max das movimentações."""
     sql = ""
@@ -254,7 +270,7 @@ def _stock_movements_filter_sql(
             "AND INSTR(LOWER(m.reference), LOWER(?)) > 0"
         )
         params.append(ref_norm)
-    if seller_id is not None:
+    if seller_id is not None and int(seller_id) > 0:
         sql += (
             " AND m.movement_type = 'venda' "
             "AND COALESCE(t.seller_id, -1) = ?"
@@ -263,6 +279,14 @@ def _stock_movements_filter_sql(
     if event_id is not None and int(event_id) > 0:
         sql += " AND m.event_id = ?"
         params.append(int(event_id))
+    date_from_n = _normalize_iso_date(date_from)
+    date_to_n = _normalize_iso_date(date_to)
+    if date_from_n:
+        sql += " AND date(m.created_at) >= date(?)"
+        params.append(date_from_n)
+    if date_to_n:
+        sql += " AND date(m.created_at) <= date(?)"
+        params.append(date_to_n)
     return sql, params
 
 
@@ -274,6 +298,8 @@ def count_stock_movements(
     reference: Optional[str] = None,
     seller_id: Optional[int] = None,
     event_id: Optional[int] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
 ) -> int:
     filt_sql, filt_params = _stock_movements_filter_sql(
         product_id=product_id,
@@ -282,6 +308,8 @@ def count_stock_movements(
         reference=reference,
         seller_id=seller_id,
         event_id=event_id,
+        date_from=date_from,
+        date_to=date_to,
     )
     sql = (
         "SELECT COUNT(*) AS c FROM stock_movements m "
@@ -302,6 +330,8 @@ def max_stock_movement_id_filtered(
     reference: Optional[str] = None,
     seller_id: Optional[int] = None,
     event_id: Optional[int] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
 ) -> int:
     """Maior ``m.id`` entre movimentações que passam pelos mesmos filtros da listagem."""
     filt_sql, filt_params = _stock_movements_filter_sql(
@@ -311,6 +341,8 @@ def max_stock_movement_id_filtered(
         reference=reference,
         seller_id=seller_id,
         event_id=event_id,
+        date_from=date_from,
+        date_to=date_to,
     )
     sql = (
         "SELECT MAX(m.id) AS mx FROM stock_movements m "
@@ -331,6 +363,8 @@ def list_stock_movements(
     reference: Optional[str] = None,
     seller_id: Optional[int] = None,
     event_id: Optional[int] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
     limit: int = 200,
     offset: int = 0,
 ) -> List[Dict]:
@@ -345,6 +379,8 @@ def list_stock_movements(
 
     ``event_id`` (quando > 0): apenas linhas com ``stock_movements.event_id`` igual ao informado.
 
+    ``date_from`` / ``date_to`` (``YYYY-MM-DD``): restringe pelo dia de ``created_at``.
+
     ``offset``: deslocamento para paginação (ordenado por data decrescente).
     """
     filt_sql, filt_params = _stock_movements_filter_sql(
@@ -354,12 +390,16 @@ def list_stock_movements(
         reference=reference,
         seller_id=seller_id,
         event_id=event_id,
+        date_from=date_from,
+        date_to=date_to,
     )
     sql = (
         "SELECT m.*, p.name AS product_name, p.category AS product_category, "
         "p.sku AS product_sku, "
+        "p.variant_name AS product_variant, "
         "evt.name AS event_name, "
         "evt.badge_color AS event_badge_color, "
+        "t.seller_id, t.seller_name, t.order_number, "
         "t.client_name, t.client_cpf, t.client_zipcode, t.client_address, "
         "t.client_number, t.client_complement, t.client_city, t.client_state, "
         "t.payment_method, t.card_installments, t.aut, "

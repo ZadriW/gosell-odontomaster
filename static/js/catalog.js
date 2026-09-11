@@ -778,15 +778,25 @@
         const stock = Number(item.estoque);
         const missing = Number.isFinite(stock) ? item.quantidade - Math.max(0, stock) : 0;
         const bl = Number(item.backorder_limit);
-        const backorderBlocked = window.__SELLER_BACKORDER__
-            && Number.isFinite(bl)
-            && bl === 0
-            && missing > 0;
-        const backorderHint = backorderBlocked
-            ? `<p class="cart-item__backorder cart-item__backorder--blocked"><i class="fa-solid fa-ban" aria-hidden="true"></i> Vendas futuras bloqueadas — remova ou reduza a quantidade ao estoque (${Math.max(0, stock)} un.)</p>`
-            : ((window.__SELLER_BACKORDER__ && missing > 0)
-                ? `<p class="cart-item__backorder"><i class="fa-solid fa-box-open" aria-hidden="true"></i> ${missing} un. sem estoque — retirada posterior pelo cliente</p>`
-                : '');
+        const alloc = window.StockConflict && typeof window.StockConflict.allocationFor === 'function'
+            ? window.StockConflict.allocationFor(item)
+            : null;
+        const backorderBlocked = (alloc && alloc.blocked)
+            || (window.__SELLER_BACKORDER__
+                && Number.isFinite(bl)
+                && bl === 0
+                && missing > 0);
+        const availableNow = alloc ? alloc.sellable : Math.max(0, stock);
+        let backorderHint = '';
+        if (backorderBlocked) {
+            backorderHint = `<p class="cart-item__backorder cart-item__backorder--blocked"><i class="fa-solid fa-ban" aria-hidden="true"></i> Vendas futuras bloqueadas — remova ou reduza a quantidade ao estoque disponível (${availableNow} un.)</p>`;
+        } else if (window.StockConflict && typeof window.StockConflict.splitHintHtml === 'function') {
+            backorderHint = window.StockConflict.splitHintHtml(item, 'cart-item');
+        } else if (window.__SELLER_BACKORDER__ && missing > 0) {
+            backorderHint = `<p class="cart-item__backorder"><i class="fa-solid fa-box-open" aria-hidden="true"></i> ${missing} un. sem estoque — retirada posterior pelo cliente</p>`;
+        } else if (item.stock_conflict_pending) {
+            backorderHint = `<p class="cart-item__backorder"><i class="fa-solid fa-box-open" aria-hidden="true"></i> Unidade pendente — outro caixa está finalizando as últimas unidades</p>`;
+        }
         const qtyLine = isFullyFree
             ? `${qty} un. <strong>GRÁTIS</strong>`
             : (bundleMeta
@@ -924,6 +934,10 @@
     applyFilters();
     updateCartBadge();
     cards.forEach(card => syncBackorderBlockedUI(card, getBackorderLimitForCard(card)));
+
+    window.addEventListener('checkout-hold:conflicts', () => {
+        renderDrawer();
+    });
 
     if (PROMO_REFRESH_API) {
         fetchCatalogPromoRefresh();

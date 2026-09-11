@@ -19,6 +19,11 @@
         <i class="fa-solid fa-boxes-stacked" aria-hidden="true"></i>
         <span>Estoque</span>
     </a>
+    <a class="admin-event-subnav__item {% if active_event_tab == 'movimentacoes' %}is-active{% endif %}"
+       href="{{ url_for('admin_event_movements', event_id=event.id) }}">
+        <i class="fa-solid fa-right-left" aria-hidden="true"></i>
+        <span>Movimentações</span>
+    </a>
     <a class="admin-event-subnav__item {% if active_event_tab == 'transacoes' %}is-active{% endif %}"
        href="{{ url_for('admin_event_transactions', event_id=event.id) }}">
         <i class="fa-solid fa-file-invoice-dollar" aria-hidden="true"></i>

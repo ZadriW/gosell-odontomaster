@@ -2,8 +2,8 @@
 {% from "macros/admin_brand_logo.html" import admin_brand_logo %}
 
 {#
-    Layout compartilhado do painel administrativo (dashboard, produtos,
-    eventos, vendedores). Fornece topbar + menu + container de flash messages.
+    Layout compartilhado do painel administrativo (produtos, eventos,
+    vendedores, financeiro). Fornece topbar + menu + container de flash messages.
     Páginas devem sobrescrever {% block admin_body %}.
 #}
 
@@ -37,9 +37,17 @@
                     style="width: {{ [event_nav_label|length + 1, 8]|max }}ch"
                     onchange="window.location.href = this.value"
                 >
+                    {% set _event_tab_route = {
+                        'dashboard': 'admin_event_detail',
+                        'estoque': 'admin_event_stock',
+                        'movimentacoes': 'admin_event_movements',
+                        'transacoes': 'admin_event_transactions',
+                        'promocoes': 'admin_event_promotions',
+                    } %}
+                    {% set _switch_endpoint = _event_tab_route.get(active_event_tab, 'admin_event_detail') %}
                     {% for ev in all_events %}
                     <option
-                        value="{{ url_for('admin_event_detail', event_id=ev.id) }}"
+                        value="{{ url_for(_switch_endpoint, event_id=ev.id) }}"
                         {% if ev.id == event.id %}selected{% endif %}
                         >{{ ev.name }}{% if not ev.active %} (arquivado){% elif ev.operations_closed %} (encerrado){% endif %}</option>
                     {% endfor %}
@@ -70,6 +78,11 @@
                    href="{{ url_for('admin_event_stock', event_id=event.id) }}" title="Estoque do {{ event|op_noun(lower=True) }}">
                     <i class="fa-solid fa-boxes-stacked" aria-hidden="true"></i>
                     <span>Estoque</span>
+                </a>
+                <a class="admin-nav__item {% if active_event_tab == 'movimentacoes' %}is-active{% endif %}"
+                   href="{{ url_for('admin_event_movements', event_id=event.id) }}" title="Movimentações do {{ event|op_noun(lower=True) }}">
+                    <i class="fa-solid fa-right-left" aria-hidden="true"></i>
+                    <span>Movimentações</span>
                 </a>
                 <a class="admin-nav__item {% if active_event_tab == 'transacoes' %}is-active{% endif %}"
                    href="{{ url_for('admin_event_transactions', event_id=event.id) }}" title="Transações do {{ event|op_noun(lower=True) }}">
@@ -189,6 +202,11 @@
            href="{{ url_for('admin_event_stock', event_id=event.id) }}" title="Estoque do {{ event|op_noun(lower=True) }}">
             <i class="fa-solid fa-boxes-stacked" aria-hidden="true"></i>
             <span class="admin-bottom-nav__badge">Estoque</span>
+        </a>
+        <a class="admin-bottom-nav__item {% if active_event_tab == 'movimentacoes' %}is-active{% endif %}"
+           href="{{ url_for('admin_event_movements', event_id=event.id) }}" title="Movimentações do {{ event|op_noun(lower=True) }}">
+            <i class="fa-solid fa-right-left" aria-hidden="true"></i>
+            <span class="admin-bottom-nav__badge">Movim.</span>
         </a>
         <a class="admin-bottom-nav__item {% if active_event_tab == 'transacoes' %}is-active{% endif %}"
            href="{{ url_for('admin_event_transactions', event_id=event.id) }}" title="Transações do {{ event|op_noun(lower=True) }}">

@@ -233,6 +233,50 @@
     </div>
 </dialog>
 
+{% if not catalog_readonly %}
+<dialog
+    class="stock-conflict"
+    id="stockConflictDialog"
+    aria-labelledby="stockConflictTitle"
+    aria-describedby="stockConflictText"
+>
+    <div class="stock-conflict__panel">
+        <header class="stock-conflict__header">
+            <div class="stock-conflict__icon" aria-hidden="true">
+                <i class="fa-solid fa-triangle-exclamation"></i>
+            </div>
+            <h2 class="stock-conflict__title" id="stockConflictTitle">Estoque prestes a esgotar</h2>
+            <p class="stock-conflict__text" id="stockConflictText"></p>
+        </header>
+        <div class="stock-conflict__product" id="stockConflictProduct">
+            <img class="stock-conflict__image" id="stockConflictImage" alt="" hidden>
+            <div class="stock-conflict__product-info">
+                <p class="stock-conflict__name" id="stockConflictName"></p>
+                <p class="stock-conflict__meta" id="stockConflictMeta"></p>
+            </div>
+        </div>
+        <div class="stock-conflict__split" id="stockConflictSplit" hidden>
+            <div class="stock-conflict__split-now">
+                <strong id="stockConflictSellable">0 un.</strong>
+                <span>com estoque agora</span>
+            </div>
+            <div class="stock-conflict__split-pending">
+                <strong id="stockConflictPendingQty">0 un.</strong>
+                <span>retirada posterior</span>
+            </div>
+        </div>
+        <div class="stock-conflict__actions">
+            <button type="button" class="stock-conflict__btn stock-conflict__btn--pending" id="stockConflictPending">
+                Vender como unidade pendente
+            </button>
+            <button type="button" class="stock-conflict__btn stock-conflict__btn--remove" id="stockConflictRemove">
+                Remover do carrinho
+            </button>
+        </div>
+    </div>
+</dialog>
+{% endif %}
+
 <div class="cart-backdrop" id="cartBackdrop" aria-hidden="true"></div>
 
 <aside

@@ -682,23 +682,219 @@
         return '';
     }
 
+    const liveConflictsById = Object.create(null);
+    let liveSyncReady = false;
+    let clearingPendingFlags = false;
+
+    function parseNonNegInt(value) {
+        return Math.max(0, parseInt(String(value), 10) || 0);
+    }
+
+    function clearResolvedPendingFlags(list) {
+        if (clearingPendingFlags) return;
+        const Cart = window.Cart;
+        if (!Cart || typeof Cart.getItems !== 'function' || typeof Cart.setItems !== 'function') {
+            return;
+        }
+        const liveIds = new Set();
+        (Array.isArray(list) ? list : []).forEach((row) => {
+            if (!row) return;
+            const id = String(row.product_id || row.id || '');
+            if (id) liveIds.add(id);
+        });
+        const items = Cart.getItems();
+        let changed = false;
+        const next = items.map((item) => {
+            if (!item || item.bogo_auto_free) return item;
+            if (!item.stock_conflict_pending) return item;
+            if (liveIds.has(String(item.id))) return item;
+            changed = true;
+            const copy = { ...item };
+            delete copy.stock_conflict_pending;
+            delete copy.stock_conflict_sellable;
+            delete copy.stock_conflict_pending_qty;
+            return copy;
+        });
+        if (!changed) return;
+        clearingPendingFlags = true;
+        try {
+            Cart.setItems(next);
+        } finally {
+            clearingPendingFlags = false;
+        }
+    }
+
+    function setLiveConflicts(list) {
+        Object.keys(liveConflictsById).forEach((key) => {
+            delete liveConflictsById[key];
+        });
+        (Array.isArray(list) ? list : []).forEach((row) => {
+            if (!row) return;
+            const id = String(row.product_id || row.id || '');
+            if (!id) return;
+            liveConflictsById[id] = row;
+        });
+        liveSyncReady = true;
+        clearResolvedPendingFlags(list);
+    }
+
+    /**
+     * Quantas unidades saem com o estoque atual e quantas ficam pendentes.
+     * Usa a reserva de outros caixas quando houver conflito ao vivo.
+     */
+    function allocationFor(item) {
+        if (!item || item.bogo_auto_free) {
+            return { sellable: 0, pending: 0, blocked: false, fromHold: false };
+        }
+        const qty = parseNonNegInt(item.quantidade);
+        if (qty <= 0) {
+            return { sellable: 0, pending: 0, blocked: false, fromHold: false };
+        }
+        const bl = Number(item.backorder_limit);
+        const live = liveConflictsById[String(item.id)];
+        if (live) {
+            const remaining = parseNonNegInt(live.available_after_others);
+            const sellable = Math.min(qty, remaining);
+            const pending = Math.max(0, qty - sellable);
+            const blocked = !!window.__SELLER_BACKORDER__
+                && Number.isFinite(bl)
+                && bl === 0
+                && pending > 0;
+            return {
+                sellable,
+                pending,
+                stock: parseNonNegInt(live.estoque),
+                other_qty: parseNonNegInt(live.other_qty),
+                holders_label: String(live.holders_label || ''),
+                fromHold: true,
+                blocked,
+            };
+        }
+        const snapPendingRaw = item.stock_conflict_pending_qty;
+        if (
+            !liveSyncReady
+            && item.stock_conflict_pending
+            && snapPendingRaw != null
+            && String(snapPendingRaw) !== ''
+        ) {
+            const pendingSnap = parseNonNegInt(snapPendingRaw);
+            const sellSnap = parseNonNegInt(item.stock_conflict_sellable);
+            if (sellSnap + pendingSnap === qty && pendingSnap > 0) {
+                const blocked = !!window.__SELLER_BACKORDER__
+                    && Number.isFinite(bl)
+                    && bl === 0
+                    && pendingSnap > 0;
+                return {
+                    sellable: sellSnap,
+                    pending: pendingSnap,
+                    stock: Number.isFinite(Number(item.estoque))
+                        ? Math.max(0, Number(item.estoque))
+                        : sellSnap,
+                    other_qty: 0,
+                    holders_label: '',
+                    fromHold: true,
+                    blocked,
+                };
+            }
+        }
+        const stock = Number(item.estoque);
+        if (!Number.isFinite(stock)) {
+            return { sellable: qty, pending: 0, blocked: false, fromHold: false };
+        }
+        const available = Math.max(0, stock);
+        const sellable = Math.min(qty, available);
+        const pending = Math.max(0, qty - sellable);
+        const blocked = !!window.__SELLER_BACKORDER__
+            && Number.isFinite(bl)
+            && bl === 0
+            && pending > 0;
+        return {
+            sellable,
+            pending,
+            stock: available,
+            other_qty: 0,
+            holders_label: '',
+            fromHold: false,
+            blocked,
+        };
+    }
+
+    function splitLabel(item) {
+        const a = allocationFor(item);
+        if (!a || a.pending <= 0 || a.blocked) return '';
+        const pendWord = a.pending === 1 ? 'un. pendente' : 'un. pendentes';
+        if (a.sellable <= 0) {
+            return `${a.pending} ${pendWord} — retirada posterior`;
+        }
+        return `${a.sellable} un. com estoque · ${a.pending} ${pendWord} (retirada posterior)`;
+    }
+
+    function splitHintHtml(item, articleClass) {
+        const label = splitLabel(item);
+        if (!label) return '';
+        const cls = articleClass === 'cart-item'
+            ? 'cart-item__backorder'
+            : `${articleClass}__stock-split`;
+        return (
+            `<p class="${cls}">`
+            + `<i class="fa-solid fa-box-open" aria-hidden="true"></i> ${escapeHtml(label)}`
+            + `</p>`
+        );
+    }
+
+    function noticeHtml(items) {
+        if (!window.__SELLER_BACKORDER__) return '';
+        const rows = (Array.isArray(items) ? items : []).map((item) => {
+            if (!item || item.bogo_auto_free) return null;
+            const a = allocationFor(item);
+            if (!a || a.pending <= 0 || a.blocked) return null;
+            return {
+                nome: String(item.nome || 'Produto'),
+                sellable: a.sellable,
+                pending: a.pending,
+            };
+        }).filter(Boolean);
+        if (!rows.length) return '';
+        const lis = rows.map((row) => {
+            if (row.sellable <= 0) {
+                return `<li><strong>${escapeHtml(row.nome)}</strong>: ${row.pending} un. pendente${row.pending === 1 ? '' : 's'}</li>`;
+            }
+            return `<li><strong>${escapeHtml(row.nome)}</strong>: ${row.sellable} un. agora, ${row.pending} un. pendente${row.pending === 1 ? '' : 's'}</li>`;
+        }).join('');
+        const sellSum = rows.reduce((sum, row) => sum + row.sellable, 0);
+        const pendSum = rows.reduce((sum, row) => sum + row.pending, 0);
+        const lead = sellSum > 0
+            ? `Das unidades deste pedido, <strong>${sellSum}</strong> saem com o estoque atual e <strong>${pendSum}</strong> ficam pendentes de retirada.`
+            : `Este pedido tem <strong>${pendSum}</strong> un. pendente${pendSum === 1 ? '' : 's'} de retirada.`;
+        return `
+            <div class="payment-backorder-note" role="note">
+                <i class="fa-solid fa-box-open" aria-hidden="true"></i>
+                <div>
+                    ${lead}
+                    O pagamento é integral.
+                    <ul>${lis}</ul>
+                </div>
+            </div>
+        `;
+    }
+
+    window.StockConflict = {
+        setLiveConflicts,
+        allocationFor,
+        splitLabel,
+        splitHintHtml,
+        noticeHtml,
+    };
+
     /**
      * Ícone minimalista para itens acima do estoque (painel do vendedor).
      * Retorna string vazia quando não há retirada posterior pendente.
      */
     function backorderIndicatorHtml(item, articleClass) {
         if (!window.__SELLER_BACKORDER__) return '';
-        const bl = Number(item.backorder_limit);
-        if (Number.isFinite(bl) && bl === 0) return '';
-        const stock = Number(item.estoque);
-        if (!Number.isFinite(stock)) return '';
-        const qty = Math.max(0, Number(item.quantidade) || 0);
-        const available = Math.max(0, stock);
-        const missing = qty - available;
-        if (missing <= 0) return '';
-        const label = available <= 0
-            ? 'Sem estoque — retirada posterior pelo cliente'
-            : `${missing} de ${qty} un. sem estoque — retirada posterior pelo cliente`;
+        const a = allocationFor(item);
+        if (!a || a.pending <= 0 || a.blocked) return '';
+        const label = splitLabel(item) || 'Retirada posterior pelo cliente';
         return (
             `<span class="${articleClass}__backorder" title="${escapeHtml(label)}" `
             + `role="img" aria-label="${escapeHtml(label)}">`
@@ -746,7 +942,8 @@
             ? `<p class="line-item__promo"><i class="fa-solid fa-tag" aria-hidden="true"></i> ${escapeHtml(item.promo_badge)}</p>`
             : '';
         const backorderIcon = backorderIndicatorHtml(item, articleClass);
-        const backorderClass = backorderIcon ? ` ${articleClass}--backorder` : '';
+        const splitHint = splitHintHtml(item, articleClass);
+        const backorderClass = (backorderIcon || splitHint) ? ` ${articleClass}--backorder` : '';
         const freeClass = (isFullyFree || item.bogo_auto_free) ? ` ${articleClass}--free` : '';
         const removable = !!options.removable && !item.bogo_auto_free;
         const removeBtn = removable
@@ -776,6 +973,7 @@
                     ${item.sku ? `<p class="${articleClass}__sku">SKU ${escapeHtml(item.sku)}</p>` : ''}
                     <p class="${articleClass}__meta">${qtyMeta}</p>
                     ${promoHint || badge}
+                    ${splitHint}
                 </div>
                 ${totalCol}
             </article>

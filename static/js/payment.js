@@ -279,8 +279,12 @@
     }
 
     function backorderNoticeHtml(items) {
+        if (window.StockConflict && typeof window.StockConflict.noticeHtml === 'function') {
+            return window.StockConflict.noticeHtml(items);
+        }
         if (!window.__SELLER_BACKORDER__) return '';
         const hasBackorder = items.some(item => {
+            if (item.stock_conflict_pending) return true;
             const bl = Number(item.backorder_limit);
             if (Number.isFinite(bl) && bl === 0) return false;
             const stock = Number(item.estoque);
@@ -397,6 +401,10 @@
         if (window.PaymentForm && typeof window.PaymentForm.syncInstallmentsFromCart === 'function') {
             window.PaymentForm.syncInstallmentsFromCart();
         }
+    });
+
+    window.addEventListener('checkout-hold:conflicts', () => {
+        renderSummary();
     });
 
     renderSummary();

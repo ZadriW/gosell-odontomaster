@@ -872,6 +872,19 @@ def confirm_transaction_with_aut(tx_id: int, aut: str, *, created_by: str = "tot
 
         # Saldo disponível por produto no escopo da venda.
         sku_by_id = _build_sku_by_product_id(conn, demand.keys())
+        held_by_others: Dict[int, int] = {}
+        try:
+            seller_id_for_holds = int(tx_row.get("seller_id") or 0)
+        except (TypeError, ValueError):
+            seller_id_for_holds = 0
+        if event_id is not None and seller_id_for_holds > 0:
+            from .checkout_holds import other_sellers_hold_qty_by_product_conn
+            held_by_others = other_sellers_hold_qty_by_product_conn(
+                conn,
+                int(event_id),
+                seller_id_for_holds,
+                list(demand.keys()),
+            )
         available: Dict[int, int] = {}
         for pid in demand:
             stock = _available_stock_for_product(conn, pid, event_id)
@@ -880,7 +893,8 @@ def confirm_transaction_with_aut(tx_id: int, aut: str, *, created_by: str = "tot
                 if event_id is not None:
                     raise ValueError(f"Produto {sku} não está disponível neste evento.")
                 raise ValueError(f"Produto {sku} não encontrado no catálogo.")
-            available[pid] = stock
+            reserved = max(0, int(held_by_others.get(pid, 0) or 0))
+            available[pid] = max(0, int(stock) - reserved)
 
         # Aloca entrega por item (na ordem de inserção) até esgotar o saldo.
         deliver_by_product: Dict[int, int] = {}
@@ -905,6 +919,7 @@ def confirm_transaction_with_aut(tx_id: int, aut: str, *, created_by: str = "tot
                         "item_id": int(it["id"]),
                         "product_id": pid,
                         "product_name": it["product_name"],
+                        "delivered": deliver_now,
                         "pending": qty - deliver_now,
                     }
                 )

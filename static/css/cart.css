@@ -211,8 +211,8 @@
 
 /* Aviso de item acima do estoque (painel do vendedor — retirada posterior) */
 .cart-item__backorder {
-    display: inline-flex;
-    align-items: center;
+    display: flex;
+    align-items: flex-start;
     gap: 6px;
     margin-top: 6px;
     padding: 4px 8px;
@@ -222,6 +222,7 @@
     background: rgba(232, 137, 11, 0.12);
     border: 1px solid rgba(232, 137, 11, 0.4);
     border-radius: 8px;
+    line-height: 1.35;
 }
 
 .cart-item__backorder--blocked {
