@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import sqlite3
 import unicodedata
 from collections import defaultdict
@@ -31,22 +32,35 @@ def _fold_product_name(name: str) -> str:
     return " ".join(text.split())
 
 
-_LIKE_ACCENT_PAIRS = (
-    ("á", "a"), ("à", "a"), ("â", "a"), ("ã", "a"), ("ä", "a"),
-    ("é", "e"), ("è", "e"), ("ê", "e"), ("ë", "e"),
-    ("í", "i"), ("ì", "i"), ("î", "i"), ("ï", "i"),
-    ("ó", "o"), ("ò", "o"), ("ô", "o"), ("õ", "o"), ("ö", "o"),
-    ("ú", "u"), ("ù", "u"), ("û", "u"), ("ü", "u"),
-    ("ç", "c"),
-)
+_SEARCH_PUNCT = "-_/.,;:()[]+*#"
 
 
-def _sql_fold_text(expr: str) -> str:
-    """LOWER + troca de acentos comuns em SQL (SQLite sem ICU)."""
-    folded = f"LOWER({expr})"
-    for src, dst in _LIKE_ACCENT_PAIRS:
-        folded = f"REPLACE({folded}, '{src}', '{dst}')"
-    return folded
+def _split_alnum_boundaries(text: str) -> str:
+    """Separa ``25mm`` → ``25 mm``. Não parte ``k15`` nem ``TDK`` (evita ``k`` solto)."""
+    return re.sub(r"([0-9])([a-z])", r"\1 \2", text, flags=re.IGNORECASE)
+
+
+def _is_short_letter_token(tok: str) -> bool:
+    """``k``, ``h``, ``mm``: tipo/calibre, não fragmento de SKU ou marca (``TDK``)."""
+    return bool(tok) and len(tok) <= 2 and tok.isalpha()
+
+
+def _fold_product_search_text(text: str) -> str:
+    """Texto de busca: sem acento, pontuação vira espaço, números separados de letras."""
+    folded = _fold_product_name(text)
+    trans = str.maketrans({ch: " " for ch in _SEARCH_PUNCT})
+    folded = _split_alnum_boundaries(folded.translate(trans))
+    return " ".join(folded.split())
+
+
+def _sql_search_fold(expr: str) -> str:
+    """Fold de busca em SQL (mesma regra de ``_fold_product_search_text``)."""
+    return f"product_search_fold({expr})"
+
+
+def _sql_search_padded(expr: str) -> str:
+    """Haystack com espaços nas bordas para casar palavra inteira via INSTR."""
+    return f"(' ' || {_sql_search_fold(expr)} || ' ')"
 
 
 def _like_contains(term: str) -> str:
@@ -60,11 +74,38 @@ def _like_contains(term: str) -> str:
 
 
 def _product_search_tokens(q: Optional[str]) -> List[str]:
-    """Palavras da busca, sem acento; ``#123`` vira o token ``123``."""
+    """Palavras da busca, sem acento; hífens separam tokens; ``#123`` vira ``123``."""
     qs = (q or "").strip()
     if qs.startswith("#"):
         qs = qs[1:].strip()
-    return [tok for tok in _fold_product_name(qs).split(" ") if tok]
+    return [tok for tok in _fold_product_search_text(qs).split(" ") if tok]
+
+
+def _sql_token_match(
+    tok: str,
+    next_tok: Optional[str],
+    padded: str,
+    folded: str,
+    *,
+    sku: bool = False,
+) -> Tuple[str, List]:
+    """Um token contra um haystack SQL já dobrado.
+
+    Tokens curtos: palavra inteira. Letras curtas podem casar coladas ao
+    próximo token (``kfile``). Tokens longos no título: prefixo de palavra
+    (``file`` casa ``files``, não ``flexfile``; ``recip`` casa Reciproc).
+    No SKU, tokens longos ainda podem ser subtexto.
+    """
+    if len(tok) <= 2:
+        parts = [f"INSTR({padded}, ?) > 0"]
+        params: List = [f" {tok} "]
+        if _is_short_letter_token(tok) and next_tok:
+            parts.append(f"INSTR({folded}, ?) > 0")
+            params.append(tok + next_tok)
+        return "(" + " OR ".join(parts) + ")", params
+    if sku:
+        return f"{folded} LIKE ? ESCAPE '\\'", [_like_contains(tok)]
+    return f"INSTR({padded}, ?) > 0", [f" {tok}"]
 
 
 def _product_catalog_like_clause(
@@ -76,10 +117,12 @@ def _product_catalog_like_clause(
 ) -> Tuple[str, List]:
     """Busca por partes do nome: todas as palavras precisam aparecer.
 
-    Cada token casa em nome, variante ou SKU (não na descrição). Assim
-    ``Cimento Angelus`` encontra ``Cimento Endodôntico Bio-C Temp - Angelus``,
-    e ``Lima Reciproc`` não lista ``Lima Kendo``. Trecho só numérico
-    (opcional ``#``) também casa o ID.
+    Letras curtas (1–2 caracteres) casam só como palavra inteira no **nome**,
+    na **variante** ou no **SKU** — não como subtexto de ``TDK``. Assim
+    ``Lima K file`` não lista ``H FILE … TDK``, mas ``K-15`` no SKU continua
+    encontrável. Tokens maiores no nome/variante casam como prefixo de palavra
+    (``recip`` encontra Reciproc; ``file`` não casa ``flexfile``). No SKU ainda
+    podem ser subtexto. Trecho só numérico (opcional ``#``) também casa o ID.
     Retorna ``(clausula_entre_parenteses, params)`` ou ``("", [])``.
     """
     tokens = _product_search_tokens(q)
@@ -88,27 +131,52 @@ def _product_catalog_like_clause(
 
     prefix = f"{alias}." if alias else ""
     id_col = f"{prefix}id"
-    name_f = _sql_fold_text(f"COALESCE({prefix}name, '')")
-    variant_f = _sql_fold_text(f"COALESCE({prefix}variant_name, '')")
-    sku_f = _sql_fold_text(f"COALESCE({prefix}sku, '')")
+    title_src = (
+        f"TRIM(COALESCE({prefix}name, '') || ' ' || COALESCE({prefix}variant_name, ''))"
+    )
+    name_p = _sql_search_padded(f"COALESCE({prefix}name, '')")
+    variant_p = _sql_search_padded(f"COALESCE({prefix}variant_name, '')")
+    sku_p = _sql_search_padded(f"COALESCE({prefix}sku, '')")
+    title_p = _sql_search_padded(title_src)
+    name_f = _sql_search_fold(f"COALESCE({prefix}name, '')")
+    variant_f = _sql_search_fold(f"COALESCE({prefix}variant_name, '')")
+    sku_f = _sql_search_fold(f"COALESCE({prefix}sku, '')")
+    title_f = _sql_search_fold(title_src)
 
     token_ands: List[str] = []
     token_params: List = []
-    for tok in tokens:
-        like = _like_contains(tok)
-        or_parts = [
-            f"{name_f} LIKE ? ESCAPE '\\'",
-            f"{variant_f} LIKE ? ESCAPE '\\'",
-            f"{sku_f} LIKE ? ESCAPE '\\'",
-        ]
-        or_params: List = [like, like, like]
+    for i, tok in enumerate(tokens):
+        next_tok = tokens[i + 1] if i + 1 < len(tokens) else None
+        if _is_short_letter_token(tok):
+            title_sql, title_params = _sql_token_match(tok, next_tok, title_p, title_f)
+            sku_sql, sku_params = _sql_token_match(tok, next_tok, sku_p, sku_f)
+            token_ands.append(f"({title_sql} OR {sku_sql})")
+            token_params.extend(title_params + sku_params)
+            continue
+
+        or_parts: List[str] = []
+        or_params: List = []
+        for padded, folded, is_sku in (
+            (name_p, name_f, False),
+            (variant_p, variant_f, False),
+            (sku_p, sku_f, True),
+        ):
+            part_sql, part_params = _sql_token_match(
+                tok, next_tok, padded, folded, sku=is_sku
+            )
+            or_parts.append(part_sql)
+            or_params.extend(part_params)
         if include_sku_aliases:
-            alias_f = _sql_fold_text("sa.sku")
+            alias_p = _sql_search_padded("sa.sku")
+            alias_f = _sql_search_fold("sa.sku")
+            alias_sql, alias_params = _sql_token_match(
+                tok, next_tok, alias_p, alias_f, sku=True
+            )
             or_parts.append(
                 "EXISTS (SELECT 1 FROM product_sku_aliases sa "
-                f"WHERE sa.product_id = {id_col} AND {alias_f} LIKE ? ESCAPE '\\')"
+                f"WHERE sa.product_id = {id_col} AND {alias_sql})"
             )
-            or_params.append(like)
+            or_params.extend(alias_params)
         token_ands.append("(" + " OR ".join(or_parts) + ")")
         token_params.extend(or_params)
 
@@ -126,6 +194,44 @@ def _product_catalog_like_clause(
         clause = f"({clause} OR ({' OR '.join(id_ors)}))"
         token_params.extend(id_params)
     return clause, token_params
+
+
+def _product_search_order_clause(
+    q: Optional[str],
+    *,
+    alias: str = "p",
+    fallback: Optional[str] = None,
+) -> Tuple[str, List]:
+    """``ORDER BY``: relevância da busca e, sem texto, o fallback (categoria/nome)."""
+    prefix = f"{alias}." if alias else ""
+    empty_order = fallback or f"{prefix}category, {prefix}name"
+    tokens = _product_search_tokens(q)
+    if not tokens:
+        return empty_order, []
+
+    title_src = (
+        f"TRIM(COALESCE({prefix}name, '') || ' ' || COALESCE({prefix}variant_name, ''))"
+    )
+    title_f = _sql_search_fold(title_src)
+    parts: List[str] = []
+    params: List = []
+    phrase = " ".join(tokens)
+    parts.append(f"(CASE WHEN INSTR({title_f}, ?) > 0 THEN 200 ELSE 0 END)")
+    params.append(phrase)
+    if len(tokens) >= 2:
+        pair = f"{tokens[-2]} {tokens[-1]}"
+        compound = f"{tokens[-2]}{tokens[-1]}"
+        parts.append(f"(CASE WHEN INSTR({title_f}, ?) > 0 THEN 90 ELSE 0 END)")
+        params.append(pair)
+        parts.append(f"(CASE WHEN INSTR({title_f}, ?) > 0 THEN 70 ELSE 0 END)")
+        params.append(compound)
+    for tok in tokens:
+        weight = 18 if _is_short_letter_token(tok) else 8
+        parts.append(f"(CASE WHEN INSTR({title_f}, ?) > 0 THEN {weight} ELSE 0 END)")
+        params.append(tok)
+    parts.append(f"(-MIN(16, LENGTH(COALESCE({prefix}name, '')) / 36))")
+    score = " + ".join(parts)
+    return f"({score}) DESC, {prefix}name COLLATE NOCASE", params
 
 
 def _retire_variant_parent_ids(conn: sqlite3.Connection, parent_ids: Iterable[int]) -> int:
@@ -763,15 +869,23 @@ def _mark_catalog_family(head: Dict, members: List[Dict], *, include_head: bool)
     head["tem_opcoes"] = True
     head["catalog_oculto"] = False
     head["opcoes"] = option_ids
-    search_bits = [head.get("nome") or "", head.get("sku") or "", head.get("variante") or ""]
     by_id = {int(m["id"]): m for m in members}
     by_id[int(head["id"])] = head
+    search_bits: List[str] = []
     for oid in option_ids:
         opt = by_id.get(oid)
         if not opt:
             continue
-        search_bits.extend([opt.get("nome") or "", opt.get("sku") or "", opt.get("variante") or ""])
-    head["busca_opcoes"] = " ".join(search_bits)
+        blob = " ".join(
+            bit for bit in (
+                opt.get("nome") or "",
+                opt.get("variante") or "",
+            )
+            if (bit or "").strip()
+        )
+        if blob.strip():
+            search_bits.append(blob.strip())
+    head["busca_opcoes"] = " | ".join(search_bits)
 
 
 def summarize_catalog_option_groups(products: List[Dict]) -> None:
@@ -902,7 +1016,9 @@ def list_products_for_client(
     if search_sql:
         sql += f" AND {search_sql}"
         params.extend(search_params)
-    sql += " ORDER BY category, name"
+    order_sql, order_params = _product_search_order_clause(query, alias="")
+    sql += f" ORDER BY {order_sql}"
+    params.extend(order_params)
 
     with get_conn() as conn:
         rows = conn.execute(sql, params).fetchall()
@@ -1047,12 +1163,13 @@ def list_products_admin_slice(
 ) -> List[Dict]:
     """Página da biblioteca de produtos com saldo total nos eventos."""
     where, params = _admin_products_library_filter_clause(q, categoria, status)
+    order_sql, order_params = _product_search_order_clause(q, alias="p")
     sql = (
         f"SELECT p.*, COALESCE(ev_agg.ev_stock_total, 0) AS stock_events_total "
         f"{_EVT_PRODUCTS_JOIN} WHERE {where} "
-        "ORDER BY p.category, p.name LIMIT ? OFFSET ?"
+        f"ORDER BY {order_sql} LIMIT ? OFFSET ?"
     )
-    qparams = list(params) + [int(limit), int(max(0, offset))]
+    qparams = list(params) + list(order_params) + [int(limit), int(max(0, offset))]
     with get_conn() as conn:
         rows = conn.execute(sql, qparams).fetchall()
     return [_admin_products_library_row_to_admin_product(r) for r in rows]

@@ -48,6 +48,185 @@
             .replace(/[\u0300-\u036f]/g, '');
     }
 
+    function normalizeSearch(text) {
+        return normalize(text)
+            .replace(/[-\/_.,;:()[\]+*#]+/g, ' ')
+            .replace(/([0-9])([a-z])/gi, '$1 $2')
+            .replace(/\s+/g, ' ')
+            .trim();
+    }
+
+    function searchTokens(query) {
+        return normalizeSearch(query).split(/\s+/).filter(Boolean);
+    }
+
+    function isShortLetterToken(token) {
+        return token.length <= 2 && /^[a-z]+$/.test(token);
+    }
+
+    function isShortToken(token) {
+        return token.length <= 2;
+    }
+
+    function tokenInHaystack(token, haystack, nextToken, loose) {
+        if (!token || !haystack) return false;
+        const padded = ` ${haystack} `;
+        if (isShortToken(token)) {
+            if (padded.includes(` ${token} `)) return true;
+            if (isShortLetterToken(token) && nextToken && haystack.includes(token + nextToken)) {
+                return true;
+            }
+            return false;
+        }
+        if (loose) return haystack.includes(token);
+        return padded.includes(` ${token}`);
+    }
+
+    function skuHaystacksFrom(sku) {
+        const folded = normalizeSearch(sku || '');
+        const compact = folded.replace(/\s+/g, '');
+        return uniqueHaystacks([folded, compact]);
+    }
+
+    function compactQuery(query) {
+        return normalizeSearch(query).replace(/\s+/g, '');
+    }
+
+    function skuMatchesSearch(sku, query, tokens) {
+        const folded = normalizeSearch(sku || '');
+        if (!folded) return false;
+        const compact = folded.replace(/\s+/g, '');
+        const qCompact = compactQuery(query);
+        if (qCompact.length >= 3 && compact.length >= 3) {
+            if (compact === qCompact || compact.includes(qCompact)) return true;
+        }
+        if (!tokens.length) return false;
+        return tokens.every((token, index) => (
+            tokenInHaystack(token, folded, tokens[index + 1], !isShortToken(token))
+        ));
+    }
+
+    function tokenInSkuHaystack(token, haystack, nextToken) {
+        if (!haystack) return false;
+        if (isShortToken(token) && !haystack.includes(' ')) {
+            return haystack === token;
+        }
+        return tokenInHaystack(token, haystack, nextToken, !isShortToken(token));
+    }
+
+    function tokensMatchHaystacks(tokens, titleHaystacks, skuHaystacks, rawQuery) {
+        const qCompact = compactQuery(rawQuery || tokens.join(' '));
+        if (qCompact.length >= 3) {
+            const skuHit = skuHaystacks.some(hay => {
+                const compact = String(hay || '').replace(/\s+/g, '');
+                return compact.length >= 3 && (compact === qCompact || compact.includes(qCompact));
+            });
+            if (skuHit) return true;
+        }
+        return tokens.every((token, index) => {
+            const next = tokens[index + 1];
+            if (titleHaystacks.some(hay => tokenInHaystack(token, hay, next, false))) {
+                return true;
+            }
+            return skuHaystacks.some(hay => tokenInSkuHaystack(token, hay, next));
+        });
+    }
+
+    function uniqueHaystacks(values) {
+        const seen = new Set();
+        const out = [];
+        values.forEach(value => {
+            if (value && !seen.has(value)) {
+                seen.add(value);
+                out.push(value);
+            }
+        });
+        return out;
+    }
+
+    function cardSearchModel(card) {
+        const title = normalizeSearch([
+            card.dataset.name || '',
+            card.dataset.variante || '',
+        ].join(' '));
+        const sku = card.dataset.sku || '';
+        const extraTitles = String(card.dataset.busca || '')
+            .split('|')
+            .map(part => normalizeSearch(part))
+            .filter(Boolean);
+        const extraSkus = skuHaystacksFrom(sku);
+        String(card.dataset.opcoes || '').split(',').forEach(rawId => {
+            const product = productsById.get(String(rawId).trim());
+            if (product && product.sku) {
+                extraSkus.push(...skuHaystacksFrom(product.sku));
+            }
+        });
+        return {
+            title,
+            titleHaystacks: uniqueHaystacks([title, ...extraTitles]),
+            skuHaystacks: uniqueHaystacks(extraSkus),
+        };
+    }
+
+    function productSearchModel(product) {
+        const title = normalizeSearch([
+            product.nome || '',
+            product.variante || '',
+        ].join(' '));
+        return {
+            title,
+            titleHaystacks: uniqueHaystacks([title]),
+            skuHaystacks: skuHaystacksFrom(product.sku || ''),
+        };
+    }
+
+    function scoreSearchMatch(tokens, title, matchedHaystack) {
+        if (!tokens.length) return 0;
+        const hay = matchedHaystack || title;
+        const phrase = tokens.join(' ');
+        let score = 0;
+        if (title.includes(phrase)) score += 140;
+        else if (hay.includes(phrase)) score += 70;
+        if (tokens.length >= 2) {
+            const pair = `${tokens[tokens.length - 2]} ${tokens[tokens.length - 1]}`;
+            const compound = tokens[tokens.length - 2] + tokens[tokens.length - 1];
+            if (title.includes(pair) || title.includes(compound)) score += 60;
+            else if (hay.includes(pair) || hay.includes(compound)) score += 24;
+        }
+        tokens.forEach((token, index) => {
+            const next = tokens[index + 1];
+            if (tokenInHaystack(token, title, next, false)) {
+                score += isShortLetterToken(token) ? 20 : 8;
+            } else if (tokenInHaystack(token, hay, next, false)) {
+                score += 3;
+            }
+        });
+        score -= Math.min(16, title.length / 36);
+        return score;
+    }
+
+    function bestSearchMatch(tokens, model) {
+        if (!tokens.length) {
+            return { ok: true, score: 0 };
+        }
+        if (!tokensMatchHaystacks(tokens, model.titleHaystacks, model.skuHaystacks, state.query)) {
+            return { ok: false, score: -1 };
+        }
+        let bestScore = -1;
+        model.titleHaystacks.forEach(seg => {
+            const allInSeg = tokens.every((token, index) => (
+                tokenInHaystack(token, seg, tokens[index + 1], false)
+            ));
+            if (!allInSeg) return;
+            const score = scoreSearchMatch(tokens, model.title, seg);
+            if (score > bestScore) bestScore = score;
+        });
+        if (bestScore < 0) {
+            bestScore = scoreSearchMatch(tokens, model.title, model.title) * 0.4;
+        }
+        return { ok: true, score: bestScore };
+    }
+
     function getStock(card) {
         const n = parseInt(card.dataset.estoque, 10);
         return Number.isFinite(n) && n >= 0 ? n : 999;
@@ -417,27 +596,32 @@
     }
 
     function applyFilters() {
-        const query = normalize(state.query.trim());
+        const tokens = searchTokens(state.query);
         let visible = 0;
+        const ranked = [];
 
-        cards.forEach(card => {
+        cards.forEach((card, index) => {
             const matchesCategory =
                 state.category === 'todos'
                 || card.dataset.category === state.category;
-            const tokens = query.split(/\s+/).filter(Boolean);
-            const haystack = normalize([
-                card.dataset.name || '',
-                card.dataset.variante || '',
-                card.dataset.sku || '',
-                card.dataset.busca || '',
-            ].join(' '));
-            const matchesQuery =
-                !query
-                || tokens.every(token => haystack.includes(token));
-            const show = matchesCategory && matchesQuery;
+            const match = bestSearchMatch(tokens, cardSearchModel(card));
+            const show = matchesCategory && match.ok;
             card.style.display = show ? '' : 'none';
-            if (show) visible += 1;
+            if (show) {
+                visible += 1;
+                ranked.push({ card, index, score: match.score });
+            } else {
+                ranked.push({ card, index, score: -1 });
+            }
         });
+
+        const ordered = tokens.length
+            ? ranked.slice().sort((a, b) => {
+                if (a.score !== b.score) return b.score - a.score;
+                return a.index - b.index;
+            })
+            : ranked.slice().sort((a, b) => a.index - b.index);
+        ordered.forEach(item => grid.appendChild(item.card));
 
         emptyState.hidden = visible !== 0;
         resultsInfo.textContent =
@@ -459,21 +643,84 @@
     const optionsTitle = document.getElementById('catalogOptionsTitle');
     const optionsClose = document.getElementById('catalogOptionsClose');
     let openOptionsParentId = null;
+    let selectedOptionId = null;
 
     function stockToneClass(estoque, minStock) {
         return stockToneFromLevels(estoque, minStock).replace('product-card__stock--', '');
     }
 
-    function renderOptionCardHtml(product) {
-        const q = Math.max(0, Math.floor(Number(product.estoque)) || 0);
-        const sm = Math.max(0, Math.floor(Number(product.estoque_minimo)) || 0);
-        const bl = Number.isFinite(Number(product.backorder_limit)) ? Number(product.backorder_limit) : -1;
+    function filteredOptionProducts(parentProduct) {
+        const children = optionProductsOf(parentProduct);
+        if (!children.length) return [];
+        const tokens = searchTokens(state.query);
+        if (!tokens.length) return children;
+        const scored = children.map((p, index) => {
+            const skuHit = skuMatchesSearch(p.sku || '', state.query, tokens);
+            const nameHit = bestSearchMatch(tokens, productSearchModel(p));
+            let score = -1;
+            if (skuHit) score = 1000 + (nameHit.ok ? nameHit.score : 0);
+            else if (nameHit.ok) score = nameHit.score;
+            return { p, index, score, skuHit };
+        });
+        const skuHits = scored
+            .filter(item => item.skuHit)
+            .sort((a, b) => b.score - a.score || a.index - b.index)
+            .map(item => item.p);
+        if (skuHits.length) return skuHits;
+        const ranked = scored
+            .filter(item => item.score >= 0)
+            .sort((a, b) => b.score - a.score || a.index - b.index)
+            .map(item => item.p);
+        return ranked.length ? ranked : children;
+    }
+
+    function optionChipLabel(product) {
+        return String(product.variante || product.sku || product.nome || 'Opção').trim();
+    }
+
+    const MANY_OPTION_CHIPS = 6;
+
+    function setManyVariantsLayout(count) {
+        if (!optionsDialog) return;
+        optionsDialog.classList.toggle('catalog-options--many-variants', count >= MANY_OPTION_CHIPS);
+    }
+
+    function readOpenOptionsQty() {
+        const input = optionsGrid && optionsGrid.querySelector('.product-card__counter-input');
+        return input ? input.value : '1';
+    }
+
+    function renderOptionsLayout(parentProduct, { keepQty = false } = {}) {
+        if (!optionsGrid) return;
+        const list = filteredOptionProducts(parentProduct);
+        if (!list.length) {
+            selectedOptionId = null;
+            setManyVariantsLayout(0);
+            if (optionsTitle) optionsTitle.textContent = parentProduct.nome || 'Variantes';
+            optionsGrid.innerHTML = '<p class="catalog-options__empty">Nenhuma opção disponível para este produto.</p>';
+            return;
+        }
+
+        const prevQty = keepQty ? readOpenOptionsQty() : '1';
+        const stillSelected = list.find(p => String(p.id) === String(selectedOptionId));
+        const selected = stillSelected || list.find(p => p.main_variant) || list[0];
+        selectedOptionId = String(selected.id);
+        const manyVariants = list.length >= MANY_OPTION_CHIPS;
+        setManyVariantsLayout(list.length);
+
+        const q = Math.max(0, Math.floor(Number(selected.estoque)) || 0);
+        const sm = Math.max(0, Math.floor(Number(selected.estoque_minimo)) || 0);
+        const bl = Number.isFinite(Number(selected.backorder_limit)) ? Number(selected.backorder_limit) : -1;
         const blocked = window.__SELLER_BACKORDER__ && bl === 0 && q <= 0;
-        const em = !!product.em_promocao;
+        const em = !!selected.em_promocao;
         const tone = stockToneClass(q, sm);
-        const sku = product.sku
-            ? `<div class="product-card__meta-line"><span class="product-card__sku">SKU ${escapeCatalogHtml(product.sku)}</span><span class="product-card__stock product-card__stock--${tone}" data-stock-display>${formatStockLabel(q)}</span></div>`
+        const imgSrc = safeMediaUrl(selected.imagem) || safeMediaUrl(parentProduct.imagem);
+        const parentName = parentProduct.nome || 'Produto';
+        if (optionsTitle) optionsTitle.textContent = parentName;
+        const skuLine = selected.sku
+            ? `<div class="product-card__meta-line"><span class="product-card__sku">SKU ${escapeCatalogHtml(selected.sku)}</span><span class="product-card__stock product-card__stock--${tone}" data-stock-display>${formatStockLabel(q)}</span></div>`
             : `<span class="product-card__stock product-card__stock--${tone} product-card__stock--alone" data-stock-display>${formatStockLabel(q)}</span>`;
+
         let backorder = '';
         if (bl >= 0) {
             const blockedClass = bl === 0 ? ' product-card__backorder-info--blocked' : '';
@@ -482,60 +729,77 @@
                 ? 'Vendas futuras bloqueadas'
                 : `<span data-backorder-limit-value>${bl}</span> vendas futuras disp.`;
             backorder = `<span class="product-card__backorder-info${blockedClass}" data-backorder-info><i class="fa-solid ${icon}" aria-hidden="true"></i><span data-backorder-msg>${msg}</span></span>`;
+        } else {
+            backorder = '<span class="product-card__backorder-info" data-backorder-info hidden></span>';
         }
-        return `
-            <article
-                class="catalog-option${em ? ' catalog-option--promo' : ''}${blocked ? ' catalog-option--backorder-blocked' : ''}"
-                data-id="${escapeCatalogHtml(product.id)}"
-                data-estoque="${q}"
-                data-estoque-min="${sm}"
-                data-preco="${Number(product.preco) || 0}"
-                data-backorder-limit="${bl}"
-            >
-                <div class="product-card__body">
-                    <h2 class="product-card__name">${escapeCatalogHtml(product.variante || product.nome || '')}</h2>
-                    ${product.subtitle ? `<p class="product-card__subtitle">${escapeCatalogHtml(product.subtitle)}</p>` : ''}
-                    ${sku}
-                    ${backorder}
-                    <div data-catalog-pricing>${renderPricingBlockMarkup(product)}</div>
-                </div>
-                <div class="product-card__actions">
-                    <div class="product-card__counter" role="group" aria-label="Quantidade">
-                        <button type="button" class="product-card__counter-btn" data-action="dec" aria-label="Diminuir quantidade"><span aria-hidden="true">&minus;</span></button>
-                        <input class="product-card__counter-input" type="number" min="1" max="${Math.max(1, q)}" value="1" inputmode="numeric" aria-label="Quantidade a adicionar"${blocked ? ' disabled' : ''}>
-                        <button type="button" class="product-card__counter-btn" data-action="inc" aria-label="Aumentar quantidade"><span aria-hidden="true">+</span></button>
-                    </div>
-                    <button class="product-card__button" type="button" data-id="${escapeCatalogHtml(product.id)}" aria-label="Adicionar ao carrinho"${blocked ? ' disabled' : ''}>
-                        <i class="fa-solid fa-cart-plus" aria-hidden="true"></i>
-                    </button>
-                </div>
-            </article>
-        `;
-    }
 
-    function renderOptionsGrid(parentProduct) {
-        if (!optionsGrid) return;
-        const children = optionProductsOf(parentProduct);
-        if (!children.length) {
-            optionsGrid.innerHTML = '<p class="catalog-options__empty">Nenhuma opção disponível para este produto.</p>';
-            return;
+        const chips = list.map(p => {
+            const id = String(p.id);
+            const selectedChip = id === selectedOptionId;
+            return (
+                `<button type="button" class="catalog-options__variant${selectedChip ? ' is-selected' : ''}"`
+                + ` data-select-option="${escapeCatalogHtml(id)}"`
+                + ` aria-pressed="${selectedChip ? 'true' : 'false'}">`
+                + `${escapeCatalogHtml(optionChipLabel(p))}</button>`
+            );
+        }).join('');
+
+        optionsGrid.innerHTML = `
+            <div class="catalog-options__layout">
+                <div class="catalog-options__media">
+                    <div class="catalog-options__photo">
+                        <div class="product-card__promo-badge-slot" data-promo-badge-root></div>
+                        <div class="product-card__delivery-badge-slot" data-delivery-badge-root></div>
+                        ${imgSrc
+                            ? `<img src="${escapeCatalogHtml(imgSrc)}" alt="${escapeCatalogHtml(parentName)}">`
+                            : '<div class="catalog-options__media-fallback" aria-hidden="true"></div>'}
+                    </div>
+                </div>
+                <div
+                    class="catalog-options__picker${em ? ' catalog-options__picker--promo' : ''}${blocked ? ' product-card--backorder-blocked' : ''}"
+                    data-id="${escapeCatalogHtml(selected.id)}"
+                    data-estoque="${q}"
+                    data-estoque-min="${sm}"
+                    data-preco="${Number(selected.preco) || 0}"
+                    data-backorder-limit="${bl}"
+                >
+                    ${skuLine}
+                    ${backorder}
+                    <div data-catalog-pricing>${renderPricingBlockMarkup(selected)}</div>
+                    <p class="catalog-options__variants-label">Variantes</p>
+                    <div class="catalog-options__variants${manyVariants ? ' catalog-options__variants--grid' : ''}" role="group" aria-label="Variantes">
+                        ${chips}
+                    </div>
+                    <div class="product-card__actions catalog-options__actions">
+                        <div class="product-card__counter" role="group" aria-label="Quantidade">
+                            <button type="button" class="product-card__counter-btn" data-action="dec" aria-label="Diminuir quantidade"><span aria-hidden="true">&minus;</span></button>
+                            <input class="product-card__counter-input" type="number" min="1" max="${Math.max(1, q)}" value="1" inputmode="numeric" aria-label="Quantidade a adicionar"${blocked ? ' disabled' : ''}>
+                            <button type="button" class="product-card__counter-btn" data-action="inc" aria-label="Aumentar quantidade"><span aria-hidden="true">+</span></button>
+                        </div>
+                        <button class="product-card__button" type="button" data-id="${escapeCatalogHtml(selected.id)}" aria-label="Adicionar ao carrinho"${blocked ? ' disabled' : ''}>
+                            <i class="fa-solid fa-cart-plus" aria-hidden="true"></i>
+                        </button>
+                    </div>
+                </div>
+            </div>
+        `;
+
+        const picker = optionsGrid.querySelector('.catalog-options__picker');
+        const layout = optionsGrid.querySelector('.catalog-options__layout');
+        if (picker) {
+            applyStockToCard(picker, q, bl);
+            const qtyInput = picker.querySelector('.product-card__counter-input');
+            if (qtyInput) qtyInput.value = String(clampQty(picker, prevQty));
         }
-        const query = normalize(state.query.trim());
-        const tokens = query.split(/\s+/).filter(Boolean);
-        const filtered = !query ? children : children.filter(p => {
-            const haystack = normalize([p.nome || '', p.variante || '', p.sku || ''].join(' '));
-            return tokens.every(token => haystack.includes(token));
-        });
-        const list = filtered.length ? filtered : children;
-        optionsGrid.innerHTML = list.map(renderOptionCardHtml).join('');
+        if (layout) syncCatalogBadges(layout, selected);
     }
 
     function openOptionsModal(parentId) {
         const product = productsById.get(String(parentId));
         if (!product || !optionsDialog) return;
         openOptionsParentId = String(parentId);
-        if (optionsTitle) optionsTitle.textContent = product.nome || 'Opções';
-        renderOptionsGrid(product);
+        selectedOptionId = null;
+        renderOptionsLayout(product);
         if (typeof optionsDialog.showModal === 'function') {
             if (!optionsDialog.open) optionsDialog.showModal();
         } else {
@@ -545,6 +809,8 @@
 
     function closeOptionsModal() {
         openOptionsParentId = null;
+        selectedOptionId = null;
+        setManyVariantsLayout(0);
         if (!optionsDialog) return;
         if (typeof optionsDialog.close === 'function' && optionsDialog.open) {
             optionsDialog.close();
@@ -557,7 +823,7 @@
         if (!openOptionsParentId || !optionsDialog || !optionsDialog.open) return;
         const product = productsById.get(openOptionsParentId);
         if (!product) return;
-        renderOptionsGrid(product);
+        renderOptionsLayout(product, { keepQty: true });
     }
 
     if (optionsClose) optionsClose.addEventListener('click', closeOptionsModal);
@@ -646,11 +912,23 @@
             return;
         }
 
+        const selectOption = event.target.closest('[data-select-option]');
+        if (selectOption && optionsGrid && optionsGrid.contains(selectOption)) {
+            event.preventDefault();
+            const nextId = String(selectOption.getAttribute('data-select-option') || '');
+            if (!nextId || nextId === String(selectedOptionId)) return;
+            selectedOptionId = nextId;
+            const parent = productsById.get(openOptionsParentId);
+            if (parent) renderOptionsLayout(parent);
+            return;
+        }
+
         if (READONLY) return;
 
         const counterBtn = event.target.closest('.product-card__counter-btn');
         if (counterBtn) {
-            const card = counterBtn.closest('.product-card, .catalog-option');
+            const card = counterBtn.closest('.product-card, .catalog-options__picker');
+            if (!card) return;
             const input = card.querySelector('.product-card__counter-input');
             const action = counterBtn.dataset.action;
             const stock = getStock(card);
@@ -673,7 +951,8 @@
         const button = event.target.closest('.product-card__button');
         if (!button || button.disabled) return;
 
-        const card = button.closest('.product-card, .catalog-option');
+        const card = button.closest('.product-card, .catalog-options__picker');
+        if (!card) return;
         const input = card.querySelector('.product-card__counter-input');
         const qty = clampQty(card, input.value);
 
@@ -711,7 +990,8 @@
     function handleCatalogCardQtyEvent(event) {
         const input = event.target;
         if (!input.classList || !input.classList.contains('product-card__counter-input')) return;
-        const card = input.closest('.product-card, .catalog-option');
+        const card = input.closest('.product-card, .catalog-options__picker');
+        if (!card) return;
         input.value = String(clampQty(card, input.value));
     }
 

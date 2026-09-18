@@ -168,25 +168,108 @@
         toggleAdminTxRowAccordion(btn);
     });
 
-    /** Abre a linha do pedido indicado no fragmento ``#tx-<id>`` (vindo do motivo/ref do estoque). */
-    function openAdminTxFromHash() {
-        const match = /^#tx-(\d+)$/i.exec(window.location.hash || '');
-        if (!match) return;
-        const txId = match[1];
-        const txRoot = document.querySelector(`.admin-tx[data-tx-id="${txId}"]`);
-        if (!txRoot) return;
+    function openAdminTxById(txId, closeSiblings) {
+        const txRoot = document.querySelector(`.admin-tx[data-tx-id="${String(txId)}"]`);
+        if (!txRoot) return false;
         const row = txRoot.querySelector('.admin-tx__row');
-        if (!row) return;
-        if (row.getAttribute('aria-expanded') !== 'true') {
-            toggleAdminTxRowAccordion(row);
+        if (!row) return false;
+        if (row.getAttribute('aria-expanded') === 'true') return true;
+        if (closeSiblings === false) {
+            row.setAttribute('aria-expanded', 'true');
+            row.classList.add('is-open');
+            const details = txRoot.querySelector('.admin-tx__details');
+            if (details) details.hidden = false;
+            return true;
         }
-        requestAnimationFrame(() => {
-            txRoot.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        });
+        toggleAdminTxRowAccordion(row);
+        return true;
     }
 
-    openAdminTxFromHash();
-    window.addEventListener('hashchange', openAdminTxFromHash);
+    /** Abre a linha do pedido indicado no fragmento ``#tx-<id>`` (estoque ou pós-salvar observação). */
+    function openAdminTxFromHash(options) {
+        const match = /^#tx-(\d+)$/i.exec(window.location.hash || '');
+        if (!match) return false;
+        if ('scrollRestoration' in history) {
+            history.scrollRestoration = 'manual';
+        }
+        const opened = openAdminTxById(match[1], true);
+        if (!opened) return false;
+        if (options && options.scroll === false) return true;
+        const txRoot = document.querySelector(`.admin-tx[data-tx-id="${match[1]}"]`);
+        const inner = (txRoot && txRoot.querySelector('.admin-tx__details-inner')) || txRoot;
+        if (!inner) return true;
+        requestAnimationFrame(() => {
+            requestAnimationFrame(() => {
+                inner.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            });
+        });
+        return true;
+    }
+
+    const VIEW_STATE_KEY = 'totem-admin-view-state';
+    const VIEW_STATE_MAX_AGE_MS = 120000;
+
+    function adminPageKey() {
+        return `${window.location.pathname}${window.location.search}`;
+    }
+
+    function collectOpenTxIds() {
+        const ids = [];
+        document.querySelectorAll('.admin-tx[data-tx-id]').forEach((root) => {
+            const row = root.querySelector('.admin-tx__row');
+            if (!row) return;
+            if (row.classList.contains('is-open') || row.getAttribute('aria-expanded') === 'true') {
+                ids.push(String(root.dataset.txId));
+            }
+        });
+        return ids;
+    }
+
+    function saveAdminViewState() {
+        try {
+            sessionStorage.setItem(VIEW_STATE_KEY, JSON.stringify({
+                key: adminPageKey(),
+                x: window.scrollX,
+                y: window.scrollY,
+                openTx: collectOpenTxIds(),
+                ts: Date.now(),
+            }));
+        } catch (_err) { /* private mode / quota */ }
+    }
+
+    function readAdminViewState() {
+        try {
+            const raw = sessionStorage.getItem(VIEW_STATE_KEY);
+            if (!raw) return null;
+            sessionStorage.removeItem(VIEW_STATE_KEY);
+            const state = JSON.parse(raw);
+            if (!state || state.key !== adminPageKey()) return null;
+            if (Date.now() - Number(state.ts || 0) > VIEW_STATE_MAX_AGE_MS) return null;
+            return state;
+        } catch (_err) {
+            return null;
+        }
+    }
+
+    function applyAdminViewState(state) {
+        if (!state) return false;
+        if ('scrollRestoration' in history) {
+            history.scrollRestoration = 'manual';
+        }
+        const ids = Array.isArray(state.openTx) ? state.openTx : [];
+        ids.forEach((id, index) => {
+            openAdminTxById(id, index === 0);
+        });
+        const x = Number(state.x) || 0;
+        const y = Number(state.y) || 0;
+        const restoreScroll = () => window.scrollTo(x, y);
+        restoreScroll();
+        requestAnimationFrame(() => {
+            requestAnimationFrame(restoreScroll);
+        });
+        window.addEventListener('load', restoreScroll, { once: true });
+        return true;
+    }
 
     /** Após Aplicar filtros (GET + ``#lista``), rola até a tabela sem conflitar com ``#tx-<id>``. */
     const FILTER_LIST_HASH = '#lista';
@@ -225,8 +308,32 @@
         form.setAttribute('action', `${hashless}${FILTER_LIST_HASH}`);
     });
 
-    scheduleAdminFilterTableScroll();
-    window.addEventListener('hashchange', () => scrollAdminFilterTable('smooth'));
+    document.addEventListener('submit', event => {
+        const form = event.target;
+        if (!(form instanceof HTMLFormElement)) return;
+        if (event.defaultPrevented) return;
+        const method = (form.getAttribute('method') || 'get').toLowerCase();
+        if (method !== 'post') return;
+        const target = (form.getAttribute('target') || '').toLowerCase();
+        if (target === '_blank') return;
+        saveAdminViewState();
+    });
+
+    const pageHash = window.location.hash || '';
+    const restoredState = readAdminViewState();
+    if (pageHash === FILTER_LIST_HASH) {
+        scheduleAdminFilterTableScroll();
+    } else if (restoredState) {
+        applyAdminViewState(restoredState);
+        openAdminTxFromHash({ scroll: false });
+    } else {
+        openAdminTxFromHash();
+        scheduleAdminFilterTableScroll();
+    }
+    window.addEventListener('hashchange', () => {
+        openAdminTxFromHash();
+        scrollAdminFilterTable('smooth');
+    });
 
     // --- 2. Diálogo de confirmação (substitui window.confirm) ---------------
     const confirmDialog = document.getElementById('admin-confirm-dialog');
@@ -376,14 +483,84 @@
     });
 
     // --- 3. Auto-dismiss das flash messages ----------------------------------
-    document.querySelectorAll('.admin-flash').forEach(el => {
-        setTimeout(() => {
-            el.style.transition = 'opacity 400ms ease, transform 400ms ease';
-            el.style.opacity = '0';
-            el.style.transform = 'translateY(-6px)';
-            setTimeout(() => el.remove(), 450);
-        }, 6000);
+    const FLASH_ICONS = {
+        success: 'fa-circle-check',
+        error: 'fa-circle-xmark',
+        warning: 'fa-triangle-exclamation',
+        info: 'fa-circle-info',
+    };
+
+    function normalizeFlashCategory(category) {
+        const raw = String(category || 'info').toLowerCase();
+        if (raw === 'danger') return 'error';
+        if (raw === 'message') return 'info';
+        if (FLASH_ICONS[raw]) return raw;
+        return 'info';
+    }
+
+    function getFlashHost() {
+        let wrap = document.getElementById('admin-flashes');
+        if (wrap) return wrap;
+        wrap = document.querySelector('.admin-flashes');
+        if (wrap) return wrap;
+        wrap = document.createElement('div');
+        wrap.id = 'admin-flashes';
+        wrap.className = 'admin-flashes';
+        wrap.setAttribute('aria-live', 'polite');
+        wrap.setAttribute('aria-relevant', 'additions');
+        document.body.appendChild(wrap);
+        return wrap;
+    }
+
+    function dismissAdminFlash(el) {
+        if (!el || el.dataset.flashLeaving) return;
+        el.dataset.flashLeaving = '1';
+        el.classList.add('is-leaving');
+        window.setTimeout(() => el.remove(), 280);
+    }
+
+    function bindAdminFlash(el) {
+        if (!el || el.dataset.flashBound) return;
+        el.dataset.flashBound = '1';
+        const ms = el.classList.contains('admin-flash--error') ? 8000 : 6000;
+        window.setTimeout(() => dismissAdminFlash(el), ms);
+    }
+
+    function showAdminFlash(message, category = 'success') {
+        const text = String(message || '').trim();
+        if (!text) return null;
+        const cat = normalizeFlashCategory(category);
+        const wrap = getFlashHost();
+        const el = document.createElement('div');
+        el.className = `admin-flash admin-flash--${cat}`;
+        el.setAttribute('role', cat === 'error' ? 'alert' : 'status');
+        const icon = FLASH_ICONS[cat] || FLASH_ICONS.info;
+        const span = document.createElement('span');
+        span.textContent = text;
+        el.innerHTML = `<i class="fa-solid ${icon}" aria-hidden="true"></i>`;
+        el.appendChild(span);
+        const close = document.createElement('button');
+        close.type = 'button';
+        close.className = 'admin-flash__close';
+        close.setAttribute('data-flash-close', '');
+        close.setAttribute('aria-label', 'Fechar notificação');
+        close.innerHTML = '<i class="fa-solid fa-xmark" aria-hidden="true"></i>';
+        el.appendChild(close);
+        wrap.appendChild(el);
+        bindAdminFlash(el);
+        return el;
+    }
+
+    window.showAdminFlash = showAdminFlash;
+
+    document.addEventListener('click', event => {
+        const btn = event.target.closest('[data-flash-close]');
+        if (!btn) return;
+        event.preventDefault();
+        dismissAdminFlash(btn.closest('.admin-flash'));
     });
+
+    document.querySelectorAll('.admin-flash').forEach(bindAdminFlash);
 
     // --- 3b. Seleção em lote — itens aguardando retirada ---------------------
     function syncDeliveryPanel(panel) {

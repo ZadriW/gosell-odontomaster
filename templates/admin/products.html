@@ -435,12 +435,16 @@
     }
 
     function showFlash(message, category = 'success') {
-        const main = document.querySelector('.admin-main');
-        if (!main) return;
-        const wrap = main.querySelector('.admin-flashes') || (() => {
+        if (typeof window.showAdminFlash === 'function') {
+            window.showAdminFlash(message, category);
+            return;
+        }
+        const wrap = document.getElementById('admin-flashes') || (() => {
             const d = document.createElement('div');
+            d.id = 'admin-flashes';
             d.className = 'admin-flashes';
-            main.prepend(d);
+            const shell = document.querySelector('.admin-shell');
+            (shell || document.body).appendChild(d);
             return d;
         })();
         const icon = category === 'success' ? 'fa-circle-check' : 'fa-triangle-exclamation';

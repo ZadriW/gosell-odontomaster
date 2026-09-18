@@ -99,10 +99,14 @@
                             name="pedido"
                             value="{{ filters.pedido }}"
                             class="admin-filter__input"
-                            placeholder="Ex.: OM260422-1234 ou parte do número"
+                            placeholder="Código do pedido ou nome do cliente…"
                             autocomplete="off"
                             inputmode="search"
+                            aria-describedby="hint-filtro-pedido-seller-product"
                         >
+                    </span>
+                    <span id="hint-filtro-pedido-seller-product" class="admin-filter__hint">
+                        Busca pelo número do pedido (ex.: OM260422-1234) ou pelo nome do cliente.
                     </span>
                 </label>
 

@@ -271,9 +271,18 @@ def _safe_internal_url(
     return out
 
 
-def _redirect_back(fallback: str):
+def _with_url_fragment(url: str, fragment: str | None) -> str:
+    """Substitui o fragmento da URL (o Referer normalmente não inclui ``#…``)."""
+    base = (url or "").split("#", 1)[0]
+    frag = (fragment or "").lstrip("#")
+    return f"{base}#{frag}" if frag else base
+
+
+def _redirect_back(fallback: str, *, fragment: str | None = None):
     """Redirect para o Referer só se for do mesmo host; senão ``fallback``."""
     target = _safe_internal_url(request.referrer, fallback)
+    if fragment:
+        target = _with_url_fragment(target, fragment)
     return redirect(target)
 
 
@@ -1361,7 +1370,7 @@ def seller_cancel_pending_transaction(tx_id: int):
         return blocked
     try:
         cancel_pending_transaction_for_seller(tx_id, _current_seller_id())
-        flash("Pedido pendente descartado.", "success")
+        flash("Pedido pendente descartado.", "error")
     except ValueError as exc:
         flash(str(exc), "error")
     return redirect(url_for("seller_dashboard"))
@@ -1388,10 +1397,13 @@ def seller_transaction_note(tx_id: int):
         if result.get("receipt_note"):
             flash(f"Observação da nota do pedido {order_label} salva.", "success")
         else:
-            flash(f"Observação da nota do pedido {order_label} removida.", "success")
+            flash(f"Observação da nota do pedido {order_label} removida.", "warning")
     except ValueError as exc:
         flash(str(exc), "error")
-    return _redirect_back( url_for("seller_dashboard"))
+    return _redirect_back(
+        url_for("seller_dashboard"),
+        fragment=f"tx-{tx_id}",
+    )
 
 
 def _seller_dashboard_transactions_view() -> tuple:
@@ -2347,10 +2359,13 @@ def admin_seller_transaction_note(seller_id: int, tx_id: int):
         if result.get("receipt_note"):
             flash(f"Observação da nota do pedido {order_label} salva.", "success")
         else:
-            flash(f"Observação da nota do pedido {order_label} removida.", "success")
+            flash(f"Observação da nota do pedido {order_label} removida.", "warning")
     except ValueError as exc:
         flash(str(exc), "error")
-    return _redirect_back(url_for("admin_seller_detail", seller_id=seller_id))
+    return _redirect_back(
+        url_for("admin_seller_detail", seller_id=seller_id),
+        fragment=f"tx-{tx_id}",
+    )
 
 
 @app.route(
@@ -2365,7 +2380,7 @@ def admin_seller_delete(seller_id: int):
         flash(
             f"Cadastro de {deleted['name']} excluído. "
             "Vendas antigas permanecem no histórico, sem vínculo a este vendedor.",
-            "success",
+            "warning",
         )
     except ValueError as exc:
         flash(str(exc), "error")
@@ -2509,7 +2524,7 @@ def admin_event_goals(event_id: int):
     if parts:
         flash(f"Metas do evento atualizadas: {', '.join(parts)}.", "success")
     else:
-        flash("Metas do evento removidas.", "success")
+        flash("Metas do evento removidas.", "warning")
     ret_from = (request.form.get("ret_de") or "").strip()
     ret_to = (request.form.get("ret_ate") or "").strip()
     kw = {"evento": event_id}
@@ -3935,7 +3950,7 @@ def admin_event_archive(event_id: int):
     if event is None:
         return redirect(url_for("admin_events"))
     archive_event(event_id)
-    flash(f"Evento \"{event['name']}\" arquivado.", "success")
+    flash(f"Evento \"{event['name']}\" arquivado.", "warning")
     return redirect(url_for("admin_events"))
 
 
@@ -3967,7 +3982,7 @@ def admin_event_close_operations(event_id: int):
     flash(
         f"Operações do {_op_noun(event, lower=True)} \"{event['name']}\" encerradas. "
         "Admin e vendedores passam a consultar estoque, vendas e transações apenas em modo leitura.",
-        "success",
+        "warning",
     )
     return redirect(url_for("admin_event_detail", event_id=event_id))
 
@@ -4819,7 +4834,7 @@ def admin_event_remove_product(event_id: int, product_id: int):
         return redirect(url_for("admin_events"))
     preserved = _event_stock_return_filters_from_form()
     remove_product_from_event(event_id, product_id)
-    flash(f"Produto removido do {_op_noun(event, lower=True)}.", "success")
+    flash(f"Produto removido do {_op_noun(event, lower=True)}.", "warning")
     return redirect(_url_for_admin_event_stock_list(event_id, preserved))
 
 
@@ -5392,7 +5407,7 @@ def admin_event_promotion_delete(event_id: int, promo_id: int):
         return redirect(url_for("admin_event_promotions", event_id=event_id))
     try:
         delete_promotion(promo_id)
-        flash(f"Promoção «{promo['name']}» excluída.", "success")
+        flash(f"Promoção «{promo['name']}» excluída.", "warning")
     except ValueError as exc:
         flash(str(exc), "error")
     return redirect(url_for("admin_event_promotions", event_id=event_id))
@@ -5518,7 +5533,7 @@ def admin_event_transaction_refund(event_id: int, tx_id: int):
         order_label = result.get("order_number") or f"#{tx_id}"
         flash(
             f"Pedido {order_label} estornado. Estoque reposto e totais de vendas atualizados.",
-            "success",
+            "warning",
         )
     except ValueError as exc:
         flash(str(exc), "error")
@@ -5546,10 +5561,13 @@ def admin_event_transaction_note(event_id: int, tx_id: int):
         if result.get("receipt_note"):
             flash(f"Observação da nota do pedido {order_label} salva.", "success")
         else:
-            flash(f"Observação da nota do pedido {order_label} removida.", "success")
+            flash(f"Observação da nota do pedido {order_label} removida.", "warning")
     except ValueError as exc:
         flash(str(exc), "error")
-    return _redirect_back(url_for("admin_event_transactions", event_id=event_id))
+    return _redirect_back(
+        url_for("admin_event_transactions", event_id=event_id),
+        fragment=f"tx-{tx_id}",
+    )
 
 
 @app.route(
@@ -5565,7 +5583,7 @@ def admin_event_cancel_pending_transaction(event_id: int, tx_id: int):
         return redirect(url_for("admin_events"))
     try:
         cancel_pending_transaction(tx_id, expected_event_id=event_id)
-        flash("Pedido pendente descartado.", "success")
+        flash("Pedido pendente descartado.", "error")
     except ValueError as exc:
         flash(str(exc), "error")
     return _redirect_back(url_for("admin_event_transactions", event_id=event_id))

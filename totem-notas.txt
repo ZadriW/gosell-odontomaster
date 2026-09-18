@@ -1,6 +1,0 @@
-Separação de estoque por eventos;
- - Seleção de vendedores designado para cada evento;
-
-Importação de Planilhas;
-Confirmação/abate de estoque após o preenchimento do ALT;
-Página destinada apenas às vendas;

@@ -17,7 +17,7 @@ from .promotions import (
     get_active_promotions_for_event,
 )
 from .sku_helpers import _build_sku_by_product_id, _default_sku_for_id, _product_sku_label
-from .stock import _apply_movement, _normalize_order_reference
+from .stock import _apply_movement, _normalize_order_reference, _order_or_client_search_sql
 
 TX_FILTER_STATUSES = frozenset(
     {"confirmado", "pendente", "cancelado", "estornado", "entregue"}
@@ -1968,13 +1968,11 @@ def list_pending_delivery_ledger_rows(
     """
     params: List = [int(event_id), int(product_id)]
     extra = ""
-    ref_norm = _normalize_order_reference(reference)
-    if ref_norm:
-        extra += (
-            " AND t.order_number IS NOT NULL "
-            "AND INSTR(LOWER(t.order_number), LOWER(?)) > 0"
-        )
-        params.append(ref_norm)
+    frag_ref, extra_ref = _order_or_client_search_sql(
+        reference, order_column="t.order_number"
+    )
+    extra += frag_ref
+    params.extend(extra_ref)
     if seller_id is not None:
         extra += " AND COALESCE(t.seller_id, -1) = ?"
         params.append(int(seller_id))

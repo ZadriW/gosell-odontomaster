@@ -23,6 +23,14 @@ def _connect() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    from .products import _fold_product_search_text
+
+    def _product_search_fold_sql(value) -> str:
+        return _fold_product_search_text(value if value is not None else "")
+
+    conn.create_function(
+        "product_search_fold", 1, _product_search_fold_sql, deterministic=True
+    )
     return conn
 
 

@@ -38,7 +38,7 @@
 
     {% if transactions %}
         {% for tx in transactions %}
-        <div class="admin-tx" data-tx-id="{{ tx.id }}">
+        <div class="admin-tx" id="tx-{{ tx.id }}" data-tx-id="{{ tx.id }}">
             <div
                 class="admin-tx__row"
                 role="button"

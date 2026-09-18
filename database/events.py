@@ -10,6 +10,7 @@ from .event_stock import _apply_event_movement
 from .products import (
     _product_catalog_like_clause,
     _product_row_to_client,
+    _product_search_order_clause,
     prepare_catalog_variant_groups,
 )
 from .sku_helpers import _default_sku_for_id
@@ -653,6 +654,9 @@ def list_event_products_slice(
 ) -> List[Dict]:
     """Página da grade de estoque do evento com os mesmos filtros da biblioteca geral."""
     extra, params = _event_products_admin_filter_clause(q, categoria, status, entrega)
+    order_sql, order_params = _product_search_order_clause(
+        q, alias="p", fallback="p.name COLLATE NOCASE"
+    )
     sql = f"""
             SELECT
                 ep.id            AS ep_id,
@@ -675,13 +679,13 @@ def list_event_products_slice(
                 p.subtitle
             {_EVENT_PRODUCTS_ADMIN_FROM}
             {extra}
-            ORDER BY p.name COLLATE NOCASE
+            ORDER BY {order_sql}
             LIMIT ? OFFSET ?
             """
     with get_conn() as conn:
         rows = conn.execute(
             sql,
-            (event_id, *params, limit, offset),
+            (event_id, *params, *order_params, limit, offset),
         ).fetchall()
         return [_with_resolved_product_image(dict(r)) for r in rows]
 

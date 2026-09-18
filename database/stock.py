@@ -204,26 +204,48 @@ def _normalize_order_reference(value: Optional[str]) -> str:
     return s
 
 
-def _stock_movements_product_search_sql(product_search: Optional[str]) -> Tuple[str, List]:
-    """Trecho ``AND (...)`` + parâmetros para filtrar por nome/descrição/SKU/ID do produto (JOIN ``p`` + ``m``)."""
-    ps = (product_search or "").strip()
-    if not ps:
+_ORDER_OR_CLIENT_COLUMNS = frozenset(
+    {"m.reference", "t.order_number", "t.client_name"}
+)
+
+
+def _order_or_client_search_sql(
+    value: Optional[str],
+    *,
+    order_column: str,
+    client_column: str = "t.client_name",
+) -> Tuple[str, List]:
+    """``AND (...)`` + parâmetros: código do pedido **ou** nome do cliente (subtexto).
+
+    Mesma semântica do filtro ``order_search`` das transações (admin/vendedor).
+    ``order_column`` / ``client_column`` são identificadores internos, nunca input.
+    """
+    ref = _normalize_order_reference(value)
+    if not ref:
         return "", []
-    like = f"%{ps.lower()}%"
-    or_parts = [
-        "LOWER(p.name) LIKE ?",
-        "LOWER(COALESCE(p.description, '')) LIKE ?",
-        "LOWER(COALESCE(p.sku, '')) LIKE ?",
-        "LOWER(COALESCE(p.variant_name, '')) LIKE ?",
-    ]
-    or_params: List = [like, like, like, like]
-    id_part = ps.lstrip("#").strip()
-    if id_part.isdigit():
-        or_parts.append("m.product_id = ?")
-        or_params.append(int(id_part))
-        or_parts.append("INSTR(CAST(m.product_id AS TEXT), ?) > 0")
-        or_params.append(id_part)
-    return " AND (" + " OR ".join(or_parts) + ")", or_params
+    if (
+        order_column not in _ORDER_OR_CLIENT_COLUMNS
+        or client_column not in _ORDER_OR_CLIENT_COLUMNS
+    ):
+        raise ValueError("coluna inválida para busca de pedido/cliente")
+    sql = (
+        " AND ("
+        f"({order_column} IS NOT NULL AND INSTR(LOWER({order_column}), LOWER(?)) > 0)"
+        " OR "
+        f"({client_column} IS NOT NULL AND INSTR(LOWER({client_column}), LOWER(?)) > 0)"
+        ")"
+    )
+    return sql, [ref, ref]
+
+
+def _stock_movements_product_search_sql(product_search: Optional[str]) -> Tuple[str, List]:
+    """Trecho ``AND (...)`` + parâmetros: mesma busca por tokens de ``_product_catalog_like_clause``."""
+    from .products import _product_catalog_like_clause
+
+    clause, extra = _product_catalog_like_clause(product_search, alias="p")
+    if not clause:
+        return "", []
+    return f" AND {clause}", extra
 
 
 def _normalize_iso_date(value: Optional[str]) -> Optional[str]:
@@ -263,13 +285,11 @@ def _stock_movements_filter_sql(
     if movement_type and movement_type in ACTIVE_MOVEMENT_TYPES:
         sql += " AND m.movement_type = ?"
         params.append(movement_type)
-    ref_norm = _normalize_order_reference(reference)
-    if ref_norm:
-        sql += (
-            " AND m.reference IS NOT NULL "
-            "AND INSTR(LOWER(m.reference), LOWER(?)) > 0"
-        )
-        params.append(ref_norm)
+    frag_ref, extra_ref = _order_or_client_search_sql(
+        reference, order_column="m.reference"
+    )
+    sql += frag_ref
+    params.extend(extra_ref)
     if seller_id is not None and int(seller_id) > 0:
         sql += (
             " AND m.movement_type = 'venda' "
@@ -368,10 +388,11 @@ def list_stock_movements(
     limit: int = 200,
     offset: int = 0,
 ) -> List[Dict]:
-    """Lista movimentações. ``reference`` filtra pelo código do pedido (vendas no totem).
+    """Lista movimentações. ``reference`` filtra pelo código do pedido **ou**
+    nome do cliente (subtexto, case-insensitive; vendas ligadas a transação).
 
-    ``product_search`` restringe por nome, descrição, SKU ou ID numérico do produto
-    (subtexto em texto; para trechos só com dígitos também casa ``product_id``).
+    ``product_search`` restringe pela mesma busca de produtos do catálogo
+    (tokens no nome/variante/SKU; letras curtas só como palavra no título).
 
     ``seller_id`` (quando > 0): apenas linhas de **venda** (`movement_type = 'venda'`)
     cuja transação tem ``seller_id`` igual ao informado (via JOIN ``transactions``).

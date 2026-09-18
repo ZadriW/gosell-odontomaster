@@ -82,19 +82,6 @@
     </header>
 
     <main class="admin-main {% block admin_main_class %}{% endblock %}">
-        {% with messages = get_flashed_messages(with_categories=true) %}
-            {% if messages %}
-            <div class="admin-flashes">
-                {% for category, msg in messages %}
-                <div class="admin-flash admin-flash--{{ category }}" role="status">
-                    <i class="fa-solid {% if category == 'success' %}fa-circle-check{% elif category == 'error' %}fa-triangle-exclamation{% else %}fa-circle-info{% endif %}" aria-hidden="true"></i>
-                    <span>{{ msg }}</span>
-                </div>
-                {% endfor %}
-            </div>
-            {% endif %}
-        {% endwith %}
-
         {% if seller_event and seller_event.operations_closed %}
         {% with event=seller_event %}
         {% include 'partials/admin_event_ops_banner.html' %}
@@ -122,6 +109,7 @@
             <span class="admin-bottom-nav__badge">Estoque</span>
         </a>
     </nav>
+    {% include 'partials/admin_flashes.html' %}
 </div>
 
 {% include 'partials/admin_confirm_dialog.html' %}

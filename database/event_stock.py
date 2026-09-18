@@ -7,7 +7,7 @@ from typing import Dict, List, Optional
 from .connection import _now_iso, get_conn
 from .sku_helpers import _product_sku_label
 from .stock import (
-    _normalize_order_reference,
+    _order_or_client_search_sql,
     _stock_movements_product_search_sql,
     ACTIVE_MOVEMENT_TYPES,
     normalize_movement_type_filter,
@@ -245,8 +245,8 @@ def list_event_stock_movements(
     ``product_search`` filtra por nome, descrição, SKU ou ID do produto (mesma
     semântica que em ``list_stock_movements``).
 
-    ``reference`` filtra pelo código do pedido (campo ``m.reference``, vendas no totem),
-    como em ``list_stock_movements``.
+    ``reference`` filtra pelo código do pedido (``m.reference``) **ou** pelo
+    nome do cliente na transação, como em ``list_stock_movements``.
 
     ``seller_id`` (quando > 0): apenas **vendas** do vendedor indicado
     (``movement_type = 'venda'`` e ``transactions.seller_id`` coincidente).
@@ -279,13 +279,11 @@ def list_event_stock_movements(
     frag, extra = _stock_movements_product_search_sql(product_search)
     sql += frag
     params.extend(extra)
-    ref_norm = _normalize_order_reference(reference)
-    if ref_norm:
-        sql += (
-            " AND m.reference IS NOT NULL "
-            "AND INSTR(LOWER(m.reference), LOWER(?)) > 0"
-        )
-        params.append(ref_norm)
+    frag_ref, extra_ref = _order_or_client_search_sql(
+        reference, order_column="m.reference"
+    )
+    sql += frag_ref
+    params.extend(extra_ref)
     if seller_id is not None:
         sql += (
             " AND m.movement_type = 'venda' "

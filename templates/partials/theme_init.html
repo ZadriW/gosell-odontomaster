@@ -23,6 +23,16 @@
             document.documentElement.classList.add('admin-theme--dark');
         }
     } catch (e) { /* ignore */ }
+    try {
+        if ('scrollRestoration' in history) {
+            var raw = sessionStorage.getItem('totem-admin-view-state');
+            if (raw) {
+                var st = JSON.parse(raw);
+                var key = location.pathname + location.search;
+                if (st && st.key === key) history.scrollRestoration = 'manual';
+            }
+        }
+    } catch (e) { /* ignore */ }
 })();
 </script>
 {% endif %}

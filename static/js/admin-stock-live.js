@@ -65,11 +65,21 @@
     }
 
     function flash(message, category = 'success') {
+        if (typeof window.showAdminFlash === 'function') {
+            window.showAdminFlash(message, category);
+            return;
+        }
         const main = document.querySelector('.admin-main');
         if (!main || !message) return;
-        const wrap = main.querySelector('.admin-flashes') || document.createElement('div');
+        const wrap = document.getElementById('admin-flashes')
+            || main.querySelector('.admin-flashes')
+            || document.createElement('div');
+        wrap.id = wrap.id || 'admin-flashes';
         wrap.className = 'admin-flashes';
-        if (!wrap.parentElement) main.prepend(wrap);
+        if (!wrap.parentElement) {
+            const shell = document.querySelector('.admin-shell');
+            (shell || document.body).appendChild(wrap);
+        }
         const icon = category === 'success' ? 'fa-circle-check' : 'fa-triangle-exclamation';
         const el = document.createElement('div');
         el.className = `admin-flash admin-flash--${category}`;
