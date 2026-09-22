@@ -115,16 +115,7 @@ def _product_catalog_like_clause(
     include_sku_aliases: bool = False,
     include_wake_id: bool = False,
 ) -> Tuple[str, List]:
-    """Busca por partes do nome: todas as palavras precisam aparecer.
 
-    Letras curtas (1–2 caracteres) casam só como palavra inteira no **nome**,
-    na **variante** ou no **SKU** — não como subtexto de ``TDK``. Assim
-    ``Lima K file`` não lista ``H FILE … TDK``, mas ``K-15`` no SKU continua
-    encontrável. Tokens maiores no nome/variante casam como prefixo de palavra
-    (``recip`` encontra Reciproc; ``file`` não casa ``flexfile``). No SKU ainda
-    podem ser subtexto. Trecho só numérico (opcional ``#``) também casa o ID.
-    Retorna ``(clausula_entre_parenteses, params)`` ou ``("", [])``.
-    """
     tokens = _product_search_tokens(q)
     if not tokens:
         return "", []

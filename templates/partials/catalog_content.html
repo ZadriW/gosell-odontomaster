@@ -149,25 +149,25 @@
                         {% if product.precos_opcoes_variam %}
                         <span class="product-card__price-from">A partir de</span>
                         {% endif %}
-                        <p class="product-card__price">R$ {{ '%.2f'|format(product.preco_a_partir or product.preco)|replace('.', ',') }}</p>
+                        <p class="product-card__price">{{ (product.preco_a_partir or product.preco) | brl }}</p>
                     </div>
                     {% else %}
                     {% set promo_tipo = product.promo_tipo | default('') %}
                     {% if em_promo and promo_tipo in ('percent', 'fixed') and product.preco_original is defined and product.preco_original > product.preco + 0.001 %}
                     {# percent / fixed: preço unitário efetivamente reduzido — exibe riscado + novo #}
                     <div class="product-card__price-wrap">
-                        <span class="product-card__price-original">R$ {{ '%.2f'|format(product.preco_original)|replace('.', ',') }}</span>
-                        <p class="product-card__price product-card__price--promo">R$ {{ '%.2f'|format(product.preco)|replace('.', ',') }}</p>
+                        <span class="product-card__price-original">{{ product.preco_original | brl }}</span>
+                        <p class="product-card__price product-card__price--promo">{{ product.preco | brl }}</p>
                         {% if product.promo_nome %}<span class="product-card__promo-name">{{ product.promo_nome }}</span>{% endif %}
                     </div>
                     {% elif em_promo and (promo_tipo in ('bogo', 'min_bundle', 'exact_bundle', 'combo_bundle') or product.promo_nome) %}
                     {# Desconto por quantidade (ou várias regras): preço de lista + nomes das promos #}
                     <div class="product-card__price-wrap">
-                        <p class="product-card__price">R$ {{ '%.2f'|format(product.preco)|replace('.', ',') }}</p>
+                        <p class="product-card__price">{{ product.preco | brl }}</p>
                         {% if product.promo_nome %}<span class="product-card__promo-name">{{ product.promo_nome }}</span>{% endif %}
                     </div>
                     {% else %}
-                    <p class="product-card__price">R$ {{ '%.2f'|format(product.preco)|replace('.', ',') }}</p>
+                    <p class="product-card__price">{{ product.preco | brl }}</p>
                     {% endif %}
                     {% endif %}
                 </div>

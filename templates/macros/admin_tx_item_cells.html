@@ -44,7 +44,7 @@
     >
     {% endif %}
 </span>
-<span>{{ it.category or '-' }}</span>
+<span class="admin-tx__category">{{ it.category or '-' }}</span>
 <span class="admin-table__col--num admin-tx__qty-cell">
     <span class="admin-tx__qty-view">{{ it.quantity }}</span>
     {% if editable %}
@@ -67,7 +67,7 @@
     {% endif %}
     {{ it.unit_price | brl }}
 </span>
-<span class="admin-table__col--num"><strong>{{ it.subtotal | brl }}</strong></span>
+<span class="admin-table__col--num admin-tx__subtotal"><strong>{{ it.subtotal | brl }}</strong></span>
 {% if editable and tx %}
 <span class="admin-tx__item-actions">
     <button

@@ -374,7 +374,7 @@
     function formatCatalogPriceBRL(n) {
         const x = Number(n);
         if (!Number.isFinite(x)) return 'R$ 0,00';
-        return `R$ ${x.toFixed(2).replace('.', ',')}`;
+        return x.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 
     }
 

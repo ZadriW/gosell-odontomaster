@@ -759,7 +759,7 @@ html.catalog-readonly .product-card__button {
 .catalog-options__variant {
     max-width: 100%;
     padding: 8px 14px;
-    border-radius: var(--radius-pill);
+    border-radius: var(--radius-sm);
     border: 1.5px solid var(--color-border);
     background: var(--color-bg);
     color: var(--color-text);

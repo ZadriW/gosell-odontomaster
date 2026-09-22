@@ -3007,6 +3007,99 @@ def admin_product_add_to_event(product_id: int):
     })
 
 
+@app.route("/admin/produtos/adicionar-ao-evento", methods=["POST"])
+@admin_required
+def admin_products_bulk_add_to_event():
+    """Adiciona vários produtos da biblioteca a um evento, cada um com a própria quantidade."""
+    event_id = _parse_int(request.form.get("event_id") or "", 0)
+    if event_id <= 0:
+        return jsonify({"error": "Selecione um evento."}), 400
+    event = get_event(event_id)
+    if event is None:
+        return jsonify({"error": "Evento não encontrado."}), 400
+    blocked = _reject_if_event_ops_closed(event)
+    if blocked is not None:
+        return blocked
+    shared_raw = request.form.get("initial_stock")
+    shared_qty = max(0, _parse_int(shared_raw, 0)) if shared_raw not in (None, "") else None
+    min_stock = max(0, _parse_int(request.form.get("min_stock") or "", DEFAULT_MIN_STOCK))
+    link_note = (request.form.get("link_note") or "").strip()
+    if not link_note:
+        return jsonify({"error": "Informe Motivo / Ref."}), 400
+
+    seen: set[int] = set()
+    product_ids: list[int] = []
+    for raw in request.form.getlist("product_ids"):
+        pid = _parse_int(raw, 0)
+        if pid <= 0 or pid in seen:
+            continue
+        seen.add(pid)
+        product_ids.append(pid)
+    if not product_ids:
+        return jsonify({"error": "Selecione ao menos um produto."}), 400
+
+    admin_user = _current_admin_user()
+    added_ids: list[int] = []
+    errors: list[str] = []
+    for product_id in product_ids:
+        product = get_product(product_id)
+        if product is None:
+            errors.append(f"#{product_id}: produto não encontrado.")
+            continue
+        label = (product.get("name") or f"#{product_id}").strip()
+        raw_qty = request.form.get(f"qty_{product_id}")
+        if raw_qty not in (None, ""):
+            qty = _parse_int(raw_qty, -1)
+        elif shared_qty is not None:
+            qty = shared_qty
+        else:
+            qty = -1
+        if qty <= 0:
+            errors.append(f"«{label}»: informe uma quantidade maior que zero.")
+            continue
+        try:
+            add_product_to_event(
+                event_id,
+                product_id,
+                qty,
+                min_stock,
+                link_audit_reason=link_note,
+                link_audit_reference=None,
+                created_by=admin_user,
+            )
+            added_ids.append(product_id)
+        except ValueError as exc:
+            errors.append(f"«{label}»: {exc}")
+
+    ok_count = len(added_ids)
+    event_name = event.get("name") or f"#{event_id}"
+    if ok_count and not errors:
+        return jsonify({
+            "ok": True,
+            "message": f"{ok_count} produto(s) adicionado(s) ao evento «{event_name}».",
+            "added": ok_count,
+            "added_ids": added_ids,
+        })
+    if ok_count:
+        short = errors[:4]
+        tail = f" (+{len(errors) - 4})" if len(errors) > 4 else ""
+        return jsonify({
+            "ok": True,
+            "message": (
+                f"{ok_count} adicionado(s) a «{event_name}». "
+                f"Falha em {len(errors)}: " + "; ".join(short) + tail
+            ),
+            "added": ok_count,
+            "added_ids": added_ids,
+            "errors": errors,
+        })
+    return jsonify({
+        "error": errors[0] if len(errors) == 1 else (
+            "Nenhum produto adicionado. " + "; ".join(errors[:5])
+        ),
+    }), 409
+
+
 @app.route("/admin/estoque/<int:product_id>")
 @admin_required
 def admin_stock_product_legacy_redirect(product_id: int):

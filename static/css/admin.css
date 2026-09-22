@@ -1641,6 +1641,15 @@ a.kpi:hover .kpi__link-arrow,
     border-top: 1px dashed var(--color-border);
 }
 
+.admin-tx__items-row > input[type="hidden"] {
+    display: none;
+}
+
+.admin-tx__sku-cell,
+.admin-tx__qty-cell {
+    min-width: 0;
+}
+
 .admin-tx__items-row--editable {
     position: relative;
     padding-right: 52px;
@@ -4284,23 +4293,32 @@ html.admin-theme--dark .admin-mov__order-link:hover code {
     .admin-stock:not(.admin-stock--library) .admin-stock__row > :nth-child(2) {
         grid-area: price;
     }
+    [data-admin-event-stock] .admin-stock__row > :nth-child(1) {
+        min-width: 0;
+    }
+    [data-admin-event-stock] .admin-stock__product {
+        width: 100%;
+        align-items: flex-start;
+    }
     [data-admin-event-stock] .admin-stock__row > :nth-child(3) {
         grid-area: sales;
         display: inline-flex;
         align-items: center;
+        justify-self: end;
         min-width: 0;
         font-size: 14px;
         color: var(--color-text-muted);
+        text-align: right;
     }
     [data-admin-event-stock] .admin-stock__row > :nth-child(4) {
         grid-area: qty;
         align-self: center;
-        justify-self: end;
+        justify-self: start;
         min-width: 56px;
         padding: 8px 10px;
         border-radius: 14px;
         background: rgba(14, 22, 122, 0.08);
-        text-align: center;
+        text-align: left;
     }
     [data-admin-event-stock] .admin-stock__row > :nth-child(5) {
         grid-area: min;
@@ -4310,6 +4328,7 @@ html.admin-theme--dark .admin-mov__order-link:hover code {
         min-width: 0;
         font-size: 14px;
         color: var(--color-text-muted);
+        text-align: right;
     }
     [data-admin-event-stock] .admin-stock__row > :nth-child(6) {
         grid-area: status;
@@ -4319,14 +4338,15 @@ html.admin-theme--dark .admin-mov__order-link:hover code {
     [data-admin-event-stock] .admin-stock__row > :nth-child(7) {
         grid-area: actions;
         justify-content: flex-end;
-        align-self: center;
+        align-self: start;
+        justify-self: end;
     }
     [data-admin-event-stock] .admin-stock__row:has(.admin-stock__actions) {
         grid-template-areas:
-            "product product"
+            "product actions"
             "price   sales"
             "qty     min"
-            "status  actions";
+            "status  status";
     }
     [data-admin-event-stock] .admin-stock__row:not(:has(.admin-stock__actions)) {
         grid-template-areas:
@@ -4349,12 +4369,12 @@ html.admin-theme--dark .admin-mov__order-link:hover code {
         background: rgba(14, 22, 122, 0.08);
         text-align: center;
     }
-    .admin-stock:not(.admin-stock--library) .admin-stock__row > :nth-child(5) {
+    .admin-stock:not(.admin-stock--library):not([data-admin-event-stock]) .admin-stock__row > :nth-child(5) {
         grid-area: status;
         align-self: center;
         min-width: 0;
     }
-    .admin-stock:not(.admin-stock--library) .admin-stock__row > :nth-child(6) {
+    .admin-stock:not(.admin-stock--library):not([data-admin-event-stock]) .admin-stock__row > :nth-child(6) {
         grid-area: actions;
         justify-content: flex-end;
         align-self: center;
@@ -4488,7 +4508,7 @@ html.admin-theme--dark .admin-mov__order-link:hover code {
     }
     .admin-mov__wrapper .admin-mov__row.admin-mov__row--wide:not(.admin-mov__row--wide-events) > :nth-child(4).admin-table__col--num,
     .admin-mov__wrapper .admin-mov__row.admin-mov__row--wide:not(.admin-mov__row--wide-events) > :nth-child(5).admin-table__col--num {
-        text-align: center;
+        text-align: left;
     }
     .admin-mov__wrapper .admin-mov__row.admin-mov__row--wide:not(.admin-mov__row--wide-events) > :nth-child(5) {
         grid-area: balance;
@@ -4606,7 +4626,7 @@ html.admin-theme--dark .admin-mov__order-link:hover code {
     }
     .admin-mov__wrapper .admin-mov__row.admin-mov__row--wide-events > :nth-child(5).admin-table__col--num,
     .admin-mov__wrapper .admin-mov__row.admin-mov__row--wide-events > :nth-child(6).admin-table__col--num {
-        text-align: center;
+        text-align: left;
     }
     .admin-mov__wrapper .admin-mov__row.admin-mov__row--wide-events > :nth-child(6) {
         grid-area: balance;
@@ -4729,7 +4749,7 @@ html.admin-theme--dark .admin-mov__order-link:hover code {
 
     .admin-mov__wrapper .admin-mov__row.admin-mov__row--wide-event-dash > :nth-child(4).admin-table__col--num,
     .admin-mov__wrapper .admin-mov__row.admin-mov__row--wide-event-dash > :nth-child(5).admin-table__col--num {
-        text-align: center;
+        text-align: left;
     }
 
     .admin-mov__wrapper .admin-mov__row.admin-mov__row--wide-event-dash > :nth-child(5) {
@@ -4841,7 +4861,7 @@ html.admin-theme--dark .admin-mov__order-link:hover code {
     }
     .admin-mov__wrapper .admin-mov__row:not(.admin-mov__row--wide) > :nth-child(3).admin-table__col--num,
     .admin-mov__wrapper .admin-mov__row:not(.admin-mov__row--wide) > :nth-child(4).admin-table__col--num {
-        text-align: center;
+        text-align: left;
     }
     .admin-mov__wrapper .admin-mov__row:not(.admin-mov__row--wide) > :nth-child(4) {
         grid-area: balance;
@@ -5069,7 +5089,7 @@ html.admin-theme--dark .admin-mov__order-link:hover code {
     }
     .admin-product__movements-table .admin-mov__wrapper .admin-mov__row--with-event > :nth-child(4).admin-table__col--num,
     .admin-product__movements-table .admin-mov__wrapper .admin-mov__row--with-event > :nth-child(5).admin-table__col--num {
-        text-align: center;
+        text-align: left;
     }
     .admin-product__movements-table .admin-mov__wrapper .admin-mov__row--with-event > :nth-child(3)::before {
         content: "Evento";
@@ -5162,7 +5182,7 @@ html.admin-theme--dark .admin-mov__order-link:hover code {
     }
     .admin-table > .admin-mov__row:not(.admin-table__head):not(.admin-mov__row--wide) > :nth-child(3).admin-table__col--num,
     .admin-table > .admin-mov__row:not(.admin-table__head):not(.admin-mov__row--wide) > :nth-child(4).admin-table__col--num {
-        text-align: center;
+        text-align: left;
     }
     .admin-table > .admin-mov__row:not(.admin-table__head):not(.admin-mov__row--wide) > :nth-child(4) {
         grid-area: balance;
@@ -5346,6 +5366,10 @@ html.admin-theme--dark .admin-mov__order-link:hover code {
 
 /* ---------- Responsivo ---------- */
 @media (max-width: 900px) {
+    .admin-table__col--num {
+        text-align: left;
+    }
+
     .admin-shell {
         --admin-topbar-height: 72px;
     }
@@ -5582,49 +5606,110 @@ html.admin-theme--dark .admin-mov__order-link:hover code {
     }
     .admin-tx__items-head { display: none; }
     .admin-tx__items-row {
-        grid-template-columns: 1fr auto;
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        grid-template-areas:
+            "product product"
+            "sku     qty"
+            "unit    subtotal";
+        gap: 6px 12px;
         padding: 12px 14px;
+        align-items: center;
     }
-    .admin-tx__items-row > :nth-child(1) { grid-column: 1 / -1; }
-    .admin-tx__items-row > :nth-child(2) {
-        grid-column: 1;
+    .admin-tx__product {
+        grid-area: product;
+        min-width: 0;
+        overflow-wrap: anywhere;
+    }
+    .admin-tx__sku-cell {
+        grid-area: sku;
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 4px 6px;
         font-size: 12px;
         color: var(--color-text-muted);
         text-align: left;
     }
-    .admin-tx__items-row > :nth-child(2)::before {
+    .admin-tx__sku-cell::before {
         content: "SKU: ";
         font-weight: 700;
         color: var(--color-text-muted);
     }
-    .admin-tx__items-row > :nth-child(3) {
-        grid-column: 1;
+    .admin-tx__sku-cell code {
+        overflow-wrap: anywhere;
+    }
+    .admin-tx__category {
+        display: none;
+    }
+    .admin-tx__qty-cell {
+        grid-area: qty;
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: flex-end;
+        gap: 4px 6px;
         font-size: 12px;
         color: var(--color-text-muted);
-        text-align: left;
-    }
-    .admin-tx__items-row > :nth-child(3)::before {
-        content: "Categoria: ";
-        font-weight: 700;
-        color: var(--color-text-muted);
-    }
-    .admin-tx__items-row > :nth-child(4),
-    .admin-tx__items-row > :nth-child(5),
-    .admin-tx__items-row > :nth-child(6) {
         text-align: right;
     }
-    .admin-tx__items-row > :nth-child(4).admin-table__col--num {
-        grid-column: 2;
-        font-size: 12px;
-        color: var(--color-text-muted);
-    }
-    .admin-tx__items-row > :nth-child(4).admin-table__col--num::before {
+    .admin-tx__qty-cell::before {
         content: "Qtd: ";
         font-weight: 700;
         color: var(--color-text-muted);
     }
-    .admin-tx__items-row > :nth-child(5) { grid-column: 2; font-size: 12px; color: var(--color-text-muted); }
-    .admin-tx__items-row > :nth-child(6) { grid-column: 2; }
+    .admin-tx__unit-price {
+        grid-area: unit;
+        font-size: 12px;
+        color: var(--color-text-muted);
+        text-align: left;
+    }
+    .admin-tx__subtotal {
+        grid-area: subtotal;
+        text-align: right;
+        justify-self: end;
+    }
+    .admin-tx__items-row--editable {
+        grid-template-columns: minmax(0, 1fr) auto auto;
+        grid-template-areas:
+            "product product actions"
+            "sku     qty     qty"
+            "unit    subtotal subtotal";
+        padding-right: 12px;
+    }
+    .admin-tx__item-actions {
+        grid-area: actions;
+        position: static;
+        top: auto;
+        right: auto;
+        transform: none;
+        align-self: start;
+        justify-self: end;
+        flex-shrink: 0;
+    }
+    .admin-tx__items-row--editable.is-editing {
+        grid-template-columns: auto minmax(0, 1fr) auto;
+        grid-template-areas:
+            "product product actions"
+            "sku     sku     sku"
+            "qty     unit    subtotal";
+        align-items: start;
+    }
+    .admin-tx__items-row--editable.is-editing .admin-tx__sku-cell,
+    .admin-tx__items-row--editable.is-editing .admin-tx__qty-cell {
+        flex-direction: column;
+        align-items: stretch;
+    }
+    .admin-tx__items-row--editable.is-editing .admin-tx__qty-cell {
+        align-items: flex-end;
+    }
+    .admin-tx__items-row--editable.is-editing .admin-tx__sku-input {
+        max-width: none;
+        width: 100%;
+    }
+    .admin-tx__items-row--editable.is-editing .admin-tx__qty-input {
+        max-width: 88px;
+    }
 }
 
 /* Restaura altura da topbar em tablet (após regras gerais de max-width: 900px) */
@@ -5898,25 +5983,25 @@ html.admin-theme--dark .admin-mov__order-link:hover code {
     .admin-events-list__row > :nth-child(3) { grid-area: actions; justify-self: end; }
     .admin-table__head.admin-events-list__row { display: none; }
 
-    .admin-event__row {
+    [data-admin-event-stock] .admin-event__row {
         grid-template-columns: minmax(0, 1fr) auto !important;
         grid-template-areas:
-            "product product"
+            "product actions"
             "price   sales"
             "qty     min"
-            "status  actions";
+            "status  status";
         gap: 8px 12px;
         padding: 14px 16px;
         align-items: start;
     }
-    .admin-event__row > :nth-child(1) { grid-area: product; }
-    .admin-event__row > :nth-child(2) { grid-area: price; }
-    .admin-event__row > :nth-child(3) { grid-area: sales; }
-    .admin-event__row > :nth-child(4) { grid-area: qty; }
-    .admin-event__row > :nth-child(5) { grid-area: min; justify-self: end; }
-    .admin-event__row > :nth-child(6) { grid-area: status; }
-    .admin-event__row > :nth-child(7) { grid-area: actions; justify-self: end; align-self: start; }
-    .admin-event__row:not(:has(.admin-stock__actions)):not(:has(.admin-stock__actions-head)) {
+    [data-admin-event-stock] .admin-event__row > :nth-child(1) { grid-area: product; min-width: 0; }
+    [data-admin-event-stock] .admin-event__row > :nth-child(2) { grid-area: price; justify-self: start; text-align: left; }
+    [data-admin-event-stock] .admin-event__row > :nth-child(3) { grid-area: sales; justify-self: end; text-align: right; }
+    [data-admin-event-stock] .admin-event__row > :nth-child(4) { grid-area: qty; justify-self: start; text-align: left; }
+    [data-admin-event-stock] .admin-event__row > :nth-child(5) { grid-area: min; justify-self: end; text-align: right; }
+    [data-admin-event-stock] .admin-event__row > :nth-child(6) { grid-area: status; }
+    [data-admin-event-stock] .admin-event__row > :nth-child(7) { grid-area: actions; justify-self: end; align-self: start; }
+    [data-admin-event-stock] .admin-event__row:not(:has(.admin-stock__actions)):not(:has(.admin-stock__actions-head)) {
         grid-template-areas:
             "product product"
             "price   sales"
@@ -6284,6 +6369,15 @@ html.admin-theme--dark .admin-mov__order-link:hover code {
     max-width: 500px;
 }
 
+.admin-modal--add-event.is-bulk {
+    max-width: 560px;
+    width: 92vw;
+}
+
+.admin-modal--add-event.is-bulk .add-event-stock-preview {
+    display: none !important;
+}
+
 .admin-modal--bulk-stock {
     max-width: 560px;
     width: 92vw;
@@ -6293,32 +6387,64 @@ html.admin-theme--dark .admin-mov__order-link:hover code {
     display: flex;
     flex-direction: column;
     gap: 10px;
-    max-height: 42vh;
+}
+
+.bulk-stock-modal__list[hidden] {
+    display: none !important;
+}
+
+/* Com 5 ou mais produtos, a lista rola e a quinta linha fica parcialmente visível. */
+.bulk-stock-modal__list--scroll {
+    max-height: calc(4 * 70px + 4 * 10px + 28px);
     overflow-y: auto;
+    overscroll-behavior: contain;
     padding-right: 4px;
+}
+
+.bulk-stock-modal__list--scroll:has(.bulk-stock-modal__row-qty) {
+    max-height: calc(4 * 86px + 4 * 10px + 32px);
 }
 
 .bulk-stock-modal__row {
     display: flex;
     align-items: center;
-    justify-content: space-between;
+    justify-content: flex-start;
     gap: 12px;
+    min-height: 70px;
     padding: 10px 12px;
     background: var(--color-bg);
     border-radius: var(--radius-md);
     border: 1px solid var(--color-border);
+    box-sizing: border-box;
+}
+
+.bulk-stock-modal__thumb {
+    width: 48px;
+    height: 48px;
+}
+
+.bulk-stock-modal__thumb--empty {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--color-text-muted);
+    font-size: 16px;
 }
 
 .bulk-stock-modal__row-info {
     display: flex;
     flex-direction: column;
     gap: 2px;
+    flex: 1;
     min-width: 0;
 }
 
 .bulk-stock-modal__row-info strong {
     font-size: 14px;
     color: var(--color-text);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 .bulk-stock-modal__row-info small {
@@ -6344,6 +6470,10 @@ html.admin-theme--dark .admin-mov__order-link:hover code {
     background: var(--color-bg);
     border-radius: var(--radius-md);
     border: 1px solid var(--color-border);
+}
+
+.admin-modal__product-strip[hidden] {
+    display: none !important;
 }
 
 .admin-modal__product-thumb {

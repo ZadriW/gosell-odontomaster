@@ -1,6 +1,6 @@
 {% extends "seller/_layout.html" %}
 
-{% block title %}Venda — catálogo | Vendedor | Dental Odonto Master{% endblock %}
+{% block title %}Venda - catálogo | Vendedor | Dental Odonto Master{% endblock %}
 
 {% block admin_main_class %}admin-main--catalog-embed{% endblock %}
 
@@ -29,7 +29,7 @@
 {% include 'partials/json_boot.html' %}
 <script src="{{ url_for('static', filename='js/promo-pricing.js') }}"></script>
 <script src="{{ url_for('static', filename='js/cart.js') }}"></script>
-<script src="{{ url_for('static', filename='js/catalog.js') }}?v=search-sku1"></script>
+<script src="{{ url_for('static', filename='js/catalog.js') }}?v=price-thousands1"></script>
 <script src="{{ url_for('static', filename='js/stock-conflict-modal.js') }}"></script>
 <script src="{{ url_for('static', filename='js/checkout-hold.js') }}"></script>
 {% endblock %}

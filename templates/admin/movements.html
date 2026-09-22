@@ -19,20 +19,26 @@
     data-admin-movements
     data-api-url="{{ url_for('admin_api_event_movements', event_id=event.id, **qargs) }}"
 >
-    <header class="admin-section__header">
-        <h1 class="admin-section__title">Movimentações de estoque</h1>
-        <p class="admin-section__subtitle">
-            Histórico de <strong>vendas</strong>, <strong>entradas</strong> e <strong>saídas</strong>
-            de todos os produtos neste {{ op_noun_l }}, com delta, saldo após a operação,
-            motivo e responsável.
-            {% if pagination.total > 0 %}
-                Mostrando {{ pagination.showing_from }}–{{ pagination.showing_to }} de {{ pagination.total }}.
-            {% elif filters_active %}
-                Nenhuma movimentação para os filtros aplicados.
-            {% else %}
-                Nenhuma movimentação registrada.
-            {% endif %}
-        </p>
+    <header class="admin-section__header admin-section__header--row">
+        <div>
+            <a class="admin-breadcrumb" href="{{ url_for('admin_event_detail', event_id=event.id) }}">
+                <i class="fa-solid fa-arrow-left" aria-hidden="true"></i>
+                {{ event.name }}
+            </a>
+            <h1 class="admin-section__title">Movimentações de estoque</h1>
+            <p class="admin-section__subtitle">
+                Histórico de <strong>vendas</strong>, <strong>entradas</strong> e <strong>saídas</strong>
+                de todos os produtos neste {{ op_noun_l }}, com delta, saldo após a operação,
+                motivo e responsável.
+                {% if pagination.total > 0 %}
+                    Mostrando {{ pagination.showing_from }}–{{ pagination.showing_to }} de {{ pagination.total }}.
+                {% elif filters_active %}
+                    Nenhuma movimentação para os filtros aplicados.
+                {% else %}
+                    Nenhuma movimentação registrada.
+                {% endif %}
+            </p>
+        </div>
     </header>
 
     <form class="admin-filters" method="get"
