@@ -47,6 +47,13 @@ from .checkout_holds import (
     release_seller_checkout_holds,
     sync_seller_checkout_holds,
 )
+from .customers import (
+    CUSTOMER_SORTS,
+    DEFAULT_CUSTOMER_SORT,
+    get_customer_display_name,
+    get_customer_profile,
+    list_customers,
+)
 from .connection import DB_PATH, DEFAULT_MIN_STOCK, get_conn
 from .events import (
     EXPORT_MOVEMENTS_CSV_CAP,
@@ -233,6 +240,11 @@ __all__ = [
     "generate_order_number",
     "get_active_event_for_seller",
     "get_conn",
+    "CUSTOMER_SORTS",
+    "DEFAULT_CUSTOMER_SORT",
+    "get_customer_display_name",
+    "get_customer_profile",
+    "list_customers",
     "get_event",
     "get_event_sales_dashboard",
     "get_event_stats",

@@ -13,10 +13,6 @@
 >
     <header class="admin-section__header admin-section__header--row">
         <div>
-            <a class="admin-breadcrumb" href="{{ url_for('admin_event_stock', event_id=event.id) }}">
-                <i class="fa-solid fa-arrow-left" aria-hidden="true"></i>
-                Voltar ao estoque do {{ op_noun_l }}
-            </a>
             <h1 class="admin-section__title">
                 {{ product.nome }}
                 {% include 'partials/product_promo_name_badge.html' %}

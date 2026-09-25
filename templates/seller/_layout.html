@@ -82,6 +82,13 @@
     </header>
 
     <main class="admin-main {% block admin_main_class %}{% endblock %}">
+        {# ── Trilha de navegação (caminho percorrido + voltar) ── #}
+        {% if totem_trail_enabled|default(true) %}
+        {% set trail_root_href = seller_home_url|default(seller_venda_url, true) %}
+        {% set trail_root_label = 'Início do painel do vendedor' %}
+        {% include 'partials/admin_trail.html' %}
+        {% endif %}
+
         {% if seller_event and seller_event.operations_closed %}
         {% with event=seller_event %}
         {% include 'partials/admin_event_ops_banner.html' %}

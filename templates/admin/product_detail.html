@@ -12,10 +12,6 @@
 >
     <header class="admin-section__header admin-section__header--row">
         <div>
-            <a class="admin-breadcrumb" href="{{ url_for('admin_products') }}">
-                <i class="fa-solid fa-arrow-left" aria-hidden="true"></i>
-                Voltar aos produtos
-            </a>
             <h1 class="admin-section__title">{{ product.nome }}</h1>
             {% if product.variante %}<p class="admin-section__variant">{{ product.variante }}</p>{% endif %}
             <p class="admin-section__subtitle">

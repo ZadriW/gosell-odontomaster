@@ -79,12 +79,7 @@
                     <i class="fa-solid fa-boxes-stacked" aria-hidden="true"></i>
                     <span>Estoque</span>
                 </a>
-                <a class="admin-nav__item {% if active_event_tab == 'movimentacoes' %}is-active{% endif %}"
-                   href="{{ url_for('admin_event_movements', event_id=event.id) }}" title="Movimentações do {{ event|op_noun(lower=True) }}">
-                    <i class="fa-solid fa-right-left" aria-hidden="true"></i>
-                    <span>Movimentações</span>
-                </a>
-                <a class="admin-nav__item {% if active_event_tab == 'transacoes' %}is-active{% endif %}"
+                <a class="admin-nav__item {% if active_event_tab in ('transacoes', 'movimentacoes') %}is-active{% endif %}"
                    href="{{ url_for('admin_event_transactions', event_id=event.id) }}" title="Transações do {{ event|op_noun(lower=True) }}">
                     <i class="fa-solid fa-file-invoice-dollar" aria-hidden="true"></i>
                     <span>Transações</span>
@@ -114,6 +109,11 @@
                    href="{{ url_for('admin_sellers') }}">
                     <i class="fa-solid fa-users" aria-hidden="true"></i>
                     Vendedores
+                </a>
+                <a class="admin-nav__item {% if active_section == 'clientes' %}is-active{% endif %}"
+                   href="{{ url_for('admin_customers') }}">
+                    <i class="fa-solid fa-address-book" aria-hidden="true"></i>
+                    Clientes
                 </a>
                 <a class="admin-nav__item {% if active_section == 'financeiro' %}is-active{% endif %}"
                    href="{{ url_for('admin_financeiro') }}">
@@ -173,6 +173,13 @@
         {% include 'partials/admin_event_ops_banner.html' %}
         {% endif %}
 
+        {# ── Trilha de navegação (caminho percorrido + voltar) ── #}
+        {% if totem_trail_enabled|default(true) %}
+        {% set trail_root_href = admin_home_url|default(url_for('admin_events'), true) %}
+        {% set trail_root_label = 'Início do painel administrativo' %}
+        {% include 'partials/admin_trail.html' %}
+        {% endif %}
+
         {% block admin_body %}{% endblock %}
     </main>
 
@@ -190,12 +197,7 @@
             <i class="fa-solid fa-boxes-stacked" aria-hidden="true"></i>
             <span class="admin-bottom-nav__badge">Estoque</span>
         </a>
-        <a class="admin-bottom-nav__item {% if active_event_tab == 'movimentacoes' %}is-active{% endif %}"
-           href="{{ url_for('admin_event_movements', event_id=event.id) }}" title="Movimentações do {{ event|op_noun(lower=True) }}">
-            <i class="fa-solid fa-right-left" aria-hidden="true"></i>
-            <span class="admin-bottom-nav__badge">Movim.</span>
-        </a>
-        <a class="admin-bottom-nav__item {% if active_event_tab == 'transacoes' %}is-active{% endif %}"
+        <a class="admin-bottom-nav__item {% if active_event_tab in ('transacoes', 'movimentacoes') %}is-active{% endif %}"
            href="{{ url_for('admin_event_transactions', event_id=event.id) }}" title="Transações do {{ event|op_noun(lower=True) }}">
             <i class="fa-solid fa-file-invoice-dollar" aria-hidden="true"></i>
             <span class="admin-bottom-nav__badge">Transações</span>
@@ -220,6 +222,11 @@
            href="{{ url_for('admin_sellers') }}">
             <i class="fa-solid fa-users" aria-hidden="true"></i>
             <span class="admin-bottom-nav__badge">Vendedores</span>
+        </a>
+        <a class="admin-bottom-nav__item {% if active_section == 'clientes' %}is-active{% endif %}"
+           href="{{ url_for('admin_customers') }}">
+            <i class="fa-solid fa-address-book" aria-hidden="true"></i>
+            <span class="admin-bottom-nav__badge">Clientes</span>
         </a>
         <a class="admin-bottom-nav__item {% if active_section == 'financeiro' %}is-active{% endif %}"
            href="{{ url_for('admin_financeiro') }}">

@@ -7,10 +7,6 @@
 <section class="admin-section">
     <header class="admin-section__header admin-section__header--row">
         <div>
-            <a class="admin-breadcrumb" href="{{ url_for('admin_event_promotions', event_id=event.id) }}">
-                <i class="fa-solid fa-arrow-left" aria-hidden="true"></i>
-                Promoções
-            </a>
             <h1 class="admin-section__title">{{ promo.name }}</h1>
             <p class="admin-section__subtitle">
                 {{ promo.rule_label }}

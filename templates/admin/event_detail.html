@@ -12,10 +12,6 @@
 <section class="admin-section">
     <header class="admin-section__header admin-section__header--row">
         <div>
-            <a class="admin-breadcrumb" href="{{ url_for('admin_events') }}">
-                <i class="fa-solid fa-arrow-left" aria-hidden="true"></i>
-                Todos os {{ op_nouns_l }}
-            </a>
             <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-top:4px;">
                 <h1 class="admin-section__title">{{ event.name }}</h1>
                 {% if not event.active %}

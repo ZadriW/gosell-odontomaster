@@ -15,10 +15,6 @@
 <section class="admin-section">
     <header class="admin-section__header admin-section__header--row">
         <div>
-            <a class="admin-breadcrumb" href="{{ url_for('admin_sellers') }}">
-                <i class="fa-solid fa-arrow-left" aria-hidden="true"></i>
-                Voltar aos vendedores
-            </a>
             <h1 class="admin-section__title">{{ seller.name }}</h1>
             <p class="admin-section__subtitle">
                 {{ seller.username or seller.email }} &middot;

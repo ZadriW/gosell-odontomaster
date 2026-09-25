@@ -20,8 +20,8 @@ import sys
 import totem_env  # noqa: F401 — carrega .env / totem.env antes da integração Wake
 from receipt_tokens import sign_receipt_token, verify_receipt_token
 from functools import wraps
-from datetime import date, datetime
 from urllib.parse import unquote, urlparse
+from datetime import date, datetime
 
 try:
     import xlrd as _xlrd  # .xls legacy (BIFF)
@@ -59,6 +59,7 @@ from flask import (
     Response,
     current_app,
     flash,
+    g,
     has_request_context,
     jsonify,
     redirect,
@@ -102,18 +103,14 @@ from database import (
     count_event_product_ledger,
     count_pending_delivery_transactions,
     EXPORT_STOCK_CSV_CAP,
-    EVENT_OPERATION_TYPES,
     create_transaction,
     update_pending_transaction,
     delete_seller,
     ensure_seller_account,
     event_badge_style_pairs,
-    event_operation_noun,
-    event_operation_type_label,
     find_product_by_sku_or_id,
     get_active_event_for_seller,
     get_event,
-    event_ops_open,
     get_event_financial_report,
     get_event_sales_dashboard,
     get_event_stats,
@@ -122,7 +119,6 @@ from database import (
     get_product_events_stock_total,
     get_product_in_event,
     get_products_library_stats,
-    cancel_pending_transaction,
     cancel_pending_transaction_for_seller,
     get_pending_transaction_if_owned,
     get_pending_transaction_restore_payload,
@@ -131,13 +127,16 @@ from database import (
     get_seller_by_email,
     get_seller_by_username,
     get_stats,
-    get_transaction,
+    get_customer_display_name,
+    get_customer_profile,
+    list_customers,
+    CUSTOMER_SORTS,
+    DEFAULT_CUSTOMER_SORT,
     get_transaction_by_order_number,
     init_db,
     DEFAULT_MIN_STOCK,
     list_active_event_product_stocks,
     list_active_product_stocks,
-    list_checkout_stock_conflicts,
     list_distinct_product_categories,
     count_event_products_filtered,
     count_stock_movements,
@@ -163,12 +162,10 @@ from database import (
     list_transactions_for_seller,
     list_transactions_summary_for_event_period,
     normalize_event_badge_color,
-    normalize_event_operation_type,
     pending_delivery_units_by_product_for_event,
     units_sold_by_product_for_event,
     units_sold_by_product_for_seller,
     refund_transaction,
-    release_seller_checkout_holds,
     replace_transaction_item_product,
     register_event_stock_adjustment,
     register_event_stock_entry,
@@ -177,14 +174,11 @@ from database import (
     replace_seller_event_assignment,
     reset_totem_to_default_state,
     restore_event,
-    set_event_operations_closed,
     set_product_active,
     sync_catalog_from_wake,
-    sync_seller_checkout_holds,
     get_distinct_wake_product_ids,
     upsert_wake_variant,
     update_event,
-    update_event_goals,
     update_event_product_backorder_limit,
     update_event_product_price,
     update_event_product_stock,
@@ -192,7 +186,17 @@ from database import (
     update_seller_last_login,
     update_transaction_receipt_note,
     validate_seller_username,
+    update_event_goals,
+    EVENT_OPERATION_TYPES,
+    cancel_pending_transaction,
+    event_operation_noun,
+    event_operation_type_label,
+    event_ops_open,
+    get_transaction,
+    normalize_event_operation_type,
+    set_event_operations_closed,
 )
+import breadcrumbs
 import product_images
 import wake_api
 
@@ -206,13 +210,8 @@ app = Flask(__name__)
 # SECRET_KEY persistida em totem.env (totem_env.ensure_persistent_secret_key).
 app.secret_key = os.environ.get("TOTEM_SECRET_KEY") or secrets.token_hex(32)
 
-app.config.update(
-    SESSION_COOKIE_HTTPONLY=True,
-    SESSION_COOKIE_SAMESITE="Lax",
-    SESSION_COOKIE_SECURE=os.environ.get("TOTEM_COOKIE_SECURE", "").strip().lower()
-    in ("1", "true", "yes", "on"),
-    WTF_CSRF_TIME_LIMIT=None,
-)
+# CSRF (Flask-WTF): mesma chave da sessão; sem limite de tempo para o token na sessão atual.
+app.config.setdefault("WTF_CSRF_TIME_LIMIT", None)
 csrf = CSRFProtect(app)
 
 
@@ -286,17 +285,6 @@ def _redirect_back(fallback: str, *, fragment: str | None = None):
     return redirect(target)
 
 
-@app.after_request
-def _security_headers(response):
-    """Cabeçalhos defensivos (CVE-2026-27205: páginas autenticadas não devem ir para cache compartilhado)."""
-    response.headers.setdefault("X-Content-Type-Options", "nosniff")
-    response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
-    response.headers.setdefault("Referrer-Policy", "same-origin")
-    if not request.path.startswith("/static/"):
-        response.headers.setdefault("Cache-Control", "private, no-store")
-    return response
-
-
 @app.errorhandler(CSRFError)
 def handle_csrf_error(_e):
     accept = (request.headers.get("Accept") or "").lower()
@@ -316,7 +304,7 @@ def handle_csrf_error(_e):
         "Sessão expirada ou token de segurança inválido. Recarregue a página e tente novamente.",
         "error",
     )
-    return _redirect_back(url_for("welcome"))
+    return redirect(request.referrer or url_for("welcome"))
 
 # Credenciais do admin — sobrescreva em produção via variável de ambiente.
 ADMIN_USERNAME = os.environ.get("TOTEM_ADMIN_USER", "adminmaster")
@@ -455,13 +443,13 @@ def _parcelas_cartao_filter(total, payment_method, installments):
     return _card_installment_plan_text(total, payment_method, installments) or ""
 
 
+# Registro imediato: garante o filtro Jinja mesmo com importações parciais / reload.
 def _op_noun_filter(source, plural=False, lower=False):
     """Filtro Jinja: ``{{ event | op_noun }}`` / ``op_noun(lower=True)`` / ``op_noun(plural=True)``."""
     text = event_operation_noun(source, plural=bool(plural))
     return text.lower() if lower else text
 
 
-# Registro imediato: garante o filtro Jinja mesmo com importações parciais / reload.
 app.add_template_filter(_display_created_by, "display_created_by")
 app.add_template_filter(_event_badge_style_filter, "event_badge_style")
 app.add_template_filter(_parcelas_cartao_filter, "parcelas_cartao")
@@ -515,7 +503,7 @@ def _set_auth_cookie(response, cookie_name: str, salt: str, payload: dict):
     response.set_cookie(
         cookie_name,
         _auth_serializer(salt).dumps(payload),
-        **_auth_cookie_kwargs(),
+        **AUTH_COOKIE_OPTIONS,
     )
     return response
 
@@ -591,6 +579,276 @@ def _inject_totem_theme_scope():
     return {"totem_theme_scope": _totem_theme_scope()}
 
 
+# ---------------------------------------------------------------------------
+# Trilha de navegação (breadcrumb) — admin e vendedor
+# ---------------------------------------------------------------------------
+
+# Allowlist: só as páginas abaixo entram na trilha. O que não está aqui
+# (APIs, downloads, login/logout, nota pública, redirecionamentos) é ignorado.
+_TRAIL_LABELS = {
+    "admin_events": "Eventos",
+    "admin_products": "Produtos",
+    "admin_sellers": "Vendedores",
+    "admin_customers": "Clientes",
+    "admin_financeiro": "Financeiro",
+    "admin_event_stock": "Estoque",
+    "admin_event_transactions": "Transações",
+    "admin_event_movements": "Movimentações",
+    "admin_event_promotions": "Promoções",
+    "seller_sale": "Catálogo",
+    "seller_dashboard": "Minhas vendas",
+    "seller_stock": "Estoque",
+    "seller_restore_pending_checkout": "Retomar pedido",
+}
+
+
+def _trail_url(endpoint: str, **kwargs) -> str:
+    """``url_for`` tolerante: ``""`` quando o endpoint não existe no mapa de rotas."""
+    try:
+        return url_for(endpoint, **kwargs)
+    except BuildError:
+        return ""
+
+
+def _trail_entity_name(kind: str, entity_id) -> str:
+    """Nome legível de evento/produto/vendedor/promoção (``""`` se não achar).
+
+    Produtos usam a chave ``nome`` (formato cliente do catálogo); eventos,
+    vendedores e promoções usam ``name`` — por isso a leitura tenta as duas.
+    """
+    try:
+        row_id = int(entity_id)
+    except (TypeError, ValueError):
+        return ""
+    try:
+        if kind == "product":
+            row = get_product(row_id)
+        elif kind == "seller":
+            row = get_seller(row_id)
+        elif kind == "promotion":
+            row = get_promotion(row_id)
+        else:
+            row = get_event(row_id)
+    except Exception:
+        return ""
+    if not row:
+        return ""
+    return str(row.get("name") or row.get("nome") or "").strip()
+
+
+def _trail_customer_name(kind, ident) -> str:
+    """Nome do cliente para a trilha (``""`` quando a identidade não resolve)."""
+    try:
+        return get_customer_display_name(str(kind or ""), ident)
+    except Exception:
+        return ""
+
+
+def _trail_event_ancestors(event_id: int) -> list:
+    """Ancestrais das páginas de evento: lista de eventos + dashboard do evento."""
+    if not event_id:
+        return []
+    name = _trail_entity_name("event", event_id)
+    if not name:
+        return []
+    return [
+        {"u": _trail_url("admin_events"), "l": "Eventos"},
+        {"u": _trail_url("admin_event_detail", event_id=int(event_id)), "l": name},
+    ]
+
+
+def _trail_entry_for(endpoint: str, view_args: dict | None) -> dict | None:
+    """Rótulo + ancestrais da página atual. ``None`` = página fora da trilha."""
+    args = view_args or {}
+    label = _TRAIL_LABELS.get(endpoint)
+    ancestors: list = []
+    event_id = _parse_int(args.get("event_id"), 0)
+
+    if endpoint == "admin_event_detail":
+        ancestors = _trail_event_ancestors(event_id)
+        label = ancestors[-1]["l"] if ancestors else (label or "Evento")
+        ancestors = ancestors[:-1]
+    elif endpoint in (
+        "admin_event_stock",
+        "admin_event_transactions",
+        "admin_event_movements",
+        "admin_event_promotions",
+    ):
+        ancestors = _trail_event_ancestors(event_id)
+    elif endpoint == "admin_event_stock_product":
+        ancestors = _trail_event_ancestors(event_id)
+        stock_url = _trail_url("admin_event_stock", event_id=event_id) if event_id else ""
+        if stock_url:
+            ancestors.append({"u": stock_url, "l": "Estoque"})
+        label = _trail_entity_name("product", args.get("product_id")) or "Produto"
+    elif endpoint == "admin_event_promotion_detail":
+        ancestors = _trail_event_ancestors(event_id)
+        promos_url = _trail_url("admin_event_promotions", event_id=event_id) if event_id else ""
+        if promos_url:
+            ancestors.append({"u": promos_url, "l": "Promoções"})
+        label = _trail_entity_name("promotion", args.get("promo_id")) or "Promoção"
+    elif endpoint == "admin_product_detail":
+        ancestors = [{"u": _trail_url("admin_products"), "l": "Produtos"}]
+        label = _trail_entity_name("product", args.get("product_id")) or "Produto"
+    elif endpoint == "admin_seller_detail":
+        ancestors = [{"u": _trail_url("admin_sellers"), "l": "Vendedores"}]
+        label = _trail_entity_name("seller", args.get("seller_id")) or "Vendedor"
+    elif endpoint == "admin_customer_detail":
+        ancestors = [{"u": _trail_url("admin_customers"), "l": "Clientes"}]
+        label = _trail_customer_name(args.get("kind"), args.get("ident")) or "Cliente"
+    elif endpoint == "seller_stock_product":
+        ancestors = [{"u": _trail_url("seller_stock"), "l": "Estoque"}]
+        label = _trail_entity_name("product", args.get("product_id")) or "Produto"
+
+    if not label:
+        return None
+    return {"label": label, "ancestors": ancestors}
+
+def _trail_scope() -> str:
+    """Escopo da trilha conforme a área autenticada da requisição (``""`` = fora)."""
+    path = (request.path or "").lower()
+    try:
+        if path.startswith("/admin") and _is_admin_logged_in():
+            return "admin"
+        if path.startswith("/vendedor") and _is_seller_logged_in():
+            return "seller"
+    except Exception:
+        return ""
+    return ""
+
+
+def _trail_current_url() -> str:
+    """URL interna da página atual (preserva filtros/paginação para o voltar)."""
+    query = request.query_string.decode("utf-8", "replace") if request.query_string else ""
+    return f"{request.path}?{query}" if query else request.path
+
+
+def _trail_load() -> list:
+    """Trilha persistida no cookie dedicado (lista vazia quando ilegível)."""
+    try:
+        return breadcrumbs.normalize_payload(
+            _load_auth_cookie(breadcrumbs.COOKIE_NAME, breadcrumbs.COOKIE_SALT)
+        )
+    except Exception:
+        return []
+
+
+@app.before_request
+def _totem_trail_record():
+    """Registra a página atual na trilha antes do template renderizar.
+
+    Só páginas da allowlist entram (``_TRAIL_LABELS``), apenas em GET autenticado
+    e nunca em respostas JSON/API — assim a trilha não polui com polling,
+    downloads e afins.
+    """
+    g.totem_trail = _trail_load()
+    g.totem_trail_dirty = False
+    try:
+        scope = _trail_scope()
+        if not scope or request.method != "GET" or not request.endpoint:
+            return
+        if request.path.startswith("/api/"):
+            return
+        if _wants_json_response():
+            return
+        entry = _trail_entry_for(request.endpoint, request.view_args)
+        if entry is None:
+            return
+        g.totem_trail = breadcrumbs.push(
+            g.totem_trail,
+            scope=scope,
+            url=_trail_current_url(),
+            label=entry["label"],
+            ancestors=entry["ancestors"],
+        )
+        g.totem_trail_dirty = True
+    except Exception:
+        app.logger.warning("Falha ao registrar a trilha de navegação", exc_info=True)
+
+
+def _trail_cookie_token(items) -> str:
+    """Serializa a trilha no mesmo formato assinado usado pelos cookies de login."""
+    return _auth_serializer(breadcrumbs.COOKIE_SALT).dumps(breadcrumbs.payload(items))
+
+
+@app.after_request
+def _totem_trail_persist(response):
+    """Grava a trilha no cookie dedicado (ou remove o cookie quando ela fica vazia).
+
+    Se o cookie não couber no orçamento de bytes, a trilha é reduzida em etapas
+    e, em último caso, descartada — nunca quebra a resposta.
+    """
+    if not getattr(g, "totem_trail_dirty", False):
+        return response
+    try:
+        items = breadcrumbs.normalize_items(getattr(g, "totem_trail", None))
+        for candidate in (items, items[-4:], items[-2:]):
+            if not candidate:
+                break
+            token = _trail_cookie_token(candidate)
+            if len(token) <= breadcrumbs.MAX_COOKIE_CHARS:
+                response.set_cookie(
+                    breadcrumbs.COOKIE_NAME,
+                    token,
+                    max_age=breadcrumbs.COOKIE_MAX_AGE,
+                    path="/",
+                    **_auth_cookie_kwargs(),
+                )
+                return response
+        response.delete_cookie(
+            breadcrumbs.COOKIE_NAME,
+            samesite=AUTH_COOKIE_OPTIONS["samesite"],
+        )
+    except Exception:
+        app.logger.warning("Falha ao gravar a trilha de navegação", exc_info=True)
+    return response
+
+
+def _trail_view() -> dict:
+    """Trilha pronta para o template: itens do escopo atual + URL de voltar."""
+    scope = _trail_scope()
+    if not scope:
+        return {"totem_trail": [], "totem_trail_back": ""}
+    stored = getattr(g, "totem_trail", None)
+    current_path = request.path
+    view = [
+        {"url": item["u"], "label": item["l"], "is_current": item["p"] == current_path}
+        for item in breadcrumbs.for_scope(stored, scope)
+    ]
+    if view and not any(item["is_current"] for item in view):
+        view.append(
+            {
+                "url": current_path,
+                "label": _TRAIL_LABELS.get(request.endpoint or "") or "Página atual",
+                "is_current": True,
+            }
+        )
+    return {
+        "totem_trail": view,
+        "totem_trail_back": breadcrumbs.previous_url(stored, scope),
+    }
+
+
+@app.context_processor
+def _inject_totem_trail():
+    """Expõe a trilha de navegação (breadcrumb) para todas as páginas dos painéis."""
+    try:
+        return _trail_view()
+    except Exception:
+        return {"totem_trail": [], "totem_trail_back": ""}
+
+
+def _trail_reset_scope(scope: str) -> None:
+    """Esvazia a trilha de um escopo (login/logout) sem afetar o outro painel."""
+    try:
+        g.totem_trail = breadcrumbs.drop_scope(getattr(g, "totem_trail", None), scope)
+        g.totem_trail_dirty = True
+    except Exception:
+        app.logger.warning("Falha ao limpar a trilha de navegação", exc_info=True)
+
+
+
+
 def _clear_admin_session() -> None:
     """Remove apenas credenciais do painel admin (preserva vendedor na mesma sessão)."""
     for key in ("is_admin", "admin_user"):
@@ -611,46 +869,6 @@ def _current_admin_user() -> str:
 def _current_seller_id() -> int:
     auth = _seller_auth() or {}
     return int(auth["seller_id"])
-
-
-def _current_seller_display_name() -> str:
-    auth = _seller_auth() or {}
-    name = str(auth.get("seller_name") or "").strip()
-    if name:
-        return name
-    try:
-        seller = get_seller(_current_seller_id())
-    except (KeyError, TypeError, ValueError):
-        seller = None
-    if seller:
-        return str(seller.get("name") or "Vendedor").strip() or "Vendedor"
-    return "Vendedor"
-
-
-def admin_required(view):
-    @wraps(view)
-    def wrapped(*args, **kwargs):
-        if not _is_admin_logged_in():
-            return redirect(url_for("admin_login", next=request.path))
-        return view(*args, **kwargs)
-
-    return wrapped
-
-
-def seller_required(view):
-    @wraps(view)
-    def wrapped(*args, **kwargs):
-        auth = _seller_auth()
-        if not auth:
-            return redirect(url_for("seller_login", next=request.path))
-        seller = get_seller(int(auth["seller_id"]))
-        if seller is None or not seller.get("active"):
-            response = redirect(url_for("seller_login"))
-            _clear_seller_session()
-            return _delete_auth_cookie(response, SELLER_AUTH_COOKIE)
-        return view(*args, **kwargs)
-
-    return wrapped
 
 
 EVENT_OPS_CLOSED_MSG = (
@@ -713,6 +931,32 @@ def _reject_if_tx_event_ops_closed(tx_id: int):
     if not eid:
         return None
     return _reject_if_event_ops_closed(get_event(int(eid)))
+
+
+def admin_required(view):
+    @wraps(view)
+    def wrapped(*args, **kwargs):
+        if not _is_admin_logged_in():
+            return redirect(url_for("admin_login", next=request.path))
+        return view(*args, **kwargs)
+
+    return wrapped
+
+
+def seller_required(view):
+    @wraps(view)
+    def wrapped(*args, **kwargs):
+        auth = _seller_auth()
+        if not auth:
+            return redirect(url_for("seller_login", next=request.path))
+        seller = get_seller(int(auth["seller_id"]))
+        if seller is None or not seller.get("active"):
+            response = redirect(url_for("seller_login"))
+            _clear_seller_session()
+            return _delete_auth_cookie(response, SELLER_AUTH_COOKIE)
+        return view(*args, **kwargs)
+
+    return wrapped
 
 
 # ---------------------------------------------------------------------------
@@ -806,8 +1050,6 @@ def api_create_transaction():
         # Busca o evento ativo do vendedor (se houver)
         active_event = get_active_event_for_seller(int(seller["id"]))
         event_id = int(active_event["id"]) if active_event else None
-        if active_event is not None and not event_ops_open(active_event):
-            return jsonify({"error": EVENT_OPS_CLOSED_MSG}), 403
 
         result = create_transaction(
             items,
@@ -874,10 +1116,6 @@ def api_update_pending_transaction(tx_id: int):
         row = get_seller(int(auth["seller_id"]))
         if row is None or not row.get("active"):
             raise ValueError("Sessão de vendedor inválida ou inativa.")
-
-        seller_ev = get_active_event_for_seller(int(row["id"]))
-        if seller_ev is not None and not event_ops_open(seller_ev):
-            return jsonify({"error": EVENT_OPS_CLOSED_MSG}), 403
 
         result = update_pending_transaction(
             int(tx_id),
@@ -971,12 +1209,11 @@ def admin_login():
         username = (request.form.get("username") or "").strip()
         password = request.form.get("password") or ""
         if username == ADMIN_USERNAME and password == ADMIN_PASSWORD:
-            next_url = _safe_internal_url(
-                request.args.get("next"),
-                _admin_home_url(),
-                path_prefix="/admin",
-            )
+            next_url = request.args.get("next") or _admin_home_url()
+            if not next_url.startswith("/"):
+                next_url = _admin_home_url()
             response = redirect(next_url)
+            _trail_reset_scope("admin")  # cada login começa com a trilha limpa
             return _set_auth_cookie(
                 response,
                 ADMIN_AUTH_COOKIE,
@@ -990,6 +1227,7 @@ def admin_login():
 @app.route("/admin/logout", methods=["POST", "GET"])
 def admin_logout():
     _clear_admin_session()
+    _trail_reset_scope("admin")
     response = redirect(url_for("admin_login"))
     return _delete_auth_cookie(response, ADMIN_AUTH_COOKIE)
 
@@ -1020,13 +1258,12 @@ def seller_login():
             seller["password_hash"], password
         ):
             update_seller_last_login(int(seller["id"]))
-            next_url = _safe_internal_url(
-                request.args.get("next"),
-                _seller_home_url(),
-                path_prefix="/vendedor",
-            )
+            next_url = request.args.get("next") or _seller_home_url()
+            if not next_url.startswith("/vendedor"):
+                next_url = _seller_home_url()
             login_id = seller.get("username") or seller.get("email") or username
             response = redirect(next_url)
+            _trail_reset_scope("seller")  # cada login começa com a trilha limpa
             return _set_auth_cookie(
                 response,
                 SELLER_AUTH_COOKIE,
@@ -1047,6 +1284,7 @@ def seller_login():
 @app.route("/vendedor/logout", methods=["POST", "GET"])
 def seller_logout():
     _clear_seller_session()
+    _trail_reset_scope("seller")
     response = redirect(url_for("seller_login"))
     return _delete_auth_cookie(response, SELLER_AUTH_COOKIE)
 
@@ -1088,14 +1326,6 @@ def _get_seller_event():
     return get_active_event_for_seller(seller_id)
 
 
-def _reject_if_seller_event_ops_closed():
-    """Bloqueia ações de venda se o evento do vendedor estiver encerrado."""
-    ev = _get_seller_event()
-    if ev is None or event_ops_open(ev):
-        return None
-    return _response_event_ops_closed(int(ev["id"]), seller=True)
-
-
 def _seller_pending_sales_count(seller_id: int, seller_ev) -> int:
     """Conta vendas pendentes do vendedor (escopo do evento quando houver)."""
     if seller_ev:
@@ -1118,22 +1348,6 @@ def _seller_totem_flow() -> dict:
         ),
         "catalog": _seller_home_url(),
         "home": _seller_home_url(),
-        "checkoutUnlock": _url_if_registered(
-            "seller_checkout_unlock",
-            fallback="/vendedor/api/checkout/desbloquear",
-        ),
-        "checkoutHold": _url_if_registered(
-            "seller_api_checkout_hold",
-            fallback="/vendedor/api/checkout/reserva",
-        ),
-        "checkoutHoldRelease": _url_if_registered(
-            "seller_api_checkout_hold_release",
-            fallback="/vendedor/api/checkout/liberar",
-        ),
-        "checkoutHoldConflicts": _url_if_registered(
-            "seller_api_checkout_hold_conflicts",
-            fallback="/vendedor/api/checkout/conflitos",
-        ),
     }
 
 
@@ -1199,121 +1413,16 @@ def seller_sale():
         totem_flow=_seller_totem_flow(),
         catalog_stock_api_url=catalog_stock_api_url,
         catalog_promo_refresh_api_url=catalog_promo_refresh_api_url,
-        catalog_readonly=bool(seller_ev) and not event_ops_open(seller_ev),
+        # Catálogo é tela cheia (sem coluna de conteúdo): a trilha fica oculta,
+        # mas a página continua sendo registrada para servir de «voltar».
+        totem_trail_enabled=False,
         **_seller_shell_context(active_section="venda"),
     )
-
-
-@app.route(
-    "/vendedor/api/checkout/desbloquear",
-    methods=["POST"],
-    endpoint="seller_checkout_unlock",
-)
-def seller_checkout_unlock():
-    """Valida a senha do vendedor logado para desbloquear o checkout inativo."""
-    auth = _seller_auth()
-    if not auth:
-        return jsonify({"error": "Sessão expirada. Faça login novamente."}), 401
-    seller = get_seller(int(auth["seller_id"]))
-    if seller is None or not seller.get("active"):
-        return jsonify({"error": "Sessão expirada. Faça login novamente."}), 401
-    payload = request.get_json(silent=True) or {}
-    password = payload.get("password")
-    if password is None:
-        password = request.form.get("password") or ""
-    if not isinstance(password, str) or not password:
-        return jsonify({"error": "Informe a senha de login."}), 400
-    if not check_password_hash(seller["password_hash"], password):
-        return jsonify({"error": "Senha inválida."}), 403
-    return jsonify({"ok": True})
-
-
-def _seller_checkout_hold_items():
-    payload = request.get_json(silent=True) or {}
-    items = payload.get("items")
-    if items is None:
-        items = payload.get("itens")
-    return items if isinstance(items, list) else []
-
-
-def _seller_checkout_hold_seq() -> int:
-    payload = request.get_json(silent=True) or {}
-    raw = payload.get("seq")
-    try:
-        seq = int(raw)
-    except (TypeError, ValueError):
-        seq = 0
-    return max(0, seq)
-
-
-@app.route(
-    "/vendedor/api/checkout/reserva",
-    methods=["POST"],
-    endpoint="seller_api_checkout_hold",
-)
-@seller_required
-def seller_api_checkout_hold():
-    """Publica o carrinho da tela de pagamento e devolve conflitos visíveis."""
-    blocked = _reject_if_seller_event_ops_closed()
-    if blocked is not None:
-        return blocked
-    seller_ev = _get_seller_event()
-    if seller_ev is None:
-        return jsonify({"ok": True, "conflicts": []})
-    conflicts = sync_seller_checkout_holds(
-        int(seller_ev["id"]),
-        _current_seller_id(),
-        _current_seller_display_name(),
-        _seller_checkout_hold_items(),
-        seq=_seller_checkout_hold_seq(),
-    )
-    return jsonify({"ok": True, "conflicts": conflicts})
-
-
-@app.route(
-    "/vendedor/api/checkout/liberar",
-    methods=["POST"],
-    endpoint="seller_api_checkout_hold_release",
-)
-@seller_required
-def seller_api_checkout_hold_release():
-    """Remove as reservas do vendedor (volta ao catálogo ou carrinho vazio)."""
-    seller_ev = _get_seller_event()
-    if seller_ev is None:
-        return jsonify({"ok": True, "conflicts": []})
-    release_seller_checkout_holds(
-        int(seller_ev["id"]),
-        _current_seller_id(),
-        seq=_seller_checkout_hold_seq(),
-    )
-    return jsonify({"ok": True, "conflicts": []})
-
-
-@app.route(
-    "/vendedor/api/checkout/conflitos",
-    methods=["POST"],
-    endpoint="seller_api_checkout_hold_conflicts",
-)
-@seller_required
-def seller_api_checkout_hold_conflicts():
-    """Consulta conflitos no catálogo sem publicar reserva deste caixa."""
-    seller_ev = _get_seller_event()
-    if seller_ev is None:
-        return jsonify({"ok": True, "conflicts": []})
-    conflicts = list_checkout_stock_conflicts(
-        int(seller_ev["id"]),
-        _current_seller_id(),
-        _seller_checkout_hold_items(),
-    )
-    return jsonify({"ok": True, "conflicts": conflicts})
 
 
 @app.route("/vendedor/pagamento", endpoint="seller_payment")
 @seller_required
 def seller_payment():
-    blocked = _reject_if_seller_event_ops_closed()
-    if blocked is not None:
-        return blocked
     return render_template("payment.html", **_seller_payment_page_context())
 
 
@@ -1339,9 +1448,6 @@ def seller_payment_waiting():
 @seller_required
 def seller_restore_pending_checkout(tx_id: int):
     """Restaura carrinho + formulário do cliente e envia à tela de pagamento (pedido pendente de AUT)."""
-    blocked = _reject_if_seller_event_ops_closed()
-    if blocked is not None:
-        return blocked
     sid = _current_seller_id()
     payload = get_pending_transaction_restore_payload(tx_id, sid)
     if not payload or not payload.get("cart_items"):
@@ -1365,12 +1471,9 @@ def seller_restore_pending_checkout(tx_id: int):
 @seller_required
 def seller_cancel_pending_transaction(tx_id: int):
     """Descarta pedido pendente (marca como cancelado); não altera estoque nem faturamento."""
-    blocked = _reject_if_tx_event_ops_closed(tx_id)
-    if blocked is not None:
-        return blocked
     try:
         cancel_pending_transaction_for_seller(tx_id, _current_seller_id())
-        flash("Pedido pendente descartado.", "error")
+        flash("Pedido pendente descartado.", "success")
     except ValueError as exc:
         flash(str(exc), "error")
     return redirect(url_for("seller_dashboard"))
@@ -1383,9 +1486,6 @@ def seller_cancel_pending_transaction(tx_id: int):
 @seller_required
 def seller_transaction_note(tx_id: int):
     """Vendedor grava observação impressa na nota do próprio pedido."""
-    blocked = _reject_if_tx_event_ops_closed(tx_id)
-    if blocked is not None:
-        return blocked
     note = request.form.get("receipt_note") or ""
     try:
         result = update_transaction_receipt_note(
@@ -1397,13 +1497,10 @@ def seller_transaction_note(tx_id: int):
         if result.get("receipt_note"):
             flash(f"Observação da nota do pedido {order_label} salva.", "success")
         else:
-            flash(f"Observação da nota do pedido {order_label} removida.", "warning")
+            flash(f"Observação da nota do pedido {order_label} removida.", "success")
     except ValueError as exc:
         flash(str(exc), "error")
-    return _redirect_back(
-        url_for("seller_dashboard"),
-        fragment=f"tx-{tx_id}",
-    )
+    return redirect(request.referrer or url_for("seller_dashboard"))
 
 
 def _seller_dashboard_transactions_view() -> tuple:
@@ -1873,8 +1970,6 @@ def api_cart_promo_quote():
     seller_ev = _get_seller_event()
     if seller_ev is None:
         return jsonify({"error": "Cotação disponível apenas para vendas em evento."}), 404
-    if not event_ops_open(seller_ev):
-        return jsonify({"error": EVENT_OPS_CLOSED_MSG}), 403
     payload = request.get_json(silent=True) or {}
     items = payload.get("items") or payload.get("itens") or []
     try:
@@ -1941,14 +2036,8 @@ def _parse_new_seller_post(form) -> tuple[dict[str, str], dict[str, str]]:
 
     if event_id <= 0:
         errors["event_id"] = "Selecione o evento ao qual este vendedor será associado."
-    else:
-        ev = get_event(event_id)
-        if ev is None:
-            errors["event_id"] = "Evento não encontrado."
-        elif not event_ops_open(ev):
-            errors["event_id"] = (
-                "Não é possível associar o vendedor a um evento com operações encerradas."
-            )
+    elif get_event(event_id) is None:
+        errors["event_id"] = "Evento não encontrado."
 
     if "username" not in errors and username and get_seller_by_username(username):
         errors["username"] = "Já existe um vendedor com este usuário."
@@ -1990,16 +2079,8 @@ def _parse_edit_seller_post(form, _seller_id: int) -> tuple[dict[str, str], dict
         eid = _parse_int(event_id_raw, 0)
         if eid <= 0:
             errors["event_id"] = "Selecione um evento válido ou «Sem evento»."
-        else:
-            ev = get_event(eid)
-            if ev is None:
-                errors["event_id"] = "Evento não encontrado."
-            else:
-                current = get_seller_admin_event_selection_id(_seller_id)
-                if int(current or 0) != eid and not event_ops_open(ev):
-                    errors["event_id"] = (
-                        "Não é possível associar o vendedor a um evento com operações encerradas."
-                    )
+        elif get_event(eid) is None:
+            errors["event_id"] = "Evento não encontrado."
 
     repop = {
         "name": "" if "name" in errors else name,
@@ -2253,9 +2334,6 @@ def admin_seller_confirm_item_delivery(seller_id: int, tx_id: int, item_id: int)
     if seller is None:
         flash("Vendedor não encontrado.", "error")
         return redirect(url_for("admin_sellers"))
-    blocked = _reject_if_tx_event_ops_closed(tx_id)
-    if blocked is not None:
-        return blocked
     try:
         result = confirm_item_delivery(
             tx_id,
@@ -2272,7 +2350,9 @@ def admin_seller_confirm_item_delivery(seller_id: int, tx_id: int, item_id: int)
         flash(msg, "success")
     except ValueError as exc:
         flash(str(exc), "error")
-    return _redirect_back(url_for("admin_seller_detail", seller_id=seller_id))
+    return redirect(
+        request.referrer or url_for("admin_seller_detail", seller_id=seller_id)
+    )
 
 
 @app.route(
@@ -2286,9 +2366,6 @@ def admin_seller_confirm_items_delivery(seller_id: int, tx_id: int):
     if seller is None:
         flash("Vendedor não encontrado.", "error")
         return redirect(url_for("admin_sellers"))
-    blocked = _reject_if_tx_event_ops_closed(tx_id)
-    if blocked is not None:
-        return blocked
     item_ids = request.form.getlist("item_ids")
     try:
         result = confirm_items_delivery(
@@ -2310,7 +2387,9 @@ def admin_seller_confirm_items_delivery(seller_id: int, tx_id: int):
             flash(msg, "success")
     except ValueError as exc:
         flash(str(exc), "error")
-    return _redirect_back(url_for("admin_seller_detail", seller_id=seller_id))
+    return redirect(
+        request.referrer or url_for("admin_seller_detail", seller_id=seller_id)
+    )
 
 
 @app.route(
@@ -2324,15 +2403,14 @@ def admin_seller_confirm_transaction_handover(seller_id: int, tx_id: int):
     if seller is None:
         flash("Vendedor não encontrado.", "error")
         return redirect(url_for("admin_sellers"))
-    blocked = _reject_if_tx_event_ops_closed(tx_id)
-    if blocked is not None:
-        return blocked
     try:
         confirm_transaction_handover(tx_id, seller_id=seller_id)
         flash("Pedido marcado como entregue.", "success")
     except ValueError as exc:
         flash(str(exc), "error")
-    return _redirect_back(url_for("admin_seller_detail", seller_id=seller_id))
+    return redirect(
+        request.referrer or url_for("admin_seller_detail", seller_id=seller_id)
+    )
 
 
 @app.route(
@@ -2345,9 +2423,6 @@ def admin_seller_transaction_note(seller_id: int, tx_id: int):
     if seller is None:
         flash("Vendedor não encontrado.", "error")
         return redirect(url_for("admin_sellers"))
-    blocked = _reject_if_tx_event_ops_closed(tx_id)
-    if blocked is not None:
-        return blocked
     note = request.form.get("receipt_note") or ""
     try:
         result = update_transaction_receipt_note(
@@ -2359,12 +2434,11 @@ def admin_seller_transaction_note(seller_id: int, tx_id: int):
         if result.get("receipt_note"):
             flash(f"Observação da nota do pedido {order_label} salva.", "success")
         else:
-            flash(f"Observação da nota do pedido {order_label} removida.", "warning")
+            flash(f"Observação da nota do pedido {order_label} removida.", "success")
     except ValueError as exc:
         flash(str(exc), "error")
-    return _redirect_back(
-        url_for("admin_seller_detail", seller_id=seller_id),
-        fragment=f"tx-{tx_id}",
+    return redirect(
+        request.referrer or url_for("admin_seller_detail", seller_id=seller_id)
     )
 
 
@@ -2380,7 +2454,7 @@ def admin_seller_delete(seller_id: int):
         flash(
             f"Cadastro de {deleted['name']} excluído. "
             "Vendas antigas permanecem no histórico, sem vínculo a este vendedor.",
-            "warning",
+            "success",
         )
     except ValueError as exc:
         flash(str(exc), "error")
@@ -2408,42 +2482,6 @@ def _parse_fin_filters():
     except ValueError:
         ev_id = None
     return ev_id, date_from or None, date_to or None
-
-
-def _parse_event_revenue_goal(raw) -> float | None:
-    """Interpreta meta de faturamento em formato BR (1.250,50) ou ponto decimal. Vazio = sem meta."""
-    s = (raw or "").strip()
-    if not s:
-        return None
-    s = s.replace("R$", "").replace(" ", "")
-    if "," in s and "." in s:
-        s = s.replace(".", "").replace(",", ".")
-    elif "," in s:
-        s = s.replace(",", ".")
-    elif s.count(".") > 1:
-        s = s.replace(".", "")
-    try:
-        value = round(float(s), 2)
-    except (TypeError, ValueError):
-        raise ValueError("Informe um valor numérico válido para a meta de faturamento.")
-    if value < 0:
-        raise ValueError("A meta de faturamento não pode ser negativa.")
-    return value
-
-
-def _parse_event_volume_goal(raw) -> int | None:
-    """Interpreta meta de volume em unidades. Vazio = sem meta."""
-    s = (raw or "").strip()
-    if not s:
-        return None
-    s = s.replace(".", "").replace(" ", "")
-    try:
-        value = int(float(s.replace(",", ".")))
-    except (TypeError, ValueError):
-        raise ValueError("Informe um número inteiro válido para a meta de volume.")
-    if value < 0:
-        raise ValueError("A meta de volume não pode ser negativa.")
-    return value
 
 
 @app.route("/admin/financeiro")
@@ -2492,50 +2530,6 @@ def admin_financeiro_pdf():
         date_to=date_to or "",
         now=datetime.now(),
     )
-
-
-@app.route("/admin/eventos/<int:event_id>/metas", methods=["POST"])
-@admin_required
-@require_event_ops_open
-def admin_event_goals(event_id: int):
-    """Grava metas de faturamento e volume do evento (seção Financeiro)."""
-    event = _event_or_404(event_id)
-    fallback = url_for("admin_financeiro", evento=event_id)
-    if event is None:
-        return redirect(url_for("admin_events"))
-    try:
-        revenue_goal = _parse_event_revenue_goal(request.form.get("revenue_goal"))
-        volume_goal = _parse_event_volume_goal(request.form.get("volume_goal"))
-    except ValueError as exc:
-        flash(str(exc), "error")
-        return _redirect_back( fallback)
-    if not update_event_goals(event_id, revenue_goal=revenue_goal, volume_goal=volume_goal):
-        flash("Não foi possível salvar as metas deste evento.", "error")
-        return _redirect_back( fallback)
-    parts = []
-    if revenue_goal:
-        brl = (
-            f"R$ {revenue_goal:,.2f}"
-            .replace(",", "X").replace(".", ",").replace("X", ".")
-        )
-        parts.append(f"faturamento {brl}")
-    if volume_goal:
-        parts.append(f"volume {volume_goal} un.")
-    if parts:
-        flash(f"Metas do evento atualizadas: {', '.join(parts)}.", "success")
-    else:
-        flash("Metas do evento removidas.", "warning")
-    ret_from = (request.form.get("ret_de") or "").strip()
-    ret_to = (request.form.get("ret_ate") or "").strip()
-    kw = {"evento": event_id}
-    if ret_from:
-        kw["de"] = ret_from
-    if ret_to:
-        kw["ate"] = ret_to
-    next_page = (request.form.get("next") or "").strip()
-    if next_page == "dashboard":
-        return redirect(url_for("admin_event_detail", event_id=event_id))
-    return redirect(url_for("admin_financeiro", **kw))
 
 
 @app.route("/admin/reiniciar-sistema", methods=["POST"])
@@ -2828,145 +2822,9 @@ def admin_products():
         filters=filters,
         pagination=pagination,
         allowed_per_page=ALLOWED_ADMIN_STOCK_PER_PAGE,
-        events_for_modal=[e for e in list_events(include_archived=False) if event_ops_open(e)],
+        events_for_modal=list_events(include_archived=False),
         **_admin_shell_context(active_section="produtos"),
     )
-
-
-_ADMIN_MOVEMENT_TYPE_FILTERS = frozenset({"todos", "entrada", "saida", "venda"})
-
-
-def _admin_movements_list_filters(*, event_id: int) -> dict:
-    """Lê GET da listagem de movimentações de um evento."""
-    q = (request.args.get("q") or "").strip()
-    tipo_raw = (request.args.get("tipo") or "todos").strip().lower()
-    tipo = tipo_raw if tipo_raw in _ADMIN_MOVEMENT_TYPE_FILTERS else "todos"
-    pedido = (request.args.get("pedido") or "").strip()
-    seller_raw = _parse_int(request.args.get("vendedor"), 0)
-    event_seller_ids = {int(s["id"]) for s in list_event_sellers(event_id)}
-    seller_id = seller_raw if seller_raw > 0 and seller_raw in event_seller_ids else 0
-    date_from = _parse_tx_filter_date_arg(request.args.get("de"))
-    date_to = _parse_tx_filter_date_arg(request.args.get("ate"))
-    if date_from and date_to and date_from > date_to:
-        date_from, date_to = date_to, date_from
-    per_page = _parse_int(request.args.get("per_page"), DEFAULT_ADMIN_MOVEMENTS_PER_PAGE)
-    if per_page not in ALLOWED_ADMIN_STOCK_PER_PAGE:
-        per_page = DEFAULT_ADMIN_MOVEMENTS_PER_PAGE
-    page = max(1, _parse_int(request.args.get("page"), 1))
-    return {
-        "q": q,
-        "tipo": tipo,
-        "pedido": pedido,
-        "vendedor": seller_id,
-        "de": date_from or "",
-        "ate": date_to or "",
-        "per_page": per_page,
-        "page": page,
-    }
-
-
-def _admin_movements_query_kwargs(filters: dict, *, event_id: int) -> dict:
-    tipo = filters["tipo"]
-    seller_id = filters["vendedor"] or None
-    if seller_id and tipo not in ("todos", "venda"):
-        seller_id = None
-    return {
-        "product_search": filters["q"] or None,
-        "movement_type": None if tipo == "todos" else tipo,
-        "reference": filters["pedido"] or None,
-        "event_id": int(event_id),
-        "seller_id": seller_id,
-        "date_from": filters["de"] or None,
-        "date_to": filters["ate"] or None,
-    }
-
-
-def _admin_movements_page_data(event_id: int):
-    filters = _admin_movements_list_filters(event_id=event_id)
-    kwargs = _admin_movements_query_kwargs(filters, event_id=event_id)
-    total = count_stock_movements(**kwargs)
-    per_page = filters["per_page"]
-    total_pages = max(1, (total + per_page - 1) // per_page) if total > 0 else 1
-    page = min(filters["page"], total_pages)
-    filters["page"] = page
-    offset = (page - 1) * per_page
-    movements = list_stock_movements(**kwargs, limit=per_page, offset=offset)
-    showing_from = offset + 1 if total > 0 else 0
-    showing_to = min(offset + len(movements), total) if total > 0 else 0
-    pagination = {
-        "page": page,
-        "per_page": per_page,
-        "total": total,
-        "total_pages": total_pages,
-        "has_prev": page > 1,
-        "has_next": page < total_pages,
-        "showing_from": showing_from,
-        "showing_to": showing_to,
-    }
-    return filters, movements, pagination
-
-
-def _admin_movements_has_active_filters(filters: dict) -> bool:
-    return bool(
-        filters.get("q")
-        or filters.get("tipo") not in (None, "", "todos")
-        or filters.get("pedido")
-        or int(filters.get("vendedor") or 0) > 0
-        or filters.get("de")
-        or filters.get("ate")
-    )
-
-
-@app.route("/admin/movimentacoes", endpoint="admin_movements")
-@admin_required
-def admin_movements_legacy_redirect():
-    """A listagem passou a ser por evento; atalho antigo cai na lista de eventos."""
-    return redirect(url_for("admin_events"), code=302)
-
-
-@app.route("/admin/api/movimentacoes", endpoint="admin_api_movements")
-@admin_required
-def admin_api_movements_legacy():
-    return jsonify({"error": "A listagem de movimentações agora é por evento."}), 404
-
-
-@app.route("/admin/eventos/<int:event_id>/movimentacoes", endpoint="admin_event_movements")
-@admin_required
-def admin_event_movements(event_id: int):
-    """Histórico de estoque do evento: vendas, entradas e saídas de todos os produtos."""
-    event = _event_or_404(event_id)
-    if event is None:
-        return redirect(url_for("admin_events"))
-    filters, movements, pagination = _admin_movements_page_data(event_id)
-    live = pagination["page"] == 1
-    return render_template(
-        "admin/movements.html",
-        event=event,
-        movements=movements,
-        filters=filters,
-        pagination=pagination,
-        allowed_per_page=ALLOWED_ADMIN_STOCK_PER_PAGE,
-        movement_filter_sellers=list_event_sellers(event_id),
-        movements_live=live,
-        filters_active=_admin_movements_has_active_filters(filters),
-        active_event_tab="movimentacoes",
-        **_admin_shell_context(active_section="eventos"),
-    )
-
-
-@app.route("/admin/api/eventos/<int:event_id>/movimentacoes", endpoint="admin_api_event_movements")
-@admin_required
-def admin_api_event_movements(event_id: int):
-    """Polling da listagem de movimentações do evento (mesmos filtros da página)."""
-    if _event_or_404(event_id) is None:
-        return jsonify({"error": "Evento não encontrado."}), 404
-    filters, movements, pagination = _admin_movements_page_data(event_id)
-    return jsonify({
-        "ok": True,
-        "filters": filters,
-        "pagination": pagination,
-        "movements": [_admin_movement_list_payload(m, event_id=event_id) for m in movements],
-    })
 
 
 @app.route("/admin/produtos/<int:product_id>/adicionar-ao-evento", methods=["POST"])
@@ -2981,9 +2839,6 @@ def admin_product_add_to_event(product_id: int):
     event = get_event(event_id)
     if event is None:
         return jsonify({"error": "Evento não encontrado."}), 400
-    blocked = _reject_if_event_ops_closed(event)
-    if blocked is not None:
-        return blocked
     initial_stock = max(0, _parse_int(request.form.get("initial_stock") or "", 0))
     min_stock = max(0, _parse_int(request.form.get("min_stock") or "", DEFAULT_MIN_STOCK))
     link_note = (request.form.get("link_note") or "").strip()
@@ -3005,99 +2860,6 @@ def admin_product_add_to_event(product_id: int):
         "ok": True,
         "message": f"\u00ab{product['name']}\u00bb adicionado ao evento \u00ab{event['name']}\u00bb.",
     })
-
-
-@app.route("/admin/produtos/adicionar-ao-evento", methods=["POST"])
-@admin_required
-def admin_products_bulk_add_to_event():
-    """Adiciona vários produtos da biblioteca a um evento, cada um com a própria quantidade."""
-    event_id = _parse_int(request.form.get("event_id") or "", 0)
-    if event_id <= 0:
-        return jsonify({"error": "Selecione um evento."}), 400
-    event = get_event(event_id)
-    if event is None:
-        return jsonify({"error": "Evento não encontrado."}), 400
-    blocked = _reject_if_event_ops_closed(event)
-    if blocked is not None:
-        return blocked
-    shared_raw = request.form.get("initial_stock")
-    shared_qty = max(0, _parse_int(shared_raw, 0)) if shared_raw not in (None, "") else None
-    min_stock = max(0, _parse_int(request.form.get("min_stock") or "", DEFAULT_MIN_STOCK))
-    link_note = (request.form.get("link_note") or "").strip()
-    if not link_note:
-        return jsonify({"error": "Informe Motivo / Ref."}), 400
-
-    seen: set[int] = set()
-    product_ids: list[int] = []
-    for raw in request.form.getlist("product_ids"):
-        pid = _parse_int(raw, 0)
-        if pid <= 0 or pid in seen:
-            continue
-        seen.add(pid)
-        product_ids.append(pid)
-    if not product_ids:
-        return jsonify({"error": "Selecione ao menos um produto."}), 400
-
-    admin_user = _current_admin_user()
-    added_ids: list[int] = []
-    errors: list[str] = []
-    for product_id in product_ids:
-        product = get_product(product_id)
-        if product is None:
-            errors.append(f"#{product_id}: produto não encontrado.")
-            continue
-        label = (product.get("name") or f"#{product_id}").strip()
-        raw_qty = request.form.get(f"qty_{product_id}")
-        if raw_qty not in (None, ""):
-            qty = _parse_int(raw_qty, -1)
-        elif shared_qty is not None:
-            qty = shared_qty
-        else:
-            qty = -1
-        if qty <= 0:
-            errors.append(f"«{label}»: informe uma quantidade maior que zero.")
-            continue
-        try:
-            add_product_to_event(
-                event_id,
-                product_id,
-                qty,
-                min_stock,
-                link_audit_reason=link_note,
-                link_audit_reference=None,
-                created_by=admin_user,
-            )
-            added_ids.append(product_id)
-        except ValueError as exc:
-            errors.append(f"«{label}»: {exc}")
-
-    ok_count = len(added_ids)
-    event_name = event.get("name") or f"#{event_id}"
-    if ok_count and not errors:
-        return jsonify({
-            "ok": True,
-            "message": f"{ok_count} produto(s) adicionado(s) ao evento «{event_name}».",
-            "added": ok_count,
-            "added_ids": added_ids,
-        })
-    if ok_count:
-        short = errors[:4]
-        tail = f" (+{len(errors) - 4})" if len(errors) > 4 else ""
-        return jsonify({
-            "ok": True,
-            "message": (
-                f"{ok_count} adicionado(s) a «{event_name}». "
-                f"Falha em {len(errors)}: " + "; ".join(short) + tail
-            ),
-            "added": ok_count,
-            "added_ids": added_ids,
-            "errors": errors,
-        })
-    return jsonify({
-        "error": errors[0] if len(errors) == 1 else (
-            "Nenhum produto adicionado. " + "; ".join(errors[:5])
-        ),
-    }), 409
 
 
 @app.route("/admin/estoque/<int:product_id>")
@@ -3209,92 +2971,17 @@ def _movement_payload(movement: dict) -> dict:
         delta_kind = "negative"
     else:
         delta_kind = "neutral"
-    created_by_display = _display_created_by(movement.get("created_by"))
-    if not created_by_display:
-        created_by_display = str(movement.get("seller_name") or "").strip()
-    try:
-        pid_int = int(movement.get("product_id") or 0)
-    except (TypeError, ValueError):
-        pid_int = 0
-    product_url = url_for("admin_product_detail", product_id=pid_int) if pid_int > 0 else ""
-    tx_url = ""
-    ref = str(movement.get("reference") or "").strip()
-    try:
-        eid_int = int(movement.get("event_id") or 0)
-    except (TypeError, ValueError):
-        eid_int = 0
-    try:
-        tid_int = int(movement.get("transaction_id") or 0)
-    except (TypeError, ValueError):
-        tid_int = 0
-    if eid_int > 0 and ref and tid_int > 0:
-        tx_url = (
-            url_for("admin_event_transactions", event_id=eid_int, pedido=ref)
-            + f"#tx-{tid_int}"
-        )
     return {
         **movement,
         "event_badge_bg": ev_bg,
         "event_badge_fg": ev_fg,
-        "created_by_display": created_by_display,
+        "created_by_display": _display_created_by(movement.get("created_by")),
         "created_at_display": datahora_filter(movement.get("created_at")),
         "movement_label": mov_label_filter(movement_type),
         "delta_display": signed_filter(movement.get("delta")),
         "delta_kind": delta_kind,
-        "product_url": product_url,
-        "tx_url": tx_url,
+        "product_url": url_for("admin_product_detail", product_id=movement["product_id"]),
     }
-
-
-_ADMIN_MOVEMENT_LIST_KEYS = (
-    "id",
-    "product_id",
-    "product_name",
-    "product_variant",
-    "product_sku",
-    "movement_type",
-    "delta",
-    "balance_after",
-    "reason",
-    "reference",
-    "transaction_id",
-    "event_id",
-    "event_name",
-    "event_badge_color",
-    "created_by",
-    "created_at",
-    "seller_id",
-    "seller_name",
-    "order_number",
-)
-
-
-def _admin_movement_list_payload(movement: dict, *, event_id: int | None = None) -> dict:
-    """Payload da listagem do evento: sem dados de cliente da transação."""
-    slim = {key: movement.get(key) for key in _ADMIN_MOVEMENT_LIST_KEYS}
-    payload = _movement_payload(slim)
-    try:
-        pid_int = int(movement.get("product_id") or 0)
-    except (TypeError, ValueError):
-        pid_int = 0
-    if event_id and pid_int > 0:
-        payload["product_url"] = url_for(
-            "admin_event_stock_product",
-            event_id=int(event_id),
-            product_id=pid_int,
-        )
-    if event_id:
-        ref = str(movement.get("reference") or "").strip()
-        try:
-            tid_int = int(movement.get("transaction_id") or 0)
-        except (TypeError, ValueError):
-            tid_int = 0
-        if ref and tid_int > 0:
-            payload["tx_url"] = (
-                url_for("admin_event_transactions", event_id=int(event_id), pedido=ref)
-                + f"#tx-{tid_int}"
-            )
-    return payload
 
 
 def _products_library_detail_payload(product_id: int, *, limit: int = 100) -> dict:
@@ -3380,8 +3067,8 @@ def admin_product_toggle_active(product_id: int):
     active = request.form.get("active") == "1"
     if set_product_active(product_id, active):
         message = (
-            "Produto ativado e disponível no Go Sell." if active
-            else "Produto desativado — não aparecerá no Go Sell."
+            "Produto ativado e disponível no totem." if active
+            else "Produto desativado — não aparecerá no totem."
         )
         if _wants_json_response():
             return _json_products_library_success(message, product_id)
@@ -3390,7 +3077,7 @@ def admin_product_toggle_active(product_id: int):
         if _wants_json_response():
             return jsonify({"error": "Não foi possível atualizar o produto."}), 400
         flash("Não foi possível atualizar o produto.", "error")
-    return _redirect_back( url_for("admin_product_detail", product_id=product_id))
+    return redirect(request.referrer or url_for("admin_product_detail", product_id=product_id))
 
 
 def _admin_api_products_list_payload():
@@ -3626,7 +3313,7 @@ def admin_event_sales_export_xlsx(event_id: int):
     seller_raw = _parse_int(request.args.get("vendedor"), 0)
     seller_filter = seller_raw if seller_raw > 0 and seller_raw in event_seller_ids else None
     if seller_raw > 0 and seller_filter is None:
-        flash(f"Vendedor inválido para este {_op_noun(event, lower=True)}.", "error")
+        flash("Vendedor inválido para este evento.", "error")
         return redirect(url_for("admin_event_transactions", event_id=event_id))
     seller_name = ""
     if seller_filter is not None:
@@ -5990,6 +5677,504 @@ def mov_label_filter(value):
         "ajuste": "Correção",
         "inicial": "Entrada",
     }.get(value, value or "-")
+
+
+@app.template_filter("periodicidade")
+def periodicidade_filter(value):
+    """Intervalo entre compras em texto (``None`` = cliente de compra única).
+
+    Vendas de evento acontecem em horas, não em meses: abaixo de um dia o
+    número em dias ("0,13 dia") não comunica nada, então cai para horas.
+    """
+    if value is None:
+        return "Compra única"
+    try:
+        days = float(value)
+    except (TypeError, ValueError):
+        return "—"
+    if days < 0:
+        return "—"
+    if days < 1:
+        hours = days * 24
+        if hours < 1:
+            minutes = max(1, int(round(hours * 60)))
+            return f"{minutes} min"
+        return f"{hours:.1f}h".replace(".", ",")
+    if days < 60:
+        n = int(round(days))
+        return "1 dia" if n == 1 else f"{n} dias"
+    months = days / 30.0
+    return f"{months:.1f} meses".replace(".", ",")
+
+
+@app.template_filter("desdeontem")
+def desdeontem_filter(value):
+    """Tempo desde a última compra, em linguagem de painel."""
+    if value is None:
+        return "—"
+    try:
+        days = float(value)
+    except (TypeError, ValueError):
+        return "—"
+    if days < 1:
+        return "hoje"
+    if days < 2:
+        return "ontem"
+    if days < 60:
+        return f"{int(days)} dias"
+    months = days / 30.0
+    return f"{months:.0f} meses"
+
+
+# ---------------------------------------------------------------------------
+# Painel administrativo — Clientes
+# ---------------------------------------------------------------------------
+
+ALLOWED_ADMIN_CUSTOMERS_PER_PAGE = (10, 25, 50, 100)
+DEFAULT_ADMIN_CUSTOMERS_PER_PAGE = 25
+
+# Rótulos das ordenações expostas na tela (chaves validadas por CUSTOMER_SORTS).
+ADMIN_CUSTOMER_SORT_LABELS = (
+    ("revenue", "Maior faturamento"),
+    ("orders", "Mais pedidos"),
+    ("ticket", "Maior ticket médio"),
+    ("frequency", "Compra mais frequente"),
+    ("recent", "Comprou mais recentemente"),
+    ("oldest", "Cliente mais antigo"),
+    ("name", "Nome (A–Z)"),
+)
+
+
+@app.route("/admin/clientes")
+@admin_required
+def admin_customers():
+    """Carteira de clientes: quem comprou, quanto e com que frequência."""
+    q = (request.args.get("q") or "").strip()
+    sort = (request.args.get("sort") or DEFAULT_CUSTOMER_SORT).strip().lower()
+    if sort not in CUSTOMER_SORTS:
+        sort = DEFAULT_CUSTOMER_SORT
+
+    event_id = _parse_int(request.args.get("evento"), 0)
+    event = get_event(event_id) if event_id > 0 else None
+    if event is None:
+        event_id = 0
+
+    per_page = _parse_int(
+        request.args.get("per_page"), DEFAULT_ADMIN_CUSTOMERS_PER_PAGE
+    )
+    if per_page not in ALLOWED_ADMIN_CUSTOMERS_PER_PAGE:
+        per_page = DEFAULT_ADMIN_CUSTOMERS_PER_PAGE
+    page = max(1, _parse_int(request.args.get("page"), 1))
+
+    def fetch(target_page: int):
+        return list_customers(
+            query=q or None,
+            event_id=event_id or None,
+            sort=sort,
+            limit=per_page,
+            offset=(target_page - 1) * per_page,
+        )
+
+    result = fetch(page)
+    total = int(result["total"])
+    total_pages = max(1, (total + per_page - 1) // per_page) if total > 0 else 1
+    if page > total_pages:
+        page = total_pages
+        result = fetch(page)
+
+    offset = (page - 1) * per_page
+    customers = result["rows"]
+    pagination = {
+        "page": page,
+        "per_page": per_page,
+        "total": total,
+        "total_pages": total_pages,
+        "has_prev": page > 1,
+        "has_next": page < total_pages,
+        "showing_from": offset + 1 if total > 0 else 0,
+        "showing_to": min(offset + len(customers), total) if total > 0 else 0,
+    }
+    return render_template(
+        "admin/customers.html",
+        customers=customers,
+        summary=result["summary"],
+        pagination=pagination,
+        filters={"q": q, "sort": sort, "evento": event_id, "per_page": per_page},
+        sort_options=ADMIN_CUSTOMER_SORT_LABELS,
+        scope_event=event,
+        allowed_per_page=ALLOWED_ADMIN_CUSTOMERS_PER_PAGE,
+        **_admin_shell_context(active_section="clientes"),
+    )
+
+
+@app.route("/admin/clientes/<kind>/<ident>")
+@admin_required
+def admin_customer_detail(kind: str, ident: str):
+    """Perfil analítico de um cliente (histórico, periodicidade, top produtos)."""
+    customer = get_customer_profile(kind, ident)
+    if customer is None:
+        flash("Cliente não encontrado.", "error")
+        return redirect(url_for("admin_customers"))
+    return render_template(
+        "admin/customer_detail.html",
+        customer=customer,
+        **_admin_shell_context(active_section="clientes"),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Rotas restauradas: os templates as chamam por url_for (ver HEAD)
+# ---------------------------------------------------------------------------
+
+def _parse_event_revenue_goal(raw) -> float | None:
+    """Interpreta meta de faturamento em formato BR (1.250,50) ou ponto decimal. Vazio = sem meta."""
+    s = (raw or "").strip()
+    if not s:
+        return None
+    s = s.replace("R$", "").replace(" ", "")
+    if "," in s and "." in s:
+        s = s.replace(".", "").replace(",", ".")
+    elif "," in s:
+        s = s.replace(",", ".")
+    elif s.count(".") > 1:
+        s = s.replace(".", "")
+    try:
+        value = round(float(s), 2)
+    except (TypeError, ValueError):
+        raise ValueError("Informe um valor numérico válido para a meta de faturamento.")
+    if value < 0:
+        raise ValueError("A meta de faturamento não pode ser negativa.")
+    return value
+
+
+def _parse_event_volume_goal(raw) -> int | None:
+    """Interpreta meta de volume em unidades. Vazio = sem meta."""
+    s = (raw or "").strip()
+    if not s:
+        return None
+    s = s.replace(".", "").replace(" ", "")
+    try:
+        value = int(float(s.replace(",", ".")))
+    except (TypeError, ValueError):
+        raise ValueError("Informe um número inteiro válido para a meta de volume.")
+    if value < 0:
+        raise ValueError("A meta de volume não pode ser negativa.")
+    return value
+
+
+@app.route("/admin/eventos/<int:event_id>/metas", methods=["POST"])
+@admin_required
+@require_event_ops_open
+def admin_event_goals(event_id: int):
+    """Grava metas de faturamento e volume do evento (seção Financeiro)."""
+    event = _event_or_404(event_id)
+    fallback = url_for("admin_financeiro", evento=event_id)
+    if event is None:
+        return redirect(url_for("admin_events"))
+    try:
+        revenue_goal = _parse_event_revenue_goal(request.form.get("revenue_goal"))
+        volume_goal = _parse_event_volume_goal(request.form.get("volume_goal"))
+    except ValueError as exc:
+        flash(str(exc), "error")
+        return _redirect_back( fallback)
+    if not update_event_goals(event_id, revenue_goal=revenue_goal, volume_goal=volume_goal):
+        flash("Não foi possível salvar as metas deste evento.", "error")
+        return _redirect_back( fallback)
+    parts = []
+    if revenue_goal:
+        brl = (
+            f"R$ {revenue_goal:,.2f}"
+            .replace(",", "X").replace(".", ",").replace("X", ".")
+        )
+        parts.append(f"faturamento {brl}")
+    if volume_goal:
+        parts.append(f"volume {volume_goal} un.")
+    if parts:
+        flash(f"Metas do evento atualizadas: {', '.join(parts)}.", "success")
+    else:
+        flash("Metas do evento removidas.", "warning")
+    ret_from = (request.form.get("ret_de") or "").strip()
+    ret_to = (request.form.get("ret_ate") or "").strip()
+    kw = {"evento": event_id}
+    if ret_from:
+        kw["de"] = ret_from
+    if ret_to:
+        kw["ate"] = ret_to
+    next_page = (request.form.get("next") or "").strip()
+    if next_page == "dashboard":
+        return redirect(url_for("admin_event_detail", event_id=event_id))
+    return redirect(url_for("admin_financeiro", **kw))
+
+
+_ADMIN_MOVEMENT_TYPE_FILTERS = frozenset({"todos", "entrada", "saida", "venda"})
+
+
+def _admin_movements_list_filters(*, event_id: int) -> dict:
+    """Lê GET da listagem de movimentações de um evento."""
+    q = (request.args.get("q") or "").strip()
+    tipo_raw = (request.args.get("tipo") or "todos").strip().lower()
+    tipo = tipo_raw if tipo_raw in _ADMIN_MOVEMENT_TYPE_FILTERS else "todos"
+    pedido = (request.args.get("pedido") or "").strip()
+    seller_raw = _parse_int(request.args.get("vendedor"), 0)
+    event_seller_ids = {int(s["id"]) for s in list_event_sellers(event_id)}
+    seller_id = seller_raw if seller_raw > 0 and seller_raw in event_seller_ids else 0
+    date_from = _parse_tx_filter_date_arg(request.args.get("de"))
+    date_to = _parse_tx_filter_date_arg(request.args.get("ate"))
+    if date_from and date_to and date_from > date_to:
+        date_from, date_to = date_to, date_from
+    per_page = _parse_int(request.args.get("per_page"), DEFAULT_ADMIN_MOVEMENTS_PER_PAGE)
+    if per_page not in ALLOWED_ADMIN_STOCK_PER_PAGE:
+        per_page = DEFAULT_ADMIN_MOVEMENTS_PER_PAGE
+    page = max(1, _parse_int(request.args.get("page"), 1))
+    return {
+        "q": q,
+        "tipo": tipo,
+        "pedido": pedido,
+        "vendedor": seller_id,
+        "de": date_from or "",
+        "ate": date_to or "",
+        "per_page": per_page,
+        "page": page,
+    }
+
+
+def _admin_movements_query_kwargs(filters: dict, *, event_id: int) -> dict:
+    tipo = filters["tipo"]
+    seller_id = filters["vendedor"] or None
+    if seller_id and tipo not in ("todos", "venda"):
+        seller_id = None
+    return {
+        "product_search": filters["q"] or None,
+        "movement_type": None if tipo == "todos" else tipo,
+        "reference": filters["pedido"] or None,
+        "event_id": int(event_id),
+        "seller_id": seller_id,
+        "date_from": filters["de"] or None,
+        "date_to": filters["ate"] or None,
+    }
+
+
+def _admin_movements_page_data(event_id: int):
+    filters = _admin_movements_list_filters(event_id=event_id)
+    kwargs = _admin_movements_query_kwargs(filters, event_id=event_id)
+    total = count_stock_movements(**kwargs)
+    per_page = filters["per_page"]
+    total_pages = max(1, (total + per_page - 1) // per_page) if total > 0 else 1
+    page = min(filters["page"], total_pages)
+    filters["page"] = page
+    offset = (page - 1) * per_page
+    movements = list_stock_movements(**kwargs, limit=per_page, offset=offset)
+    showing_from = offset + 1 if total > 0 else 0
+    showing_to = min(offset + len(movements), total) if total > 0 else 0
+    pagination = {
+        "page": page,
+        "per_page": per_page,
+        "total": total,
+        "total_pages": total_pages,
+        "has_prev": page > 1,
+        "has_next": page < total_pages,
+        "showing_from": showing_from,
+        "showing_to": showing_to,
+    }
+    return filters, movements, pagination
+
+
+def _admin_movements_has_active_filters(filters: dict) -> bool:
+    return bool(
+        filters.get("q")
+        or filters.get("tipo") not in (None, "", "todos")
+        or filters.get("pedido")
+        or int(filters.get("vendedor") or 0) > 0
+        or filters.get("de")
+        or filters.get("ate")
+    )
+
+
+@app.route("/admin/eventos/<int:event_id>/movimentacoes", endpoint="admin_event_movements")
+@admin_required
+def admin_event_movements(event_id: int):
+    """Histórico de estoque do evento: vendas, entradas e saídas de todos os produtos."""
+    event = _event_or_404(event_id)
+    if event is None:
+        return redirect(url_for("admin_events"))
+    filters, movements, pagination = _admin_movements_page_data(event_id)
+    live = pagination["page"] == 1
+    return render_template(
+        "admin/movements.html",
+        event=event,
+        movements=movements,
+        filters=filters,
+        pagination=pagination,
+        allowed_per_page=ALLOWED_ADMIN_STOCK_PER_PAGE,
+        movement_filter_sellers=list_event_sellers(event_id),
+        movements_live=live,
+        filters_active=_admin_movements_has_active_filters(filters),
+        active_event_tab="movimentacoes",
+        **_admin_shell_context(active_section="eventos"),
+    )
+
+
+@app.route("/admin/produtos/adicionar-ao-evento", methods=["POST"])
+@admin_required
+def admin_products_bulk_add_to_event():
+    """Adiciona vários produtos da biblioteca a um evento, cada um com a própria quantidade."""
+    event_id = _parse_int(request.form.get("event_id") or "", 0)
+    if event_id <= 0:
+        return jsonify({"error": "Selecione um evento."}), 400
+    event = get_event(event_id)
+    if event is None:
+        return jsonify({"error": "Evento não encontrado."}), 400
+    blocked = _reject_if_event_ops_closed(event)
+    if blocked is not None:
+        return blocked
+    shared_raw = request.form.get("initial_stock")
+    shared_qty = max(0, _parse_int(shared_raw, 0)) if shared_raw not in (None, "") else None
+    min_stock = max(0, _parse_int(request.form.get("min_stock") or "", DEFAULT_MIN_STOCK))
+    link_note = (request.form.get("link_note") or "").strip()
+    if not link_note:
+        return jsonify({"error": "Informe Motivo / Ref."}), 400
+
+    seen: set[int] = set()
+    product_ids: list[int] = []
+    for raw in request.form.getlist("product_ids"):
+        pid = _parse_int(raw, 0)
+        if pid <= 0 or pid in seen:
+            continue
+        seen.add(pid)
+        product_ids.append(pid)
+    if not product_ids:
+        return jsonify({"error": "Selecione ao menos um produto."}), 400
+
+    admin_user = _current_admin_user()
+    added_ids: list[int] = []
+    errors: list[str] = []
+    for product_id in product_ids:
+        product = get_product(product_id)
+        if product is None:
+            errors.append(f"#{product_id}: produto não encontrado.")
+            continue
+        label = (product.get("name") or f"#{product_id}").strip()
+        raw_qty = request.form.get(f"qty_{product_id}")
+        if raw_qty not in (None, ""):
+            qty = _parse_int(raw_qty, -1)
+        elif shared_qty is not None:
+            qty = shared_qty
+        else:
+            qty = -1
+        if qty <= 0:
+            errors.append(f"«{label}»: informe uma quantidade maior que zero.")
+            continue
+        try:
+            add_product_to_event(
+                event_id,
+                product_id,
+                qty,
+                min_stock,
+                link_audit_reason=link_note,
+                link_audit_reference=None,
+                created_by=admin_user,
+            )
+            added_ids.append(product_id)
+        except ValueError as exc:
+            errors.append(f"«{label}»: {exc}")
+
+    ok_count = len(added_ids)
+    event_name = event.get("name") or f"#{event_id}"
+    if ok_count and not errors:
+        return jsonify({
+            "ok": True,
+            "message": f"{ok_count} produto(s) adicionado(s) ao evento «{event_name}».",
+            "added": ok_count,
+            "added_ids": added_ids,
+        })
+    if ok_count:
+        short = errors[:4]
+        tail = f" (+{len(errors) - 4})" if len(errors) > 4 else ""
+        return jsonify({
+            "ok": True,
+            "message": (
+                f"{ok_count} adicionado(s) a «{event_name}». "
+                f"Falha em {len(errors)}: " + "; ".join(short) + tail
+            ),
+            "added": ok_count,
+            "added_ids": added_ids,
+            "errors": errors,
+        })
+    return jsonify({
+        "error": errors[0] if len(errors) == 1 else (
+            "Nenhum produto adicionado. " + "; ".join(errors[:5])
+        ),
+    }), 409
+
+
+# ---------------------------------------------------------------------------
+# Rotas restauradas: os templates as chamam por url_for (ver HEAD)
+# ---------------------------------------------------------------------------
+
+@app.route("/admin/api/eventos/<int:event_id>/movimentacoes", endpoint="admin_api_event_movements")
+@admin_required
+def admin_api_event_movements(event_id: int):
+    """Polling da listagem de movimentações do evento (mesmos filtros da página)."""
+    if _event_or_404(event_id) is None:
+        return jsonify({"error": "Evento não encontrado."}), 404
+    filters, movements, pagination = _admin_movements_page_data(event_id)
+    return jsonify({
+        "ok": True,
+        "filters": filters,
+        "pagination": pagination,
+        "movements": [_admin_movement_list_payload(m, event_id=event_id) for m in movements],
+    })
+
+
+_ADMIN_MOVEMENT_LIST_KEYS = (
+    "id",
+    "product_id",
+    "product_name",
+    "product_variant",
+    "product_sku",
+    "movement_type",
+    "delta",
+    "balance_after",
+    "reason",
+    "reference",
+    "transaction_id",
+    "event_id",
+    "event_name",
+    "event_badge_color",
+    "created_by",
+    "created_at",
+    "seller_id",
+    "seller_name",
+    "order_number",
+)
+
+
+def _admin_movement_list_payload(movement: dict, *, event_id: int | None = None) -> dict:
+    """Payload da listagem do evento: sem dados de cliente da transação."""
+    slim = {key: movement.get(key) for key in _ADMIN_MOVEMENT_LIST_KEYS}
+    payload = _movement_payload(slim)
+    try:
+        pid_int = int(movement.get("product_id") or 0)
+    except (TypeError, ValueError):
+        pid_int = 0
+    if event_id and pid_int > 0:
+        payload["product_url"] = url_for(
+            "admin_event_stock_product",
+            event_id=int(event_id),
+            product_id=pid_int,
+        )
+    if event_id:
+        ref = str(movement.get("reference") or "").strip()
+        try:
+            tid_int = int(movement.get("transaction_id") or 0)
+        except (TypeError, ValueError):
+            tid_int = 0
+        if ref and tid_int > 0:
+            payload["tx_url"] = (
+                url_for("admin_event_transactions", event_id=int(event_id), pedido=ref)
+                + f"#tx-{tid_int}"
+            )
+    return payload
 
 
 if __name__ == "__main__":

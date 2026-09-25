@@ -2562,62 +2562,6 @@ html.admin-theme--dark .admin-tx__delivery-check-all {
     cursor: not-allowed;
 }
 
-.admin-breadcrumb {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    align-self: flex-start;
-    margin-bottom: 10px;
-    padding: 7px 14px 7px 11px;
-    font-size: 13px;
-    font-weight: 700;
-    letter-spacing: 0.02em;
-    text-decoration: none;
-    color: var(--color-primary);
-    background: color-mix(in srgb, var(--color-primary) 11%, var(--color-surface));
-    border: 1px solid color-mix(in srgb, var(--color-primary) 26%, var(--color-border));
-    border-radius: var(--radius-pill);
-    box-shadow: 0 1px 3px color-mix(in srgb, var(--color-primary) 14%, transparent);
-    transition:
-        background var(--transition),
-        border-color var(--transition),
-        box-shadow var(--transition),
-        color var(--transition),
-        transform var(--transition);
-}
-
-.admin-breadcrumb i {
-    font-size: 11px;
-    opacity: 0.92;
-    transform: translateX(0);
-    transition: transform var(--transition);
-}
-
-.admin-breadcrumb:hover {
-    color: var(--color-primary-dark);
-    background: color-mix(in srgb, var(--color-primary) 17%, var(--color-surface));
-    border-color: color-mix(in srgb, var(--color-primary) 38%, var(--color-border));
-    box-shadow: 0 3px 10px color-mix(in srgb, var(--color-primary) 18%, transparent);
-}
-
-.admin-breadcrumb:hover i {
-    transform: translateX(-2px);
-}
-
-.admin-breadcrumb:active {
-    transform: translateY(1px);
-    box-shadow: 0 1px 4px color-mix(in srgb, var(--color-primary) 12%, transparent);
-}
-
-.admin-breadcrumb:focus {
-    outline: none;
-}
-
-.admin-breadcrumb:focus-visible {
-    outline: 2px solid var(--color-primary);
-    outline-offset: 3px;
-}
-
 /* ==========================================================================
    Filtros (barra de busca + selects)
    ========================================================================== */
@@ -7296,15 +7240,6 @@ html.admin-theme--dark .admin-bottom-nav__item.is-active .admin-bottom-nav__badg
     background: var(--admin-tint-strong);
 }
 
-html.admin-theme--dark .admin-breadcrumb {
-    color: var(--color-primary);
-}
-
-html.admin-theme--dark .admin-breadcrumb:hover {
-    background: var(--admin-tint);
-    color: var(--color-primary-light);
-}
-
 /* KPIs */
 html.admin-theme--dark .kpi::before {
     background: var(--color-primary);
@@ -8794,5 +8729,487 @@ html.admin-theme--dark .admin-fin__sku-code {
 
     .fin-pdf__header {
         page-break-after: avoid;
+    }
+}
+
+/* ------------------------------------------------------------------ */
+/* Trilha de navegação (breadcrumb dinâmico: caminho percorrido)       */
+/* Barra discreta no topo do conteúdo, com «Voltar» e o caminho todo.  */
+/* ------------------------------------------------------------------ */
+
+.admin-trail {
+    align-self: flex-start;
+    max-width: 100%;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+    padding: 5px 12px 5px 6px;
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-pill, 999px);
+    box-shadow: var(--shadow-sm);
+}
+
+.admin-trail__back {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    min-width: 30px;
+    min-height: 30px;
+    padding: 5px 8px;
+    font-size: 12px;
+    font-weight: 800;
+    letter-spacing: 0.02em;
+    text-decoration: none;
+    color: var(--color-primary);
+    background: color-mix(in srgb, var(--color-primary) 11%, var(--color-surface));
+    border: 1px solid color-mix(in srgb, var(--color-primary) 26%, var(--color-border));
+    border-radius: var(--radius-pill, 999px);
+    transition:
+        background var(--transition),
+        border-color var(--transition),
+        color var(--transition);
+}
+
+/* Botão só com o ícone: seta centralizada no círculo. */
+.admin-trail__back i {
+    font-size: 13px;
+}
+
+.admin-trail__back:hover,
+.admin-trail__back:focus-visible {
+    background: color-mix(in srgb, var(--color-primary) 20%, var(--color-surface));
+    border-color: color-mix(in srgb, var(--color-primary) 40%, var(--color-border));
+}
+
+.admin-trail__back:focus-visible,
+.admin-trail__link:focus-visible {
+    outline: 3px solid var(--color-primary);
+    outline-offset: 2px;
+}
+
+.admin-trail__list {
+    display: flex;
+    align-items: center;
+    gap: 0;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    min-width: 0;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    scrollbar-width: thin;
+}
+
+.admin-trail__item {
+    display: inline-flex;
+    align-items: center;
+    white-space: nowrap;
+    font-size: 12px;
+    color: var(--color-text-muted);
+}
+
+.admin-trail__item + .admin-trail__item::before {
+    content: "\203A";
+    margin: 0 7px;
+    font-weight: 800;
+    color: var(--color-text-muted);
+    opacity: 0.75;
+}
+
+.admin-trail__link,
+.admin-trail__current {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    max-width: 22ch;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    text-decoration: none;
+    border-radius: var(--radius-pill, 999px);
+}
+
+.admin-trail__link {
+    padding: 3px 8px;
+    color: var(--color-primary);
+    font-weight: 700;
+    transition: background var(--transition), color var(--transition);
+}
+
+.admin-trail__link:hover {
+    background: color-mix(in srgb, var(--color-primary) 12%, transparent);
+}
+
+.admin-trail__link--home {
+    padding: 4px 9px;
+    color: var(--color-text-muted);
+}
+
+.admin-trail__current {
+    padding: 3px 8px;
+    color: var(--color-text);
+    font-weight: 800;
+    background: color-mix(in srgb, var(--color-text) 8%, transparent);
+}
+
+.admin-trail__item.is-current::before {
+    opacity: 1;
+}
+
+/* Telas estreitas (mobile/tablet): a lista usa o espaço ao lado do botão de
+   voltar e só quebra em novas linhas quando excede a largura da trilha — sem
+   scroll horizontal. Cada passo vira um chip (sem separador, para não sobrar
+   «›» órfão no início da linha quebrada). */
+@media (max-width: 900px) {
+    .admin-trail {
+        width: 100%;
+        flex-wrap: wrap;
+        row-gap: 6px;
+        border-radius: 16px;
+        padding: 6px 9px;
+    }
+
+    .admin-trail__back {
+        min-width: 36px;
+        min-height: 36px;
+        padding: 8px 10px;
+        font-size: 12.5px;
+    }
+
+    .admin-trail__list {
+        /* ``auto`` = largura do conteúdo: fica ao lado do botão enquanto couber
+           e só cai para a linha seguinte (ocupando toda a largura) quando
+           excede o espaço disponível na trilha. */
+        flex: 1 1 auto;
+        flex-wrap: wrap;
+        align-items: center;
+        row-gap: 4px;
+        column-gap: 6px;
+        overflow-x: visible;
+        overscroll-behavior-x: auto;
+        scrollbar-width: none;
+    }
+
+    .admin-trail__item {
+        min-width: 0;
+        max-width: 100%;
+        font-size: 11.5px;
+    }
+
+    .admin-trail__item + .admin-trail__item::before {
+        content: none;
+    }
+
+    .admin-trail__link,
+    .admin-trail__current {
+        max-width: 100%;
+        padding: 4px 10px;
+    }
+
+    .admin-trail__link {
+        background: color-mix(in srgb, var(--color-primary) 9%, transparent);
+    }
+
+    .admin-trail__link--home {
+        padding: 4px 8px;
+        background: transparent;
+    }
+}
+
+@media print {
+    .admin-trail {
+        display: none !important;
+    }
+}
+
+
+/* ===========================================================================
+   Clientes — carteira (admin/customers.html) e perfil (admin/customer_detail.html)
+   ========================================================================== */
+
+.admin-customers__row,
+.admin-customer-products__row,
+.admin-customer-orders__row {
+    display: grid;
+    gap: 12px;
+    align-items: center;
+    padding: 12px 20px;
+    border-bottom: 1px solid var(--color-border);
+    font-size: 14px;
+}
+
+.admin-customers__row:last-child,
+.admin-customer-products__row:last-child,
+.admin-customer-orders__row:last-child {
+    border-bottom: none;
+}
+
+/* Cabeçalho e corpo precisam da MESMA grade: o seletor duplo vence a
+   grade genérica de .admin-table__head, que vem depois no arquivo. */
+.admin-customers__row,
+.admin-customers .admin-table__head.admin-customers__row {
+    grid-template-columns:
+        minmax(190px, 1.5fr) 0.55fr 0.95fr 0.85fr 0.8fr 0.9fr 1fr 0.45fr;
+}
+
+.admin-customer-products__row,
+.admin-customer-products .admin-table__head.admin-customer-products__row {
+    grid-template-columns:
+        minmax(210px, 1.9fr) 0.9fr 0.6fr 0.55fr 0.85fr minmax(120px, 1fr);
+}
+
+.admin-customer-orders__row,
+.admin-customer-orders .admin-table__head.admin-customer-orders__row {
+    grid-template-columns:
+        1.05fr 1.05fr 0.75fr 0.45fr 0.8fr 0.9fr 1fr 1.05fr;
+}
+
+.admin-customers__person {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+}
+
+.admin-customers__person strong {
+    color: var(--color-text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.admin-customers__person small,
+.admin-customers__sub {
+    color: var(--color-text-muted);
+    font-size: 12px;
+}
+
+.admin-customers__sub {
+    display: block;
+    font-weight: 500;
+}
+
+.admin-customers__sub--warn {
+    color: var(--color-accent);
+}
+
+.admin-customers__last {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+}
+
+/* Participação de cada cliente, em barra proporcional ao maior da página. */
+.admin-customers__share-cell {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    min-width: 0;
+}
+
+.admin-customers__bar {
+    display: block;
+    width: 100%;
+    height: 6px;
+    background: var(--color-bg);
+    border-radius: var(--radius-pill);
+    overflow: hidden;
+}
+
+.admin-customers__bar-fill {
+    display: block;
+    height: 100%;
+    min-width: 2px;
+    background: var(--color-primary);
+    border-radius: var(--radius-pill);
+}
+
+/* ── Perfil do cliente ── */
+
+.admin-customer__chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+}
+
+.admin-customer__chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
+    background: var(--color-bg);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-pill);
+    font-size: 12px;
+    color: var(--color-text);
+    white-space: nowrap;
+}
+
+.admin-customer__sku {
+    font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+    font-size: 12px;
+    color: var(--color-text-muted);
+}
+
+.admin-customer__grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+    gap: 18px;
+}
+
+.admin-customer__grid--quad {
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+}
+
+.admin-customer__share-value {
+    margin: 0 0 10px;
+    font-size: 34px;
+    font-weight: 700;
+    line-height: 1;
+    color: var(--color-primary);
+}
+
+.admin-customer__share-track {
+    height: 12px;
+    background: var(--color-bg);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-pill);
+    overflow: hidden;
+}
+
+.admin-customer__share-fill {
+    height: 100%;
+    min-width: 3px;
+    background: linear-gradient(90deg, var(--color-primary), var(--color-primary-light));
+    border-radius: var(--radius-pill);
+}
+
+.admin-customer__dl {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 14px;
+    margin: 16px 0 0;
+}
+
+.admin-customer__dl--cols {
+    margin-top: 0;
+}
+
+.admin-customer__dl dt {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--color-text-muted);
+}
+
+.admin-customer__dl dd {
+    margin: 4px 0 0;
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--color-text);
+}
+
+.admin-customer__list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+}
+
+.admin-customer__list li {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 9px 0;
+    border-bottom: 1px solid var(--color-border);
+    font-size: 13px;
+}
+
+.admin-customer__list li:last-child {
+    border-bottom: none;
+}
+
+.admin-customer__list-label {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--color-text);
+}
+
+.admin-customer__list-value {
+    flex: 0 0 auto;
+    text-align: right;
+    color: var(--color-text-muted);
+}
+
+.admin-customer__list-value small {
+    display: block;
+    font-weight: 700;
+    color: var(--color-primary);
+}
+
+.admin-customer__list-empty {
+    color: var(--color-text-muted);
+    font-style: italic;
+}
+
+/* ── Mobile: cada linha vira um cartão rotulado ── */
+
+@media (max-width: 860px) {
+    .admin-customers .admin-table__head,
+    .admin-customer-products .admin-table__head,
+    .admin-customer-orders .admin-table__head {
+        display: none;
+    }
+
+    .admin-customers__row,
+    .admin-customer-products__row,
+    .admin-customer-orders__row {
+        grid-template-columns: 1fr;
+        gap: 8px;
+        padding: 16px 18px;
+    }
+
+    .admin-customers__row > span:not(.admin-customers__person),
+    .admin-customer-products__row > span:not(.admin-customers__person),
+    .admin-customer-orders__row > span {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 12px;
+        text-align: left;
+    }
+
+    /* Rótulo da coluna ao lado do valor, já que o cabeçalho está oculto. */
+    .admin-customers__row > span::before,
+    .admin-customer-products__row > span::before,
+    .admin-customer-orders__row > span::before {
+        content: attr(data-label);
+        flex: 0 0 auto;
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        color: var(--color-text-muted);
+    }
+
+    .admin-customers__person::before {
+        content: none;
+    }
+
+    .admin-customers__share-cell {
+        align-items: stretch;
+    }
+
+    .admin-customers__last {
+        flex-direction: row;
+        align-items: baseline;
+        justify-content: space-between;
     }
 }
