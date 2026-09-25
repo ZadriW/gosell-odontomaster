@@ -22,7 +22,7 @@
         body {
             font-family: 'Courier New', Courier, 'Lucida Console', monospace;
             font-size: 13px;
-            line-height: 1.5;
+            line-height: 1.2;
             color: var(--text);
             background: var(--bg);
             min-height: 100vh;
@@ -68,7 +68,7 @@
         }
 
         .receipt__body {
-            padding: 20px 24px 24px;
+            padding: 20px 16px 20px;
         }
 
         /* ---------------------------------------------------------------
@@ -99,7 +99,8 @@
         .receipt__slogan {
             font-size: 10px;
             letter-spacing: .08em;
-            color: var(--muted);
+            color: #000;
+            font-weight: 600;
             text-transform: uppercase;
             margin-top: 2px;
         }
@@ -124,27 +125,38 @@
         --------------------------------------------------------------- */
         .receipt__meta {
             display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 6px 12px;
+            grid-template-columns: 1fr;
+            gap: 4px;
             margin-bottom: 14px;
         }
 
-        .receipt__meta-item { display: flex; flex-direction: column; }
+        .receipt__meta-item {
+            display: flex;
+            flex-direction: row;
+            align-items: baseline;
+            gap: 4px;
+            flex-wrap: wrap;
+        }
+
         .receipt__meta-item.full { grid-column: 1 / -1; }
 
         .receipt__meta-label {
-            font-size: 9px;
-            text-transform: uppercase;
-            letter-spacing: .1em;
-            color: var(--muted);
-            margin-bottom: 1px;
+            font-size: 11px;
+            letter-spacing: .04em;
+            color: #000;
+            font-weight: 600;
+            flex-shrink: 0;
+        }
+
+        .receipt__meta-label::after {
+            content: ':';
         }
 
         .receipt__meta-value {
-            font-size: 13px;
+            font-size: 10px;
             font-weight: 700;
             color: var(--text);
-            word-break: break-all;
+            word-break: break-word;
         }
 
         /* ---------------------------------------------------------------
@@ -160,7 +172,8 @@
             font-size: 9px;
             text-transform: uppercase;
             letter-spacing: .12em;
-            color: var(--muted);
+            color: #000;
+            font-weight: 600;
             margin-bottom: 8px;
         }
 
@@ -172,11 +185,12 @@
         .receipt__client-row {
             display: flex;
             gap: 6px;
-            font-size: 12px;
+            font-size: 11px;
         }
 
         .receipt__client-key {
-            color: var(--muted);
+            color: #000;
+            font-weight: 600;
             white-space: nowrap;
             min-width: 60px;
         }
@@ -192,23 +206,25 @@
         --------------------------------------------------------------- */
         .receipt__items-head {
             display: grid;
-            grid-template-columns: 1fr auto auto;
+            grid-template-columns: 1fr auto auto auto;
             gap: 0 8px;
             font-size: 9px;
             text-transform: uppercase;
             letter-spacing: .1em;
-            color: var(--muted);
+            color: #000;
+            font-weight: 600;
             padding-bottom: 5px;
             border-bottom: 1px solid var(--border);
             margin-bottom: 6px;
         }
 
         .receipt__items-head span:nth-child(2),
-        .receipt__items-head span:nth-child(3) { text-align: right; }
+        .receipt__items-head span:nth-child(3),
+        .receipt__items-head span:nth-child(4) { text-align: right; }
 
         .receipt__item {
             display: grid;
-            grid-template-columns: 1fr auto auto;
+            grid-template-columns: 1fr auto auto auto;
             gap: 2px 8px;
             padding: 6px 0;
             border-bottom: 1px dotted var(--border);
@@ -217,31 +233,80 @@
         .receipt__item:last-child { border-bottom: none; }
 
         .receipt__item-name {
-            font-size: 12px;
+            font-size: 10px;
             font-weight: 600;
             color: var(--text);
             word-break: break-word;
         }
 
-        .receipt__item-sku {
+        .receipt__item-unit {
             font-size: 10px;
-            color: var(--muted);
-            grid-column: 1;
+            color: #000;
+            font-weight: 600;
+            text-align: right;
+            align-self: end;
+            white-space: nowrap;
         }
 
         .receipt__item-qty {
-            font-size: 11px;
-            color: var(--muted);
+            font-size: 10px;
+            color: #000;
+            font-weight: 600;
             text-align: right;
             align-self: end;
         }
 
         .receipt__item-subtotal {
-            font-size: 12px;
+            font-size: 10px;
             font-weight: 700;
             color: var(--text);
             text-align: right;
             align-self: end;
+        }
+
+        /* ---------------------------------------------------------------
+           Itens pendentes de retirada (entrega parcial)
+        --------------------------------------------------------------- */
+        .receipt__item-pending-tag {
+            grid-column: 1 / -1;
+            font-size: 10px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: .06em;
+            color: #92400e;
+        }
+
+        .receipt__pending {
+            border: 1.5px dashed #92400e;
+            border-radius: 4px;
+            padding: 10px 12px;
+            margin-top: 12px;
+        }
+
+        .receipt__pending-title {
+            font-size: 11px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: .1em;
+            color: #92400e;
+            margin-bottom: 6px;
+        }
+
+        .receipt__pending-row {
+            padding: 6px 0;
+            border-bottom: 1px dotted var(--border);
+        }
+
+        .receipt__pending-row:last-of-type {
+            border-bottom: none;
+        }
+
+        .receipt__pending-text {
+            font-size: 11px;
+            color: #000;
+            font-weight: 600;
+            margin-top: 6px;
+            line-height: 1.2;
         }
 
         /* ---------------------------------------------------------------
@@ -256,8 +321,9 @@
         .receipt__total-row {
             display: flex;
             justify-content: space-between;
-            font-size: 12px;
-            color: var(--muted);
+            font-size: 10px;
+            color: #000;
+            font-weight: 600;
             margin-bottom: 4px;
         }
 
@@ -271,14 +337,14 @@
         }
 
         .receipt__total-main-label {
-            font-size: 13px;
+            font-size: 11px;
             font-weight: 700;
             text-transform: uppercase;
             letter-spacing: .06em;
         }
 
         .receipt__total-main-value {
-            font-size: 18px;
+            font-size: 11px;
             font-weight: 700;
             color: var(--primary);
             font-variant-numeric: tabular-nums;
@@ -305,17 +371,30 @@
 
         .receipt__footer-text {
             font-size: 11px;
-            color: var(--muted);
-            line-height: 1.6;
+            color: #000;
+            font-weight: 600;
+            line-height: 1.2;
+        }
+
+        .receipt__footer-obs {
+            margin-bottom: 12px;
+            min-height: 28px;
+            text-align: left;
+        }
+
+        .receipt__footer-obs .receipt__footer-text {
+            white-space: pre-wrap;
+            text-align: left;
         }
 
         .receipt__footer-note {
             margin-top: 12px;
             font-size: 10px;
-            color: var(--muted);
+            color: #000;
+            font-weight: 600;
             border-top: 1px dotted var(--border);
             padding-top: 10px;
-            line-height: 1.5;
+            line-height: 1.2;
         }
 
         /* ---------------------------------------------------------------
@@ -340,7 +419,8 @@
 
         .receipt__not-found p {
             font-size: 12px;
-            color: var(--muted);
+            color: #000;
+            font-weight: 600;
         }
 
         /* ---------------------------------------------------------------
@@ -415,7 +495,6 @@
                 alt="Odonto Master"
                 class="receipt__logo"
             >
-            <div class="receipt__brand">Dental Odonto Master</div>
         </header>
 
         <!-- ──────────────────── TÍTULO DO DOC ──────────────────── -->
@@ -439,16 +518,6 @@
                 </span>
             </div>
             <div class="receipt__meta-item">
-                <span class="receipt__meta-label">Horário</span>
-                <span class="receipt__meta-value">
-                    {% if dt_str %}{{ dt_str[11:16] }}{% else %}—{% endif %}
-                </span>
-            </div>
-            <div class="receipt__meta-item">
-                <span class="receipt__meta-label">Status</span>
-                <span class="receipt__meta-value">{{ tx.status | capitalize }}</span>
-            </div>
-            <div class="receipt__meta-item">
                 <span class="receipt__meta-label">Pagamento</span>
                 <span class="receipt__meta-value">{{ tx.payment_method | paymethod(tx.card_installments) }}</span>
             </div>
@@ -456,96 +525,109 @@
                 <span class="receipt__meta-label">Qtd. de itens</span>
                 <span class="receipt__meta-value">{{ tx.items_count }}</span>
             </div>
+            <div class="receipt__meta-item">
+                <span class="receipt__meta-label">Vendedor</span>
+                <span class="receipt__meta-value">{{ tx.seller_name or '—' }}</span>
+            </div>
         </div>
 
         <!-- ──────────────────── DADOS DO CLIENTE ──────────────────── -->
         {% set cro = tx | cro_pedido %}
-        {% if tx.client_name or tx.client_cpf or tx.client_zipcode or tx.client_address or cro %}
-        <div class="receipt__section">
-            <div class="receipt__section-title">Dados do cliente</div>
-            <div class="receipt__client-rows">
-                {% if tx.client_name %}
-                <div class="receipt__client-row">
-                    <span class="receipt__client-key">Nome</span>
-                    <span class="receipt__client-val">{{ tx.client_name }}</span>
-                </div>
-                {% endif %}
-                {% if tx.client_cpf %}
-                <div class="receipt__client-row">
-                    <span class="receipt__client-key">CPF</span>
-                    <span class="receipt__client-val">{{ tx.client_cpf }}</span>
-                </div>
-                {% endif %}
-                {% if tx.client_zipcode %}
-                <div class="receipt__client-row">
-                    <span class="receipt__client-key">CEP</span>
-                    <span class="receipt__client-val">{{ tx.client_zipcode }}</span>
-                </div>
-                {% endif %}
-                {% if tx.client_address %}
-                <div class="receipt__client-row">
-                    <span class="receipt__client-key">Endereço</span>
-                    <span class="receipt__client-val">
-                        {{ tx.client_address }}{% if tx.client_number %}, {{ tx.client_number }}{% endif %}{% if tx.client_complement %} — {{ tx.client_complement }}{% endif %}{% if tx.client_city %}, {{ tx.client_city }}{% endif %}{% if tx.client_state %} — {{ tx.client_state }}{% endif %}
-                    </span>
-                </div>
-                {% endif %}
-                {% if cro %}
-                    {% if cro.get('uf') %}
-                    <div class="receipt__client-row">
-                        <span class="receipt__client-key">UF (CRO)</span>
-                        <span class="receipt__client-val">{{ cro['uf'] }}</span>
-                    </div>
-                    {% endif %}
-                    {% if cro.get('numero_registro') %}
-                    <div class="receipt__client-row">
-                        <span class="receipt__client-key">Número do registro (CRO)</span>
-                        <span class="receipt__client-val">{{ cro['numero_registro'] }}</span>
-                    </div>
-                    {% endif %}
-                {% endif %}
-            </div>
-        </div>
-        {% endif %}
+        {% include 'partials/receipt_client_section.html' %}
 
         <!-- ──────────────────── ITENS ──────────────────── -->
         <div class="receipt__section">
             <div class="receipt__section-title">Produtos</div>
 
             <div class="receipt__items-head">
-                <span>Produto / SKU</span>
+                <span>SKU/Descrição</span>
+                <span>Unit.</span>
                 <span>Qtd.</span>
                 <span>Subtotal</span>
             </div>
 
             {% set items = tx['items'] %}
+            {% set tx_confirmado = (tx.status or '')|lower == 'confirmado' %}
+            {% set pending_items = [] %}
             {% for it in items %}
+            {% set pendente = (it.quantity or 0) - (it.quantity_delivered or 0) %}
+            {% if tx_confirmado and it.product_id and pendente > 0 %}
+                {% if pending_items.append((it, pendente, loop.index)) %}{% endif %}
+            {% endif %}
             <div class="receipt__item">
-                <span class="receipt__item-name">{{ it.product_name }}</span>
+                <span class="receipt__item-name">
+                    {{ loop.index }}.
+                    {%- if it.product_sku %} {{ it.product_sku }} -{% endif %}
+                    {{ it.product_name }}
+                </span>
+                <span class="receipt__item-unit">
+                    R${{ "%.2f"|format(it.unit_price|float)|replace('.', ',') }}
+                </span>
                 <span class="receipt__item-qty">{{ it.quantity }}×</span>
                 <span class="receipt__item-subtotal">
                     {% set sub = it.subtotal | float %}
                     R$ {{ "%.2f"|format(sub) | replace('.', ',') }}
                 </span>
-                <span class="receipt__item-sku">
-                    {% if it.product_sku %}{{ it.product_sku }}{% endif %}
-                    {% if it.category %} · {{ it.category }}{% endif %}
-                    — Unit. R$ {{ "%.2f"|format(it.unit_price | float) | replace('.', ',') }}
+                {% if tx_confirmado and it.product_id and pendente > 0 %}
+                <span class="receipt__item-pending-tag">
+                    &#9888; {{ pendente }} un. pendente{% if pendente != 1 %}s{% endif %} de retirada
                 </span>
+                {% endif %}
             </div>
             {% endfor %}
+
+            {% if pending_items %}
+            <div class="receipt__pending">
+                <div class="receipt__pending-title">&#9888; Itens para retirada posterior</div>
+                {% for it, pendente, item_num in pending_items %}
+                <div class="receipt__item receipt__pending-row">
+                    <span class="receipt__item-name">
+                        {{ item_num }}.
+                        {%- if it.product_sku %} {{ it.product_sku }} -{% endif %}
+                        {{ it.product_name }}
+                    </span>
+                    <span class="receipt__item-unit">
+                        {% set unit = (it.unit_price | float) if it.unit_price is not none else ((it.subtotal | float) / (it.quantity | float) if (it.quantity | float) > 0 else 0) %}
+                        R$ {{ "%.2f"|format(unit) | replace('.', ',') }}
+                    </span>
+                    <span class="receipt__item-qty">{{ pendente }}×</span>
+                    <span class="receipt__item-subtotal">
+                        {% set pending_sub = unit * pendente %}
+                        R$ {{ "%.2f"|format(pending_sub) | replace('.', ',') }}
+                    </span>
+                </div>
+                {% endfor %}
+                <p class="receipt__pending-text">
+                    Estes itens já estão pagos, mas aguardam reposição de estoque.
+                    Apresente esta nota no balcão para retirá-los assim que disponíveis.
+                </p>
+            </div>
+
+            {% include 'partials/receipt_client_section.html' %}
+            {% endif %}
         </div>
 
         <!-- ──────────────────── TOTALIZADOR ──────────────────── -->
+        {% set ns_lista = namespace(total=0) %}
+        {% for it in items %}
+            {% set ns_lista.total = ns_lista.total + ((it.original_price or it.unit_price) | float) * (it.quantity | float) %}
+        {% endfor %}
+        {% set economia = ns_lista.total - (tx.total | float) %}
         <div class="receipt__totals">
-            <div class="receipt__total-row">
-                <span>Subtotal ({{ items | length }} produto{% if items | length != 1 %}s{% endif %})</span>
-                <span>R$ {{ "%.2f"|format(tx.total | float) | replace('.', ',') }}</span>
-            </div>
             <div class="receipt__total-row">
                 <span>Forma de pagamento</span>
                 <span>Cartão (maquininha)</span>
             </div>
+            <div class="receipt__total-row">
+                <span>Subtotal ({{ items | length }} produto{% if items | length != 1 %}s{% endif %})</span>
+                <span>R$ {{ "%.2f"|format(tx.total | float) | replace('.', ',') }}</span>
+            </div>
+            {% if economia > 0.009 %}
+            <div class="receipt__total-row">
+                <span>Desconto</span>
+                <span>-R$ {{ "%.2f"|format(economia) | replace('.', ',') }}</span>
+            </div>
+            {% endif %}
             <div class="receipt__total-main">
                 <span class="receipt__total-main-label">Total pago</span>
                 <span class="receipt__total-main-value">
@@ -556,12 +638,21 @@
 
         <!-- ──────────────────── RODAPÉ ──────────────────── -->
         <footer class="receipt__footer">
+            {% set obs = (tx.receipt_note or '')|trim %}
+            {% if obs %}
+            <div class="receipt__footer-obs">
+                <div class="receipt__footer-title">Observação</div>
+                <div class="receipt__footer-text">{{ obs }}</div>
+            </div>
+            {% endif %}
+            {% if pending_items %}
             <div class="receipt__footer-title">Retirada de produtos</div>
             <div class="receipt__footer-text">
                 Apresente esta nota no balcão da Odonto Master
                 para retirar seus produtos.<br>
                 Guarde o comprovante até a entrega.
             </div>
+            {% endif %}
             <div class="receipt__footer-note">
                 © Todos os direitos reservados - ODM COMERCIO E SERVICOS DE EQUIPAMENTOS E MATERIAIS ODONTOLOGICOS LTDA - CNPJ: 07.030.958/0001-74<br>
                 Alameda das Cajazeiras, 430 - Caminho das Árvores - Salvador/BA - CEP: 41.820-470<br>

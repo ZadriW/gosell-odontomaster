@@ -25,7 +25,7 @@ A interface é responsiva e funciona em navegadores modernos em desktop, tablet 
 | Área | Descrição |
 |------|-----------|
 | **Login** | Acesso por e-mail e senha; vendedor vinculado a um evento ativo. |
-| **Venda / catálogo** | Busca, filtros por categoria, carrinho lateral, estoque ao vivo e promoções recalculadas (~30 s). |
+| **Venda / catálogo** | Busca, carrinho lateral, estoque ao vivo e promoções recalculadas (~15 s). |
 | **Pagamento** | Resumo do pedido, dados do cliente (nome, CRO, forma de pagamento, parcelas). |
 | **Confirmação AUT** | Pedido fica **pendente** até o vendedor informar o AUT; só então o estoque é baixado. |
 | **Restauração de checkout** | Retomar pedido pendente interrompido (sessão expirada, navegador fechado etc.). |
@@ -156,7 +156,10 @@ Com SQLite, use **um worker** (`-w 1`) para evitar conflitos de escrita. Para m�
 | Variável | Obrigatória | Descrição |
 |----------|-------------|-----------|
 | `WAKE_TOKEN` | Para importação Wake | Token TCS-Access-Token da Storefront API |
-| `TOTEM_SECRET_KEY` | Recomendada em produção | Chave de sessão Flask e assinatura de notas |
+| `TOTEM_SECRET_KEY` | **Sim em produção** | Chave de sessão Flask e assinatura de notas |
+| `TOTEM_DEBUG` | Não | `1` liga o debugger Werkzeug. **Deixe desligado** em evento/produção. |
+| `TOTEM_BIND` | Não | Host do `python app.py` (padrão `0.0.0.0` na LAN). |
+| `TOTEM_COOKIE_SECURE` | HTTPS | `1` marca cookies `Secure` (obrigatório atrás de HTTPS). |
 | `TOTEM_ADMIN_USER` | Opcional | Usuário do admin (padrão no código — **altere em produção**) |
 | `TOTEM_ADMIN_PASS` | Opcional | Senha do admin |
 | `TOTEM_SELLER_NAME` | Opcional | Nome da conta vendedor inicial (seed) |

@@ -5,28 +5,99 @@ import sqlite3
 from datetime import date as _date
 from typing import Dict, List, Optional, Tuple
 
-from .connection import _now_iso, get_conn
-from .event_stock import _apply_event_movement, _insert_event_stock_movement_row
-from .products import _product_row_to_client
+from .connection import DEFAULT_MIN_STOCK, _now_iso, get_conn
+from .event_stock import _apply_event_movement
+from .products import (
+    _product_catalog_like_clause,
+    _product_row_to_client,
+    _product_search_order_clause,
+    prepare_catalog_variant_groups,
+)
 from .sku_helpers import _default_sku_for_id
+import product_images
+
+# Classificação operacional do cadastro (não altera o fluxo de vendas).
+EVENT_OPERATION_TYPES: Tuple[Tuple[str, str], ...] = (
+    ("evento", "Evento"),
+    ("congresso", "Congresso"),
+    ("stand", "Stand"),
+)
+EVENT_OPERATION_TYPE_DEFAULT = "evento"
+_EVENT_OPERATION_TYPE_KEYS = {key for key, _ in EVENT_OPERATION_TYPES}
+_EVENT_OPERATION_TYPE_LABELS = dict(EVENT_OPERATION_TYPES)
+
+
+def normalize_event_operation_type(raw: Optional[str]) -> Optional[str]:
+    """Devolve o slug válido (evento|congresso|stand) ou None se inválido."""
+    key = (raw or "").strip().lower()
+    if key in _EVENT_OPERATION_TYPE_KEYS:
+        return key
+    return None
+
+
+def event_operation_type_label(raw: Optional[str]) -> str:
+    """Rótulo de exibição; valores ausentes ou antigos caem em Evento."""
+    key = normalize_event_operation_type(raw) or EVENT_OPERATION_TYPE_DEFAULT
+    return _EVENT_OPERATION_TYPE_LABELS[key]
+
+
+def event_operation_noun(source=None, *, plural: bool = False) -> str:
+    """Substantivo da operação (Evento/Congresso/Stand), no singular ou plural."""
+    if isinstance(source, dict):
+        raw = source.get("operation_type")
+    else:
+        raw = source
+    label = event_operation_type_label(raw)
+    if not plural:
+        return label
+    if label == "Stand":
+        return "Stands"
+    return f"{label}s"
+
 
 def create_event(
     name: str,
     description: str = "",
     *,
     badge_color: Optional[str] = None,
+    operation_type: Optional[str] = None,
 ) -> int:
     """Cria um novo evento e retorna o id gerado."""
     now = _now_iso()
+    op_type = normalize_event_operation_type(operation_type) or EVENT_OPERATION_TYPE_DEFAULT
     with get_conn() as conn:
         cur = conn.execute(
             """
-            INSERT INTO events (name, description, badge_color, active, created_at, updated_at)
-            VALUES (?, ?, ?, 1, ?, ?)
+            INSERT INTO events (
+                name, description, badge_color, operation_type, active, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, 1, ?, ?)
             """,
-            (name.strip(), (description or "").strip(), badge_color, now, now),
+            (name.strip(), (description or "").strip(), badge_color, op_type, now, now),
         )
         return int(cur.lastrowid)
+
+
+def event_ops_open(event) -> bool:
+    """True se o evento está ativo e com operações abertas (vendas e edições).
+
+    Aceita o dict do evento ou um id numérico. Sem evento / id inválido → False.
+    """
+    if isinstance(event, (int, float)):
+        event = get_event(int(event))
+    elif isinstance(event, str) and event.strip().isdigit():
+        event = get_event(int(event.strip()))
+    if not event:
+        return False
+    try:
+        if int(event.get("active") or 0) != 1:
+            return False
+    except (TypeError, ValueError, AttributeError):
+        return False
+    try:
+        return int(event.get("operations_closed") or 0) == 0
+    except (TypeError, ValueError, AttributeError):
+        return True
 
 
 def list_events(include_archived: bool = False) -> List[Dict]:
@@ -36,7 +107,8 @@ def list_events(include_archived: bool = False) -> List[Dict]:
         rows = conn.execute(
             f"""
             SELECT
-                e.id, e.name, e.description, e.badge_color, e.active,
+                e.id, e.name, e.description, e.badge_color, e.operation_type,
+                e.active, e.operations_closed, e.operations_closed_at,
                 e.created_at, e.updated_at,
                 (SELECT COUNT(*) FROM event_products ep WHERE ep.event_id = e.id) AS products_count,
                 (SELECT COUNT(*) FROM event_sellers es WHERE es.event_id = e.id) AS sellers_count
@@ -63,17 +135,127 @@ def update_event(
     description: str = "",
     *,
     badge_color: Optional[str] = None,
+    operation_type: Optional[str] = None,
 ) -> None:
-    """Atualiza nome, descrição e cor opcional do badge."""
+    """Atualiza nome, descrição, tipo de operação e cor opcional do badge."""
+    now = _now_iso()
+    op_type = normalize_event_operation_type(operation_type) or EVENT_OPERATION_TYPE_DEFAULT
+    with get_conn() as conn:
+        conn.execute(
+            """
+            UPDATE events
+               SET name = ?, description = ?, badge_color = ?, operation_type = ?, updated_at = ?
+             WHERE id = ?
+            """,
+            (name.strip(), (description or "").strip(), badge_color, op_type, now, event_id),
+        )
+
+
+def set_event_operations_closed(event_id: int, closed: bool) -> None:
+    """Encerra ou reabre as operações do evento (sem arquivar)."""
     now = _now_iso()
     with get_conn() as conn:
         conn.execute(
             """
-            UPDATE events SET name = ?, description = ?, badge_color = ?, updated_at = ?
+            UPDATE events
+               SET operations_closed = ?,
+                   operations_closed_at = ?,
+                   updated_at = ?
              WHERE id = ?
             """,
-            (name.strip(), (description or "").strip(), badge_color, now, event_id),
+            (
+                1 if closed else 0,
+                now if closed else None,
+                now,
+                int(event_id),
+            ),
         )
+
+
+def update_event_goals(
+    event_id: int,
+    *,
+    revenue_goal: Optional[float] = None,
+    volume_goal: Optional[int] = None,
+) -> bool:
+    """Define ou limpa as metas de faturamento e volume do evento.
+
+    ``None`` remove a meta correspondente. Valores negativos são rejeitados.
+    """
+    stored_revenue: Optional[float] = None
+    if revenue_goal is not None:
+        stored_revenue = round(float(revenue_goal), 2)
+        if stored_revenue < 0:
+            return False
+        if stored_revenue == 0:
+            stored_revenue = None
+    stored_volume: Optional[int] = None
+    if volume_goal is not None:
+        stored_volume = int(volume_goal)
+        if stored_volume < 0:
+            return False
+        if stored_volume == 0:
+            stored_volume = None
+    now = _now_iso()
+    with get_conn() as conn:
+        cur = conn.execute(
+            """
+            UPDATE events
+               SET revenue_goal = ?, volume_goal = ?, updated_at = ?
+             WHERE id = ?
+            """,
+            (stored_revenue, stored_volume, now, int(event_id)),
+        )
+        return cur.rowcount > 0
+
+
+def _goal_metric(actual: float, goal) -> Optional[Dict]:
+    """Compara realizado × meta. ``None`` se a meta não estiver definida."""
+    try:
+        goal_val = float(goal) if goal is not None else 0.0
+    except (TypeError, ValueError):
+        goal_val = 0.0
+    if goal_val <= 0:
+        return None
+    actual_val = float(actual or 0)
+    pct = (actual_val / goal_val) * 100.0 if goal_val else 0.0
+    return {
+        "goal": goal_val,
+        "actual": actual_val,
+        "remaining": max(0.0, goal_val - actual_val),
+        "percent": round(pct, 1),
+        "bar_percent": min(100.0, max(0.0, pct)),
+        "reached": actual_val + 1e-9 >= goal_val,
+    }
+
+
+def get_event_goal_progress(event_id: int) -> Dict:
+    """Metas do evento vs. vendas confirmadas do evento (sem filtro de período)."""
+    ev = get_event(event_id) or {}
+    with get_conn() as conn:
+        row = conn.execute(
+            """
+            SELECT COUNT(*) AS orders,
+                   COALESCE(SUM(t.total), 0) AS revenue,
+                   COALESCE(SUM(t.items_count), 0) AS items_sold
+              FROM transactions t
+             WHERE t.status = 'confirmado' AND t.event_id = ?
+            """,
+            (int(event_id),),
+        ).fetchone()
+    revenue = float(row["revenue"] or 0) if row else 0.0
+    items_sold = int(row["items_sold"] or 0) if row else 0
+    revenue_prog = _goal_metric(revenue, ev.get("revenue_goal"))
+    volume_prog = _goal_metric(items_sold, ev.get("volume_goal"))
+    return {
+        "revenue": revenue_prog,
+        "volume": volume_prog,
+        "has_any": revenue_prog is not None or volume_prog is not None,
+        "revenue_goal": ev.get("revenue_goal"),
+        "volume_goal": ev.get("volume_goal"),
+        "actual_revenue": revenue,
+        "actual_volume": items_sold,
+    }
 
 
 def archive_event(event_id: int) -> None:
@@ -170,12 +352,14 @@ def find_product_by_sku_or_id(q: str) -> Optional[Dict]:
         row = None
         try:
             pid = int(q)
-            row = conn.execute("SELECT * FROM products WHERE id = ?", (pid,)).fetchone()
+            row = conn.execute(
+                "SELECT * FROM products WHERE id = ? AND active = 1", (pid,)
+            ).fetchone()
         except ValueError:
             pass
         if row is None:
             row = conn.execute(
-                "SELECT * FROM products WHERE sku = ?", (q,)
+                "SELECT * FROM products WHERE sku = ? AND active = 1", (q,)
             ).fetchone()
         return dict(row) if row else None
 
@@ -184,7 +368,7 @@ def add_product_to_event(
     event_id: int,
     product_id: int,
     stock: int = 0,
-    min_stock: int = 0,
+    min_stock: int = DEFAULT_MIN_STOCK,
     *,
     link_audit_reason: Optional[str] = None,
     link_audit_reference: Optional[str] = None,
@@ -193,9 +377,9 @@ def add_product_to_event(
     """Adiciona um produto ao evento com estoque inicial.
 
     ``link_audit_reason`` quando informado ativa o fluxo da biblioteca geral: grava
-    inclusão como movimentação tipo ``ajuste`` (``stock_movements`` com ``event_id``),
-    visível nas movimentações globais e do evento. Estoque inicial > 0 vira o delta do
-    ajuste; com estoque 0 grava-se linha de auditoria com delta 0.
+    inclusão como movimentação tipo ``entrada`` (``stock_movements`` com ``event_id``),
+    visível nas movimentações globais e do evento. Estoque inicial > 0 vira uma entrada;
+    com estoque 0 apenas associa o produto ao evento (sem linha de movimentação).
 
     Sem ``link_audit_reason``, mantém o comportamento legado (apenas ``INSERT`` em
     ``event_products``).
@@ -214,12 +398,20 @@ def add_product_to_event(
         if existing:
             raise ValueError("Produto já adicionado a este evento.")
 
+        prod_row = conn.execute(
+            "SELECT active FROM products WHERE id = ?", (int(product_id),)
+        ).fetchone()
+        if prod_row is None:
+            raise ValueError("Produto não encontrado.")
+        if int(prod_row["active"] or 0) != 1:
+            raise ValueError("Este produto está inativo no catálogo.")
+
         if link_audit_reason is None:
             conn.execute(
                 """
                 INSERT INTO event_products
-                    (event_id, product_id, stock, min_stock, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?)
+                    (event_id, product_id, stock, min_stock, backorder_limit, created_at, updated_at)
+                VALUES (?, ?, ?, ?, -1, ?, ?)
                 """,
                 (event_id, product_id, stock_i, min_i, now, now),
             )
@@ -236,17 +428,11 @@ def add_product_to_event(
         if ev_ok is None:
             raise ValueError("Evento não encontrado.")
 
-        prod_ok = conn.execute(
-            "SELECT 1 FROM products WHERE id = ?", (int(product_id),)
-        ).fetchone()
-        if prod_ok is None:
-            raise ValueError("Produto não encontrado.")
-
         conn.execute(
             """
             INSERT INTO event_products
-                (event_id, product_id, stock, min_stock, created_at, updated_at)
-            VALUES (?, ?, 0, ?, ?, ?)
+                (event_id, product_id, stock, min_stock, backorder_limit, created_at, updated_at)
+            VALUES (?, ?, 0, ?, -1, ?, ?)
             """,
             (event_id, product_id, min_i, now, now),
         )
@@ -256,21 +442,8 @@ def add_product_to_event(
                 conn,
                 event_id=int(event_id),
                 product_id=int(product_id),
-                movement_type="ajuste",
+                movement_type="entrada",
                 delta=stock_i,
-                reason=note,
-                reference=ref_note,
-                created_by=created_by,
-            )
-        else:
-            _insert_event_stock_movement_row(
-                conn,
-                event_id=int(event_id),
-                product_id=int(product_id),
-                movement_type="ajuste",
-                quantity=0,
-                delta=0,
-                balance_after=0,
                 reason=note,
                 reference=ref_note,
                 created_by=created_by,
@@ -290,7 +463,7 @@ def update_event_product_stock(
     event_id: int,
     product_id: int,
     stock: int,
-    min_stock: int = 0,
+    min_stock: int = DEFAULT_MIN_STOCK,
 ) -> None:
     """Atualiza o estoque e mínimo de um produto dentro de um evento."""
     now = _now_iso()
@@ -303,6 +476,67 @@ def update_event_product_stock(
             """,
             (max(0, int(stock)), max(0, int(min_stock)), now, event_id, product_id),
         )
+
+
+def update_event_product_backorder_limit(
+    event_id: int,
+    product_id: int,
+    backorder_limit: int,
+) -> None:
+    """Define o limite de unidades vendáveis como entrega pendente.
+
+    ``-1`` remove o limite (entrega pendente livre); ``0`` bloqueia qualquer
+    entrega pendente; ``> 0`` é o total de unidades pendentes permitidas.
+    """
+    now = _now_iso()
+    with get_conn() as conn:
+        conn.execute(
+            """
+            UPDATE event_products
+               SET backorder_limit = ?, updated_at = ?
+             WHERE event_id = ? AND product_id = ?
+            """,
+            (max(-1, int(backorder_limit)), now, event_id, product_id),
+        )
+
+
+def update_event_product_price(
+    event_id: int,
+    product_id: int,
+    price: Optional[float],
+) -> bool:
+    """Define o preço de venda no evento. ``None`` herda o preço-base da biblioteca."""
+    now = _now_iso()
+    stored: Optional[float]
+    if price is None:
+        stored = None
+    else:
+        stored = round(float(price), 2)
+        if stored < 0:
+            return False
+    with get_conn() as conn:
+        cur = conn.execute(
+            """
+            UPDATE event_products
+               SET price = ?, updated_at = ?
+             WHERE event_id = ? AND product_id = ?
+            """,
+            (stored, now, int(event_id), int(product_id)),
+        )
+        return cur.rowcount > 0
+
+
+def _with_resolved_product_image(row: Dict) -> Dict:
+    """Prefere a cópia em ``/static/product-images`` quando o arquivo existir."""
+    pid = row.get("product_id")
+    if pid is None:
+        pid = row.get("id")
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return row
+    row["image"] = product_images.resolve_image_url(pid, row.get("image"))
+    return row
 
 
 def list_event_products(event_id: int) -> List[Dict]:
@@ -322,7 +556,9 @@ def list_event_products(event_id: int) -> List[Dict]:
                 p.sku,
                 p.category,
                 p.image,
-                p.price,
+                p.price          AS library_price,
+                ep.price         AS event_price,
+                COALESCE(ep.price, p.price) AS price,
                 p.active         AS product_active
             FROM event_products ep
             JOIN products p ON p.id = ep.product_id
@@ -331,7 +567,7 @@ def list_event_products(event_id: int) -> List[Dict]:
             """,
             (event_id,),
         ).fetchall()
-        return [dict(r) for r in rows]
+        return [_with_resolved_product_image(dict(r)) for r in rows]
 
 
 _EVENT_PRODUCTS_ADMIN_FROM = """
@@ -345,27 +581,15 @@ def _event_products_admin_filter_clause(
     q: Optional[str],
     categoria: str,
     status: str,
+    entrega: str = "todos",
 ) -> Tuple[str, List]:
     """Cláusula AND … para filtros da grade de estoque do evento (admin)."""
     parts: List[str] = []
     params: List = []
-    if q:
-        qs = q.strip()
-        like = f"%{qs.lower()}%"
-        or_parts = [
-            "LOWER(p.name) LIKE ?",
-            "LOWER(COALESCE(p.description, '')) LIKE ?",
-            "LOWER(COALESCE(p.sku, '')) LIKE ?",
-        ]
-        or_params: List = [like, like, like]
-        id_part = qs.lstrip("#").strip()
-        if id_part.isdigit():
-            or_parts.append("p.id = ?")
-            or_params.append(int(id_part))
-            or_parts.append("INSTR(CAST(p.id AS TEXT), ?) > 0")
-            or_params.append(id_part)
-        parts.append("(" + " OR ".join(or_parts) + ")")
-        params.extend(or_params)
+    search_sql, search_params = _product_catalog_like_clause(q, include_sku_aliases=True)
+    if search_sql:
+        parts.append(search_sql)
+        params.extend(search_params)
     cat = (categoria or "todos").strip().lower()
     if cat != "todos":
         parts.append("LOWER(p.category) = LOWER(?)")
@@ -378,12 +602,27 @@ def _event_products_admin_filter_clause(
         )
     elif st == "baixo":
         parts.append(
-            "ep.min_stock > 0 AND ep.stock > 0 AND ep.stock < ep.min_stock"
+            "p.active = 1 AND ep.min_stock > 0 AND ep.stock > 0 AND ep.stock < ep.min_stock"
         )
     elif st == "sem_estoque":
-        parts.append("ep.stock <= 0")
+        parts.append("p.active = 1 AND ep.stock <= 0")
     elif st == "inativo":
         parts.append("p.active = 0")
+    else:
+        parts.append("p.active = 1")
+    ent = (entrega or "todos").strip().lower()
+    if ent == "pendente":
+        parts.append(
+            """EXISTS (
+                SELECT 1
+                  FROM transaction_items ti
+                  JOIN transactions t ON t.id = ti.transaction_id
+                 WHERE t.event_id = ep.event_id
+                   AND LOWER(TRIM(COALESCE(t.status, ''))) = 'confirmado'
+                   AND CAST(ti.product_id AS INTEGER) = ep.product_id
+                   AND (ti.quantity - COALESCE(ti.quantity_delivered, 0)) > 0
+            )"""
+        )
     extra = f" AND {' AND '.join(parts)}" if parts else ""
     return extra, params
 
@@ -393,9 +632,10 @@ def count_event_products_filtered(
     q: Optional[str],
     categoria: str = "todos",
     status: str = "todos",
+    entrega: str = "todos",
 ) -> int:
     """Quantidade de vínculos evento–produto após filtros (lista admin)."""
-    extra, params = _event_products_admin_filter_clause(q, categoria, status)
+    extra, params = _event_products_admin_filter_clause(q, categoria, status, entrega)
     sql = f"SELECT COUNT(*) AS c {_EVENT_PRODUCTS_ADMIN_FROM}{extra}"
     with get_conn() as conn:
         row = conn.execute(sql, (event_id, *params)).fetchone()
@@ -410,9 +650,13 @@ def list_event_products_slice(
     *,
     limit: int,
     offset: int,
+    entrega: str = "todos",
 ) -> List[Dict]:
     """Página da grade de estoque do evento com os mesmos filtros da biblioteca geral."""
-    extra, params = _event_products_admin_filter_clause(q, categoria, status)
+    extra, params = _event_products_admin_filter_clause(q, categoria, status, entrega)
+    order_sql, order_params = _product_search_order_clause(
+        q, alias="p", fallback="p.name COLLATE NOCASE"
+    )
     sql = f"""
             SELECT
                 ep.id            AS ep_id,
@@ -427,19 +671,23 @@ def list_event_products_slice(
                 p.category,
                 p.description,
                 p.image,
-                p.price,
-                p.active         AS product_active
+                p.price          AS library_price,
+                ep.price         AS event_price,
+                COALESCE(ep.price, p.price) AS price,
+                p.active         AS product_active,
+                p.variant_name,
+                p.subtitle
             {_EVENT_PRODUCTS_ADMIN_FROM}
             {extra}
-            ORDER BY p.name COLLATE NOCASE
+            ORDER BY {order_sql}
             LIMIT ? OFFSET ?
             """
     with get_conn() as conn:
         rows = conn.execute(
             sql,
-            (event_id, *params, limit, offset),
+            (event_id, *params, *order_params, limit, offset),
         ).fetchall()
-        return [dict(r) for r in rows]
+        return [_with_resolved_product_image(dict(r)) for r in rows]
 
 
 def _event_products_slice_row_to_client(row: Dict) -> Dict:
@@ -455,10 +703,12 @@ def _event_products_slice_row_to_client(row: Dict) -> Dict:
         "id": pid,
         "sku": sku,
         "nome": row["name"],
+        "variante": (row.get("variant_name") or "").strip(),
         "categoria": row["category"],
         "descricao": (row.get("description") or ""),
         "preco": float(row["price"] or 0),
-        "imagem": row["image"],
+        "preco_biblioteca": float(row.get("library_price") or row["price"] or 0),
+        "imagem": product_images.resolve_image_url(pid, row["image"]),
         "estoque": estoque,
         "estoque_minimo": estoque_minimo,
         "ativo": bool(row["product_active"]),
@@ -513,7 +763,7 @@ def get_event_stock_stats(event_id: int) -> Dict:
             SELECT
                 COUNT(ep.id)                                                                           AS products_count,
                 COALESCE(SUM(ep.stock), 0)                                                             AS units_in_stock,
-                COALESCE(SUM(ep.stock * p.price), 0)                                                   AS stock_value,
+                COALESCE(SUM(ep.stock * COALESCE(ep.price, p.price)), 0)                               AS stock_value,
                 COALESCE(SUM(CASE WHEN ep.stock = 0 THEN 1 ELSE 0 END), 0)                            AS sem_estoque,
                 COALESCE(SUM(CASE WHEN ep.stock > 0 AND ep.stock < ep.min_stock THEN 1 ELSE 0 END), 0) AS below_min
             FROM event_products ep
@@ -659,11 +909,13 @@ def get_event_sales_dashboard(
         "sales_by_day_pagination": sales_by_day_pagination,
         "top_products": top_products,
         "sales_days_limit": lim_days,
+        "goals": get_event_goal_progress(eid),
     }
 # Limites para exportações CSV (painel admin).
 EXPORT_MOVEMENTS_CSV_CAP = 100_000
 EXPORT_SALES_SUMMARY_CSV_CAP = 50_000
 EXPORT_SALES_ITEMS_CSV_CAP = 200_000
+EXPORT_STOCK_CSV_CAP = 50_000
 
 
 def list_transactions_summary_for_event_period(
@@ -671,16 +923,18 @@ def list_transactions_summary_for_event_period(
     *,
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
+    seller_id: Optional[int] = None,
     limit: int = EXPORT_SALES_SUMMARY_CSV_CAP,
 ) -> List[Dict]:
     """Pedidos com venda registrada em ``stock_movements`` para o evento (``movement_type='venda'``).
 
     ``date_from`` / ``date_to``: ``YYYY-MM-DD``, comparados com ``date(transactions.created_at)`` (inclusive).
+    ``seller_id``: restringe a um vendedor; ``None`` exporta todos.
     """
     cap = max(1, min(int(limit), EXPORT_SALES_SUMMARY_CSV_CAP))
     sql = (
         "SELECT t.id, t.order_number, t.created_at, t.total, t.items_count, t.status, "
-        "t.client_name, t.client_cpf, t.client_zipcode, t.client_address, "
+        "t.client_name, t.client_cpf, t.client_email, t.client_phone, t.client_zipcode, t.client_address, "
         "t.client_number, t.client_complement, t.client_city, t.client_state, "
         "t.seller_id, t.seller_name, t.payment_method, t.card_installments, t.aut, "
         "t.client_cro_uf, t.client_cro_numero "
@@ -692,6 +946,9 @@ def list_transactions_summary_for_event_period(
         " AND t.status = 'confirmado'"
     )
     params: List = [int(event_id)]
+    if seller_id is not None:
+        sql += " AND t.seller_id = ?"
+        params.append(int(seller_id))
     if date_from:
         sql += " AND date(t.created_at) >= date(?)"
         params.append(date_from)
@@ -710,12 +967,20 @@ def list_transaction_items_for_event_period(
     *,
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
+    seller_id: Optional[int] = None,
     limit: int = EXPORT_SALES_ITEMS_CSV_CAP,
 ) -> List[Dict]:
-    """Itens de pedidos cuja venda está ligada ao evento (via ``stock_movements``)."""
+    """Itens de pedidos cuja venda está ligada ao evento (via ``stock_movements``).
+
+    Inclui dados do pedido/cliente para a exportação unificada (``nivel=completo``).
+    """
     cap = max(1, min(int(limit), EXPORT_SALES_ITEMS_CSV_CAP))
     sql = (
         "SELECT ti.id AS item_id, t.id AS transaction_id, t.order_number, t.created_at, "
+        "t.status, t.total, t.items_count, "
+        "t.client_name, t.client_cpf, t.client_email, t.client_phone, t.client_zipcode, t.client_address, "
+        "t.client_number, t.client_complement, t.client_city, t.client_state, "
+        "t.client_cro_uf, t.client_cro_numero, "
         "t.seller_id, t.seller_name, t.payment_method, t.card_installments, t.aut, "
         "ti.product_id, ti.product_name, ti.category, ti.product_sku, "
         "ti.quantity, ti.unit_price, ti.subtotal "
@@ -728,6 +993,9 @@ def list_transaction_items_for_event_period(
         " AND t.status = 'confirmado'"
     )
     params: List = [int(event_id)]
+    if seller_id is not None:
+        sql += " AND t.seller_id = ?"
+        params.append(int(seller_id))
     if date_from:
         sql += " AND date(t.created_at) >= date(?)"
         params.append(date_from)
@@ -761,8 +1029,8 @@ def get_event_financial_report(
     - ``kpis``           : {orders, revenue, avg_ticket, refunds_count,
                             refunds_value, items_sold}
     - ``payment_methods``: lista {method, orders, revenue}
-    - ``stock_summary``  : {initial_units, entries, exits_manual, sold_units,
-                            refunded_units, losses_units, final_units,
+    - ``stock_summary``  : {entries, exits_manual, sold_units,
+                            refunded_units, final_units,
                             products_count, sem_estoque, below_min, stock_value}
     - ``top_skus``       : lista (top 10) {rank, sku, product_name, product_id,
                             units_sold, revenue, refunded_units}
@@ -796,7 +1064,7 @@ def get_event_financial_report(
     with get_conn() as conn:
         # ---------- dados do evento ----------------------------------
         ev_row = conn.execute(
-            "SELECT id, name, active, created_at, description FROM events WHERE id = ?",
+            "SELECT id, name, active, operations_closed, created_at, description FROM events WHERE id = ?",
             (eid,),
         ).fetchone()
         event_data = dict(ev_row) if ev_row else {}
@@ -849,12 +1117,10 @@ def get_event_financial_report(
             ).fetchone()
             return int(row["total"] or 0) if row else 0
 
-        initial_units = _sum_mov(("inicial",))
         entries = _sum_mov(("entrada",))
         exits_manual = _sum_mov(("saida",))
         sold_units = _sum_mov(("venda",), " AND m.delta < 0")
         refunded_units = _sum_mov(("venda",), " AND m.delta > 0")
-        losses_units = _sum_mov(("ajuste",), " AND m.delta < 0")
 
         # Estoque final (situação atual dos produtos no evento)
         final_row = conn.execute(
@@ -867,7 +1133,7 @@ def get_event_financial_report(
         # Valor do estoque e alertas (sempre estado atual, sem filtro de data)
         sv_row = conn.execute(
             "SELECT COUNT(ep.id) AS products_count, "
-            "COALESCE(SUM(ep.stock * p.price),0) AS stock_value, "
+            "COALESCE(SUM(ep.stock * COALESCE(ep.price, p.price)),0) AS stock_value, "
             "COALESCE(SUM(CASE WHEN ep.stock=0 THEN 1 ELSE 0 END),0) AS sem_estoque, "
             "COALESCE(SUM(CASE WHEN ep.stock>0 AND ep.stock<ep.min_stock THEN 1 ELSE 0 END),0) AS below_min "
             "FROM event_products ep JOIN products p ON p.id = ep.product_id "
@@ -876,12 +1142,10 @@ def get_event_financial_report(
         ).fetchone()
 
         stock_summary = {
-            "initial_units": initial_units,
             "entries": entries,
             "exits_manual": exits_manual,
             "sold_units": sold_units,
             "refunded_units": refunded_units,
-            "losses_units": losses_units,
             "final_units": final_units,
             "products_count": int(sv_row["products_count"] or 0) if sv_row else 0,
             "sem_estoque": int(sv_row["sem_estoque"] or 0) if sv_row else 0,
@@ -985,6 +1249,7 @@ def get_event_financial_report(
             "refunds_count": refunds_count,
             "refunds_value": refunds_value,
         },
+        "goals": get_event_goal_progress(eid),
         "payment_methods": payment_methods,
         "stock_summary": stock_summary,
         "top_skus": top_skus,
@@ -1140,7 +1405,10 @@ def list_event_products_for_client(event_id: int) -> List[Dict]:
     with get_conn() as conn:
         rows = conn.execute(
             """
-            SELECT p.*, ep.stock AS event_stock, ep.min_stock AS event_min_stock
+            SELECT p.*, ep.stock AS event_stock, ep.min_stock AS event_min_stock,
+                   ep.backorder_limit AS event_backorder_limit,
+                   p.price AS library_price,
+                   COALESCE(ep.price, p.price) AS event_unit_price
               FROM event_products ep
               JOIN products p ON p.id = ep.product_id
              WHERE ep.event_id = ? AND p.active = 1
@@ -1151,12 +1419,15 @@ def list_event_products_for_client(event_id: int) -> List[Dict]:
     result = []
     for r in rows:
         d = _product_row_to_client(r)
+        d["preco_biblioteca"] = float(r["library_price"] or 0)
+        d["preco"] = float(r["event_unit_price"] if r["event_unit_price"] is not None else d["preco"])
         d["estoque"] = int(r["event_stock"] or 0)
         d["estoque_minimo"] = int(r["event_min_stock"] or 0)
+        d["backorder_limit"] = int(r["event_backorder_limit"] if r["event_backorder_limit"] is not None else -1)
         d["abaixo_minimo"] = d["estoque_minimo"] > 0 and d["estoque"] < d["estoque_minimo"]
         d["sem_estoque"] = d["estoque"] <= 0
         result.append(d)
-    return result
+    return prepare_catalog_variant_groups(result)
 
 
 def list_active_event_product_stocks(event_id: int) -> List[Dict]:
@@ -1164,11 +1435,19 @@ def list_active_event_product_stocks(event_id: int) -> List[Dict]:
     with get_conn() as conn:
         rows = conn.execute(
             """
-            SELECT ep.product_id AS id, ep.stock AS estoque
+            SELECT ep.product_id AS id, ep.stock AS estoque,
+                   ep.backorder_limit
               FROM event_products ep
               JOIN products p ON p.id = ep.product_id
              WHERE ep.event_id = ? AND p.active = 1
             """,
             (int(event_id),),
         ).fetchall()
-    return [{"id": int(r["id"]), "estoque": int(r["estoque"] or 0)} for r in rows]
+    return [
+        {
+            "id": int(r["id"]),
+            "estoque": int(r["estoque"] or 0),
+            "backorder_limit": int(r["backorder_limit"] if r["backorder_limit"] is not None else -1),
+        }
+        for r in rows
+    ]

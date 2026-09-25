@@ -1,30 +1,51 @@
 """Seller accounts (seller panel)."""
 from __future__ import annotations
 
+import re
 from typing import Dict, List, Optional
 
 from .connection import _now_iso, get_conn
 
-# ---------------------------------------------------------------------------
-# Vendedores (autenticação do painel somente leitura)
-# ---------------------------------------------------------------------------
+_USERNAME_RE = re.compile(r"^[a-z0-9._-]{3,40}$")
+
+
+def normalize_seller_username(raw: str) -> str:
+    return (raw or "").strip().lower()
+
+
+def validate_seller_username(raw: str) -> str:
+    username = normalize_seller_username(raw)
+    if not username:
+        raise ValueError("Usuário do vendedor é obrigatório.")
+    if not _USERNAME_RE.fullmatch(username):
+        raise ValueError(
+            "Informe um usuário válido (3 a 40 caracteres: letras, números, ponto, hífen ou underline)."
+        )
+    return username
+
+
+def _seller_login_value(row) -> str:
+    return (row["username"] or row["email"] or "").strip()
+
 
 def ensure_seller_account(
     name: str,
-    email: str,
+    username: str,
     password_hash: str,
     pin_hash: Optional[str] = None,
 ) -> Dict:
-    """Cria uma conta de vendedor se o e-mail ainda não existir."""
-    normalized_email = (email or "").strip().lower()
+    """Cria uma conta de vendedor se o usuário ainda não existir."""
+    login = validate_seller_username(username)
     seller_name = (name or "").strip() or "Vendedor"
-    if not normalized_email:
-        raise ValueError("E-mail do vendedor é obrigatório.")
     now = _now_iso()
     with get_conn() as conn:
         row = conn.execute(
-            "SELECT * FROM sellers WHERE LOWER(email) = LOWER(?)",
-            (normalized_email,),
+            """
+            SELECT * FROM sellers
+             WHERE LOWER(COALESCE(username, '')) = ?
+                OR LOWER(email) = ?
+            """,
+            (login, login),
         ).fetchone()
         if row:
             if pin_hash and not row["pin_hash"]:
@@ -40,10 +61,10 @@ def ensure_seller_account(
         cur = conn.execute(
             """
             INSERT INTO sellers
-                (name, email, password_hash, pin_hash, active, created_at, updated_at)
-            VALUES (?, ?, ?, ?, 1, ?, ?)
+                (name, email, username, password_hash, pin_hash, active, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, 1, ?, ?)
             """,
-            (seller_name, normalized_email, password_hash, pin_hash, now, now),
+            (seller_name, login, login, password_hash, pin_hash, now, now),
         )
         created = conn.execute(
             "SELECT * FROM sellers WHERE id = ?",
@@ -54,40 +75,37 @@ def ensure_seller_account(
 
 def create_seller_account(
     name: str,
-    email: str,
+    username: str,
     password_hash: str,
     pin_hash: Optional[str] = None,
 ) -> Dict:
-    """Cria uma conta de vendedor, falhando se o e-mail já estiver em uso.
-
-    ``pin_hash`` é opcional (PIN de venda não é mais usado no fluxo atual).
-    """
-    normalized_email = (email or "").strip().lower()
+    """Cria uma conta de vendedor, falhando se o usuário já estiver em uso."""
+    login = validate_seller_username(username)
     seller_name = (name or "").strip()
     if not seller_name:
         raise ValueError("Nome do vendedor é obrigatório.")
-    if not normalized_email:
-        raise ValueError("E-mail do vendedor é obrigatório.")
-    if "@" not in normalized_email:
-        raise ValueError("Informe um e-mail válido.")
     if not (password_hash or "").strip():
         raise ValueError("Senha do vendedor é obrigatória.")
     ph = (pin_hash or "").strip() or None
     now = _now_iso()
     with get_conn() as conn:
         exists = conn.execute(
-            "SELECT 1 FROM sellers WHERE LOWER(email) = LOWER(?)",
-            (normalized_email,),
+            """
+            SELECT 1 FROM sellers
+             WHERE LOWER(COALESCE(username, '')) = ?
+                OR LOWER(email) = ?
+            """,
+            (login, login),
         ).fetchone()
         if exists:
-            raise ValueError("Já existe um vendedor com este e-mail.")
+            raise ValueError("Já existe um vendedor com este usuário.")
         cur = conn.execute(
             """
             INSERT INTO sellers
-                (name, email, password_hash, pin_hash, active, created_at, updated_at)
-            VALUES (?, ?, ?, ?, 1, ?, ?)
+                (name, email, username, password_hash, pin_hash, active, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, 1, ?, ?)
             """,
-            (seller_name, normalized_email, password_hash, ph, now, now),
+            (seller_name, login, login, password_hash, ph, now, now),
         )
         row = conn.execute(
             "SELECT * FROM sellers WHERE id = ?",
@@ -111,7 +129,7 @@ def list_sellers() -> List[Dict]:
               LEFT JOIN transactions t
                 ON t.seller_id = s.id AND t.status = 'confirmado'
              GROUP BY s.id
-             ORDER BY s.active DESC, LOWER(s.name), LOWER(s.email)
+             ORDER BY s.active DESC, LOWER(s.name), LOWER(COALESCE(s.username, s.email))
             """
         ).fetchall()
         sellers = [dict(r) for r in rows]
@@ -148,6 +166,7 @@ def list_sellers() -> List[Dict]:
             )
         for s in sellers:
             s["assigned_events"] = by_seller.get(int(s["id"]), [])
+            s["username"] = _seller_login_value(s)
     return sellers
 
 
@@ -156,7 +175,7 @@ def list_seller_pin_hashes() -> List[Dict]:
     with get_conn() as conn:
         rows = conn.execute(
             """
-            SELECT id, name, email, active, pin_hash
+            SELECT id, name, email, username, active, pin_hash
               FROM sellers
              WHERE pin_hash IS NOT NULL AND pin_hash <> ''
              ORDER BY id
@@ -165,16 +184,30 @@ def list_seller_pin_hashes() -> List[Dict]:
     return [dict(r) for r in rows]
 
 
-def get_seller_by_email(email: str) -> Optional[Dict]:
-    normalized_email = (email or "").strip().lower()
-    if not normalized_email:
+def get_seller_by_username(username: str) -> Optional[Dict]:
+    login = normalize_seller_username(username)
+    if not login:
         return None
     with get_conn() as conn:
         row = conn.execute(
-            "SELECT * FROM sellers WHERE LOWER(email) = LOWER(?)",
-            (normalized_email,),
+            """
+            SELECT * FROM sellers
+             WHERE LOWER(COALESCE(username, '')) = ?
+                OR LOWER(email) = ?
+             LIMIT 1
+            """,
+            (login, login),
         ).fetchone()
-    return dict(row) if row else None
+    if not row:
+        return None
+    data = dict(row)
+    data["username"] = _seller_login_value(data)
+    return data
+
+
+def get_seller_by_email(email: str) -> Optional[Dict]:
+    """Compatível com cadastros antigos: busca por usuário ou e-mail legado."""
+    return get_seller_by_username(email)
 
 
 def get_seller(seller_id: int) -> Optional[Dict]:
@@ -183,7 +216,11 @@ def get_seller(seller_id: int) -> Optional[Dict]:
             "SELECT * FROM sellers WHERE id = ?",
             (int(seller_id),),
         ).fetchone()
-    return dict(row) if row else None
+    if not row:
+        return None
+    data = dict(row)
+    data["username"] = _seller_login_value(data)
+    return data
 
 
 def delete_seller(seller_id: int) -> Dict:
@@ -213,33 +250,37 @@ def update_seller_account(
     seller_id: int,
     *,
     name: str,
-    email: str,
+    username: str = "",
     active: bool,
     password_hash: Optional[str] = None,
     pin_hash: Optional[str] = None,
     clear_pin_hash: bool = False,
+    email: Optional[str] = None,
 ) -> Dict:
     """Atualiza dados principais do vendedor e opcionalmente redefine a senha."""
-    normalized_email = (email or "").strip().lower()
+    login = validate_seller_username(username or email or "")
     seller_name = (name or "").strip()
     if not seller_name:
         raise ValueError("Nome do vendedor é obrigatório.")
-    if not normalized_email or "@" not in normalized_email:
-        raise ValueError("Informe um e-mail válido.")
     now = _now_iso()
     with get_conn() as conn:
         exists = conn.execute(
-            "SELECT id FROM sellers WHERE LOWER(email) = LOWER(?) AND id <> ?",
-            (normalized_email, int(seller_id)),
+            """
+            SELECT id FROM sellers
+             WHERE (LOWER(COALESCE(username, '')) = ? OR LOWER(email) = ?)
+               AND id <> ?
+            """,
+            (login, login, int(seller_id)),
         ).fetchone()
         if exists:
-            raise ValueError("Já existe outro vendedor com este e-mail.")
+            raise ValueError("Já existe outro vendedor com este usuário.")
         updates = [
             "name = ?",
             "email = ?",
+            "username = ?",
             "active = ?",
         ]
-        params: List = [seller_name, normalized_email, 1 if active else 0]
+        params: List = [seller_name, login, login, 1 if active else 0]
         if password_hash:
             updates.append("password_hash = ?")
             params.append(password_hash)
@@ -264,4 +305,6 @@ def update_seller_account(
         ).fetchone()
     if row is None:
         raise ValueError("Vendedor não encontrado.")
-    return dict(row)
+    data = dict(row)
+    data["username"] = _seller_login_value(data)
+    return data

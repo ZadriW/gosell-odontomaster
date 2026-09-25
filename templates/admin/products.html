@@ -12,11 +12,25 @@
                 {{ stock.units_in_stock }} unidades nos eventos
             </p>
         </div>
-        <a class="admin-btn admin-btn--ghost" href="{{ url_for('admin_events') }}"
-           title="Abrir lista de eventos; em cada evento use a aba Movimentações">
-            <i class="fa-solid fa-right-left" aria-hidden="true"></i>
-            Movimentações por evento
-        </a>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+            <form method="post" action="{{ url_for('admin_sync_catalog_wake') }}">
+                {% include 'partials/csrf_field.html' %}
+                <button type="submit" class="admin-btn admin-btn--ghost"
+                        title="Atualiza nomes, SKUs, preços e imagens a partir da Wake Commerce. Estoque e eventos não são alterados."
+                        onclick="return confirm('Sincronizar catálogo com a Wake Commerce?\n\nIsso atualiza nomes, SKUs, preços-base e imagens.\nEstoque, vendas e promoções NÃO serão afetados.');">
+                    <i class="fa-solid fa-arrows-rotate" aria-hidden="true"></i>
+                    Sincronizar com ERP
+                </button>
+            </form>
+            <form method="post" action="{{ url_for('admin_products_cache_images') }}">
+                {% include 'partials/csrf_field.html' %}
+                <button type="submit" class="admin-btn admin-btn--ghost"
+                        title="Baixa as fotos da Wake para este computador. Use com internet antes do evento.">
+                    <i class="fa-solid fa-images" aria-hidden="true"></i>
+                    Salvar imagens (offline)
+                </button>
+            </form>
+        </div>
     </header>
 
     <form class="admin-filters" method="get" action="{{ url_for('admin_products') }}">
@@ -28,7 +42,7 @@
                     type="search"
                     name="q"
                     value="{{ filters.q }}"
-                    placeholder="Nome, SKU ou ID do produto..."
+                    placeholder="Nome, variante, SKU ou ID..."
                     class="admin-filter__input"
                     autocomplete="off"
                     inputmode="search"
@@ -66,15 +80,32 @@
         </div>
     </form>
 
+    <div class="admin-stock__toolbar">
+        <button type="button"
+                class="admin-btn admin-btn--primary"
+                id="bulk-stock-open-btn"
+                disabled
+                {% if not events_for_modal %}data-no-events="1"{% endif %}
+                title="Selecione produtos na tabela para adicionar estoque em lote">
+            <i class="fa-solid fa-boxes-packing" aria-hidden="true"></i>
+            <span id="bulk-stock-open-label">Adicionar estoque</span>
+        </button>
+    </div>
+
     <div
         class="admin-table admin-stock admin-stock--library"
         role="table"
         aria-label="Catálogo de produtos"
         data-admin-stock-list
+        data-bulk-add-url="{{ url_for('admin_products_bulk_add_to_event') }}"
         data-api-url="{{ url_for('admin_api_products', q=filters.q, categoria=filters.categoria, per_page=filters.per_page, page=pagination.page) }}"
     >
         <div class="admin-table__head admin-stock__row" role="row">
-            <span role="columnheader">Produto</span>
+            <span role="columnheader" class="admin-stock__product-head">
+                <input type="checkbox" class="admin-stock__select-checkbox" id="bulk-stock-select-all"
+                       data-bulk-select-all aria-label="Selecionar todos os produtos desta página">
+                Produto
+            </span>
             <span role="columnheader">Categoria</span>
             <span class="admin-table__col--num" role="columnheader">Preço</span>
             <span class="admin-table__col--num" role="columnheader" title="Soma das quantidades deste SKU em todos os eventos">Estoque (eventos)</span>
@@ -85,9 +116,18 @@
             {% for p in products %}
             <div class="admin-stock__row" data-product-id="{{ p.id }}">
                 <span class="admin-stock__product">
+                    <input type="checkbox" class="admin-stock__select-checkbox"
+                           data-bulk-select
+                           data-product-id="{{ p.id }}"
+                           data-product-name="{{ p.nome }}"
+                           data-product-sku="{{ p.sku or '' }}"
+                           data-product-img="{{ p.imagem or '' }}"
+                           aria-label="Selecionar {{ p.nome }} para adicionar a um evento">
                     <img class="admin-stock__thumb" src="{{ p.imagem }}" alt="{{ p.nome }}" loading="lazy" onerror="this.style.visibility='hidden'">
                     <span>
                         <strong>{{ p.nome }}</strong>
+                        {% if p.variante %}<span class="admin-stock__variant">{{ p.variante }}</span>{% endif %}
+                        {% if p.subtitle %}<span class="admin-stock__subtitle">{{ p.subtitle }}</span>{% endif %}
                         <small class="admin-stock__meta">ID: {{ p.id }} | SKU: <code class="admin-stock__sku-code">{{ p.sku or '—' }}</code></small>
                     </span>
                 </span>
@@ -182,8 +222,7 @@
         </header>
 
         <div class="admin-modal__body">
-            {# tira de produto #}
-            <div class="admin-modal__product-strip">
+            <div class="admin-modal__product-strip" id="add-to-event-strip">
                 <img id="add-to-event-img" class="admin-modal__product-thumb" src="" alt="" aria-hidden="true">
                 <div class="admin-modal__product-meta">
                     <strong id="add-to-event-name" class="admin-modal__product-name"></strong>
@@ -229,32 +268,17 @@
             </p>
             {% endif %}
 
-            {# campos de estoque lado a lado #}
-            <div class="admin-modal__stock-row">
-                <div class="admin-field">
-                    <label class="admin-field__label" for="add-to-event-initial-stock">Estoque inicial</label>
-                    <input
-                        id="add-to-event-initial-stock"
-                        class="admin-field__input"
-                        type="number"
-                        name="initial_stock"
-                        min="0"
-                        value="0"
-                        placeholder="0"
-                    >
-                </div>
-                <div class="admin-field">
-                    <label class="admin-field__label" for="add-to-event-min-stock">Estoque mínimo</label>
-                    <input
-                        id="add-to-event-min-stock"
-                        class="admin-field__input"
-                        type="number"
-                        name="min_stock"
-                        min="0"
-                        value="0"
-                        placeholder="0"
-                    >
-                </div>
+            <div class="admin-field">
+                <label class="admin-field__label" for="add-to-event-initial-stock">Estoque inicial</label>
+                <input
+                    id="add-to-event-initial-stock"
+                    class="admin-field__input"
+                    type="number"
+                    name="initial_stock"
+                    min="0"
+                    value="0"
+                    placeholder="0"
+                >
             </div>
 
             <div class="admin-field">
@@ -287,6 +311,70 @@
         </div>
     </div>
 </dialog>
+
+<dialog class="admin-modal admin-modal--bulk-stock" id="bulk-stock-modal" aria-labelledby="bulk-stock-modal-title" aria-modal="true">
+    <div class="admin-modal__panel">
+        <header class="admin-modal__header">
+            <h2 class="admin-modal__title" id="bulk-stock-modal-title">
+                <i class="fa-solid fa-boxes-packing" aria-hidden="true"></i>
+                Adicionar estoque em lote
+            </h2>
+            <button type="button" class="admin-modal__close" id="bulk-stock-close" aria-label="Fechar modal">
+                <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+            </button>
+        </header>
+
+        <div class="admin-modal__body">
+            <p class="admin-modal__feedback" id="bulk-stock-feedback" hidden></p>
+
+            <div class="bulk-stock-modal__list" id="bulk-stock-list" role="list" aria-label="Produtos selecionados"></div>
+
+            <div class="admin-field">
+                <label class="admin-field__label" for="bulk-stock-event">Evento</label>
+                <select id="bulk-stock-event" class="admin-field__input" required>
+                    <option value="">Selecione um evento…</option>
+                    {% for ev in events_for_modal %}
+                    <option value="{{ ev.id }}">{{ ev.name }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+
+            {% if not events_for_modal %}
+            <p class="admin-modal__hint">
+                <i class="fa-solid fa-circle-info" aria-hidden="true"></i>
+                Nenhum evento ativo encontrado. Crie um evento primeiro.
+            </p>
+            {% endif %}
+
+            <div class="admin-field">
+                <label class="admin-field__label" for="bulk-stock-reason">Motivo / Ref.</label>
+                <input
+                    id="bulk-stock-reason"
+                    class="admin-field__input"
+                    type="text"
+                    maxlength="500"
+                    required
+                    placeholder="Ex.: Reposição estande — NF 8844"
+                    autocomplete="off"
+                >
+                <span class="admin-field__hint">Aplicado a todos os produtos selecionados nesta entrada.</span>
+            </div>
+
+            <div class="admin-modal__footer">
+                <button type="button" class="admin-btn admin-btn--ghost" id="bulk-stock-cancel">Cancelar</button>
+                <button
+                    type="button"
+                    class="admin-btn admin-btn--primary"
+                    id="bulk-stock-submit"
+                    {% if not events_for_modal %}disabled{% endif %}
+                >
+                    <i class="fa-solid fa-plus" aria-hidden="true"></i>
+                    Adicionar estoque
+                </button>
+            </div>
+        </div>
+    </div>
+</dialog>
 {% endblock %}
 
 {% block admin_scripts %}
@@ -305,12 +393,12 @@
     const skuEl     = document.getElementById('add-to-event-sku');
     const feedbackEl = document.getElementById('add-to-event-feedback');
     const stockIn   = document.getElementById('add-to-event-initial-stock');
-    const minIn     = document.getElementById('add-to-event-min-stock');
     const motivoRef = document.getElementById('add-to-event-motivo-ref');
     const previewEl  = document.getElementById('add-to-event-stock-preview');
     const previewQty = document.getElementById('add-to-event-preview-qty');
     const previewMin = document.getElementById('add-to-event-preview-min');
     const newMsgEl   = document.getElementById('add-to-event-stock-new');
+    const stockTable = document.querySelector('[data-admin-stock-list]');
 
     if (!modal) return;
 
@@ -320,6 +408,14 @@
 
     function escHtml(s) {
         return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    }
+
+    function resetStockFields() {
+        selectEv.value = '';
+        stockIn.value  = '0';
+        if (motivoRef) motivoRef.value = '';
+        hidePreview();
+        hideFeedback();
     }
 
     function hidePreview() {
@@ -419,12 +515,16 @@
     }
 
     function showFlash(message, category = 'success') {
-        const main = document.querySelector('.admin-main');
-        if (!main) return;
-        const wrap = main.querySelector('.admin-flashes') || (() => {
+        if (typeof window.showAdminFlash === 'function') {
+            window.showAdminFlash(message, category);
+            return;
+        }
+        const wrap = document.getElementById('admin-flashes') || (() => {
             const d = document.createElement('div');
+            d.id = 'admin-flashes';
             d.className = 'admin-flashes';
-            main.prepend(d);
+            const shell = document.querySelector('.admin-shell');
+            (shell || document.body).appendChild(d);
             return d;
         })();
         const icon = category === 'success' ? 'fa-circle-check' : 'fa-triangle-exclamation';
@@ -446,12 +546,7 @@
         const img = btn.dataset.productImg;
         imgEl.src     = img || '';
         imgEl.hidden  = !img;
-        selectEv.value = '';
-        stockIn.value  = '0';
-        minIn.value    = '0';
-        if (motivoRef) motivoRef.value = '';
-        hidePreview();
-        hideFeedback();
+        resetStockFields();
         modal.showModal();
         if (motivoRef) motivoRef.focus(); else selectEv.focus();
     }
@@ -495,6 +590,7 @@
 
         const chosenEventId   = selectEv.value;
         const chosenProductId = String(currentProductId);
+        const postUrl = currentAddUrl;
 
         submitBtn.disabled = true;
         submitBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin" aria-hidden="true"></i> Adicionando…';
@@ -502,7 +598,6 @@
         const body = new FormData();
         body.append('event_id',      chosenEventId);
         body.append('initial_stock', stockIn.value || '0');
-        body.append('min_stock',     minIn.value   || '0');
         body.append('link_note',     note);
         const csrfMeta = document.querySelector('meta[name="csrf-token"]');
         if (csrfMeta && csrfMeta.content) {
@@ -511,6 +606,7 @@
 
         /* ── ETAPA 1: POST ───────────────────────────────────────────────── */
         let postOk      = false;
+        let postData    = {};
         let feedbackMsg = 'Não foi possível adicionar o produto.';
 
         const postHeaders = window.TotemApiErrors && window.TotemApiErrors.csrfFetchHeaders
@@ -519,7 +615,7 @@
                 'X-Requested-With': 'fetch',
             })
             : { Accept: 'application/json', 'X-Requested-With': 'fetch' };
-        const postRes = await fetch(currentAddUrl, {
+        const postRes = await fetch(postUrl, {
             method: 'POST',
             body,
             credentials: 'same-origin',
@@ -527,7 +623,6 @@
         }).catch(() => null);
 
         if (postRes) {
-            let postData = {};
             await postRes.text().then(t => { try { postData = JSON.parse(t); } catch {} }).catch(() => {});
             if (postRes.ok) {
                 postOk      = true;
@@ -543,26 +638,25 @@
             feedbackMsg = 'Erro de comunicação. Tente novamente.';
         }
 
-        /* ── ETAPA 2: GET de verificação (sempre executado após o POST) ──── */
-        submitBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin" aria-hidden="true"></i> Verificando…';
+        /* ── ETAPA 2: GET de verificação (produto único) ──── */
+        if (chosenProductId) {
+            submitBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin" aria-hidden="true"></i> Verificando…';
 
-        const verifyUrl = `/admin/api/eventos/${chosenEventId}/estoque/${chosenProductId}`;
-        const verifyRes = await fetch(verifyUrl, {
-            credentials: 'same-origin',
-            headers: { Accept: 'application/json' },
-        }).catch(() => null);
+            const verifyUrl = `/admin/api/eventos/${chosenEventId}/estoque/${chosenProductId}`;
+            const verifyRes = await fetch(verifyUrl, {
+                credentials: 'same-origin',
+                headers: { Accept: 'application/json' },
+            }).catch(() => null);
 
-        /* Se o GET confirma o produto no evento, garante feedback de sucesso. */
-        if (verifyRes && verifyRes.ok) {
-            postOk      = true;
-            /* Preserva mensagem de sucesso já definida; não sobrescreve com erro anterior. */
-            if (!feedbackMsg || feedbackMsg === 'Não foi possível adicionar o produto.' || feedbackMsg === 'Erro de comunicação. Tente novamente.') {
-                feedbackMsg = 'Produto adicionado ao evento.';
+            if (verifyRes && verifyRes.ok) {
+                postOk      = true;
+                if (!feedbackMsg || feedbackMsg === 'Não foi possível adicionar o produto.' || feedbackMsg === 'Erro de comunicação. Tente novamente.') {
+                    feedbackMsg = 'Produto adicionado ao evento.';
+                }
             }
         }
 
         /* Atualiza a tabela da biblioteca com o GET da lista (não bloqueia o feedback). */
-        const stockTable = document.querySelector('[data-admin-stock-list]');
         const listApiUrl = stockTable ? stockTable.dataset.apiUrl : null;
         if (listApiUrl) {
             fetch(listApiUrl, { credentials: 'same-origin', headers: { Accept: 'application/json' } })
@@ -570,7 +664,7 @@
                 .then(d => {
                     if (!d || !stockTable) return;
                     const byId = new Map((d.products || []).map(p => [String(p.id), p]));
-                    stockTable.querySelectorAll('[data-product-id]').forEach(row => {
+                    stockTable.querySelectorAll('.admin-stock__row[data-product-id]').forEach(row => {
                         const p = byId.get(String(row.dataset.productId));
                         if (!p) return;
                         const qty      = row.querySelector('[data-stock-qty]');
@@ -601,6 +695,261 @@
             submitBtn.disabled = false;
             showFeedbackError(feedbackMsg);
         }
+    });
+})();
+</script>
+<script>
+(() => {
+    'use strict';
+
+    const modal = document.getElementById('bulk-stock-modal');
+    const openBtn = document.getElementById('bulk-stock-open-btn');
+    const openLabel = document.getElementById('bulk-stock-open-label');
+    const selectAll = document.getElementById('bulk-stock-select-all');
+    const closeBtn = document.getElementById('bulk-stock-close');
+    const cancelBtn = document.getElementById('bulk-stock-cancel');
+    const submitBtn = document.getElementById('bulk-stock-submit');
+    const listEl = document.getElementById('bulk-stock-list');
+    const eventSel = document.getElementById('bulk-stock-event');
+    const reasonIn = document.getElementById('bulk-stock-reason');
+    const feedbackEl = document.getElementById('bulk-stock-feedback');
+    const stockTable = document.querySelector('[data-admin-stock-list]');
+    const bulkAddUrl = stockTable ? (stockTable.dataset.bulkAddUrl || '') : '';
+
+    if (!modal || !openBtn || !listEl) return;
+
+    function escHtml(s) {
+        return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    }
+
+    function getCheckboxes() {
+        return Array.prototype.slice.call(document.querySelectorAll('[data-bulk-select]'));
+    }
+
+    function getChecked() {
+        return getCheckboxes().filter(cb => cb.checked);
+    }
+
+    function updateOpenButton() {
+        const n = getChecked().length;
+        const noEvents = openBtn.hasAttribute('data-no-events');
+        openBtn.disabled = noEvents || n === 0;
+        if (openLabel) {
+            openLabel.textContent = n > 0 ? ('Adicionar estoque (' + n + ')') : 'Adicionar estoque';
+        }
+        if (selectAll) {
+            const all = getCheckboxes();
+            selectAll.checked = all.length > 0 && n === all.length;
+            selectAll.indeterminate = n > 0 && n < all.length;
+        }
+    }
+
+    function productThumbHtml(img, name) {
+        if (img) {
+            return '<img class="admin-modal__product-thumb bulk-stock-modal__thumb" src="' +
+                escHtml(img) + '" alt="' + escHtml(name) + '">';
+        }
+        return '<span class="admin-modal__product-thumb bulk-stock-modal__thumb bulk-stock-modal__thumb--empty" aria-hidden="true">' +
+            '<i class="fa-regular fa-image"></i></span>';
+    }
+
+    function hideFeedback() {
+        if (!feedbackEl) return;
+        feedbackEl.textContent = '';
+        feedbackEl.setAttribute('hidden', '');
+        feedbackEl.removeAttribute('role');
+        feedbackEl.classList.remove('admin-modal__feedback--error', 'admin-modal__feedback--success');
+    }
+
+    function showFeedback(msg, ok) {
+        if (!feedbackEl) return;
+        feedbackEl.textContent = msg;
+        feedbackEl.classList.toggle('admin-modal__feedback--success', ok);
+        feedbackEl.classList.toggle('admin-modal__feedback--error', !ok);
+        feedbackEl.setAttribute('role', ok ? 'status' : 'alert');
+        feedbackEl.removeAttribute('hidden');
+    }
+
+    function buildRow(cb) {
+        const id = cb.dataset.productId || '';
+        const name = cb.dataset.productName || ('Produto #' + id);
+        const sku = cb.dataset.productSku || '';
+        const img = cb.dataset.productImg || '';
+        const row = document.createElement('div');
+        row.className = 'bulk-stock-modal__row';
+        row.setAttribute('role', 'listitem');
+        row.dataset.productId = id;
+        row.innerHTML =
+            productThumbHtml(img, name) +
+            '<span class="bulk-stock-modal__row-info">' +
+                '<strong>' + escHtml(name) + '</strong>' +
+                (sku ? '<small>SKU: ' + escHtml(sku) + '</small>' : '') +
+            '</span>' +
+            '<span class="admin-field bulk-stock-modal__row-qty">' +
+                '<label class="admin-field__label" for="library-bulk-qty-' + escHtml(id) + '">Quantidade</label>' +
+                '<input id="library-bulk-qty-' + escHtml(id) + '" class="admin-field__input" type="number" ' +
+                'min="1" step="1" value="1" required data-bulk-qty="' + escHtml(id) + '">' +
+            '</span>';
+        return row;
+    }
+
+    function openModal() {
+        const checked = getChecked();
+        if (!checked.length || !bulkAddUrl) return;
+        listEl.innerHTML = '';
+        checked.forEach(cb => listEl.appendChild(buildRow(cb)));
+        listEl.classList.toggle('bulk-stock-modal__list--scroll', listEl.children.length >= 5);
+        if (eventSel) eventSel.value = '';
+        if (reasonIn) reasonIn.value = '';
+        hideFeedback();
+        modal.showModal();
+        if (eventSel) eventSel.focus();
+    }
+
+    function closeModal() {
+        modal.close();
+        hideFeedback();
+        listEl.innerHTML = '';
+        listEl.classList.remove('bulk-stock-modal__list--scroll');
+    }
+
+    function refreshLibraryQty() {
+        const listApiUrl = stockTable ? stockTable.dataset.apiUrl : '';
+        if (!listApiUrl) return;
+        fetch(listApiUrl, { credentials: 'same-origin', headers: { Accept: 'application/json' } })
+            .then(r => r.ok ? r.json() : null)
+            .then(d => {
+                if (!d || !stockTable) return;
+                const byId = new Map((d.products || []).map(p => [String(p.id), p]));
+                stockTable.querySelectorAll('.admin-stock__row[data-product-id]').forEach(row => {
+                    const p = byId.get(String(row.dataset.productId));
+                    if (!p) return;
+                    const qty = row.querySelector('[data-stock-qty]');
+                    if (qty) qty.innerHTML = '<strong>' + escHtml(String(p.estoque ?? '')) + '</strong>';
+                });
+            })
+            .catch(() => {});
+    }
+
+    function uncheckAdded(ids) {
+        const added = new Set((ids || []).map(String));
+        if (!added.size) return;
+        getCheckboxes().forEach(cb => {
+            if (added.has(String(cb.dataset.productId || ''))) cb.checked = false;
+        });
+        listEl.querySelectorAll('.bulk-stock-modal__row').forEach(row => {
+            if (added.has(String(row.dataset.productId || ''))) row.remove();
+        });
+        listEl.classList.toggle('bulk-stock-modal__list--scroll', listEl.children.length >= 5);
+        updateOpenButton();
+    }
+
+    document.addEventListener('change', e => {
+        if (e.target.matches && e.target.matches('[data-bulk-select]')) updateOpenButton();
+    });
+    if (selectAll) {
+        selectAll.addEventListener('change', () => {
+            const on = selectAll.checked;
+            getCheckboxes().forEach(cb => { cb.checked = on; });
+            updateOpenButton();
+        });
+    }
+    openBtn.addEventListener('click', openModal);
+    if (closeBtn) closeBtn.addEventListener('click', closeModal);
+    if (cancelBtn) cancelBtn.addEventListener('click', closeModal);
+    modal.addEventListener('click', e => { if (e.target === modal) closeModal(); });
+    modal.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
+    updateOpenButton();
+
+    if (!submitBtn) return;
+
+    submitBtn.addEventListener('click', async () => {
+        hideFeedback();
+        if (!eventSel || !eventSel.value) {
+            showFeedback('Selecione um evento.', false);
+            if (eventSel) eventSel.focus();
+            return;
+        }
+        const rows = Array.prototype.slice.call(listEl.querySelectorAll('[data-bulk-qty]'));
+        if (!rows.length) {
+            showFeedback('Selecione ao menos um produto.', false);
+            return;
+        }
+        for (const input of rows) {
+            const qty = parseInt(input.value, 10);
+            if (!Number.isFinite(qty) || qty < 1) {
+                showFeedback('Informe uma quantidade maior que zero em cada produto.', false);
+                input.focus();
+                return;
+            }
+        }
+        const note = reasonIn ? reasonIn.value.trim() : '';
+        if (!note) {
+            showFeedback('Informe o Motivo / Ref.', false);
+            if (reasonIn) reasonIn.focus();
+            return;
+        }
+
+        const body = new FormData();
+        body.append('event_id', eventSel.value);
+        body.append('link_note', note);
+        rows.forEach(input => {
+            const id = input.dataset.bulkQty || '';
+            body.append('product_ids', id);
+            body.append('qty_' + id, input.value);
+        });
+        const csrfMeta = document.querySelector('meta[name="csrf-token"]');
+        if (csrfMeta && csrfMeta.content) body.append('csrf_token', csrfMeta.content);
+
+        const postHeaders = window.TotemApiErrors && window.TotemApiErrors.csrfFetchHeaders
+            ? window.TotemApiErrors.csrfFetchHeaders('POST', {
+                Accept: 'application/json',
+                'X-Requested-With': 'fetch',
+            })
+            : { Accept: 'application/json', 'X-Requested-With': 'fetch' };
+
+        submitBtn.disabled = true;
+        const submitLabel = submitBtn.innerHTML;
+        submitBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin" aria-hidden="true"></i> Adicionando…';
+
+        let postData = {};
+        const postRes = await fetch(bulkAddUrl, {
+            method: 'POST',
+            body,
+            credentials: 'same-origin',
+            headers: postHeaders,
+        }).catch(() => null);
+
+        if (postRes) {
+            await postRes.text().then(t => { try { postData = JSON.parse(t); } catch (e) { postData = {}; } }).catch(() => {});
+        }
+
+        submitBtn.innerHTML = submitLabel;
+        submitBtn.disabled = openBtn.hasAttribute('data-no-events');
+
+        if (!postRes) {
+            showFeedback('Erro de comunicação. Tente novamente.', false);
+            return;
+        }
+
+        const msg = (postData && (postData.message || postData.error))
+            || (postRes.ok ? 'Produtos adicionados ao evento.' : 'Não foi possível adicionar os produtos.');
+
+        if (postRes.ok) {
+            uncheckAdded(postData.added_ids || []);
+            refreshLibraryQty();
+            const partial = postData.errors && postData.errors.length;
+            if (partial) {
+                showFeedback(msg, false);
+                return;
+            }
+            showFeedback(msg, true);
+            if (typeof window.showAdminFlash === 'function') window.showAdminFlash(msg, 'success');
+            window.setTimeout(closeModal, 900);
+            return;
+        }
+
+        showFeedback(msg, false);
     });
 })();
 </script>

@@ -1,6 +1,6 @@
 /**
  * Ampliação da miniatura do produto (`.admin-stock__thumb`) nas tabelas
- * Biblioteca de produtos e Controle de estoque do painel admin.
+ * de estoque do painel admin e do vendedor.
  */
 (() => {
     'use strict';

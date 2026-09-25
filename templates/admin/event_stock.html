@@ -4,6 +4,7 @@
 <input type="hidden" name="ret_q" value="{{ filters.q }}">
 <input type="hidden" name="ret_categoria" value="{{ filters.categoria }}">
 <input type="hidden" name="ret_status" value="{{ filters.status }}">
+<input type="hidden" name="ret_entrega" value="{{ filters.entrega }}">
 <input type="hidden" name="ret_per_page" value="{{ filters.per_page }}">
 <input type="hidden" name="ret_page" value="{{ pagination.page }}">
 {%- endmacro %}
@@ -11,13 +12,10 @@
 {% block title %}Estoque — {{ event.name }} | Dental Odonto Master{% endblock %}
 
 {% block admin_body %}
+{% set op_noun_l = event|op_noun(lower=True) %}
 <section class="admin-section">
     <header class="admin-section__header admin-section__header--row">
         <div>
-            <a class="admin-breadcrumb" href="{{ url_for('admin_event_detail', event_id=event.id) }}">
-                <i class="fa-solid fa-arrow-left" aria-hidden="true"></i>
-                {{ event.name }}
-            </a>
             <h1 class="admin-section__title">Controle de estoque</h1>
             <p class="admin-section__subtitle">
                 {{ stats.products_count }} produto(s) &middot;
@@ -26,75 +24,40 @@
                 &middot; valor: {{ stats.stock_value | brl }}
             </p>
         </div>
-        <a class="admin-btn admin-btn--ghost"
-           href="{{ url_for('admin_event_movements', event_id=event.id) }}">
-            <i class="fa-solid fa-right-left" aria-hidden="true"></i>
-            Ver movimentações
-        </a>
+        <div class="admin-section__header-actions" style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;">
+            <form method="post" action="{{ url_for('admin_sync_catalog_wake') }}">
+                {% include 'partials/csrf_field.html' %}
+                <button type="submit" class="admin-btn admin-btn--ghost"
+                        title="Atualiza nomes, SKUs, preços e imagens a partir da Wake Commerce. Estoque e operações não são alterados."
+                        onclick="return confirm('Sincronizar catálogo com a Wake Commerce?\n\nIsso atualiza nomes, SKUs, preços-base e imagens.\nEstoque, vendas e promoções NÃO serão afetados.');">
+                    <i class="fa-solid fa-arrows-rotate" aria-hidden="true"></i>
+                    Sincronizar com ERP
+                </button>
+            </form>
+            <form method="post" action="{{ url_for('admin_event_cache_product_images', event_id=event.id) }}">
+                {% include 'partials/csrf_field.html' %}
+                {{ event_stock_preserved_filters(filters, pagination) }}
+                <button type="submit" class="admin-btn admin-btn--ghost"
+                        title="Baixa as fotos da Wake para este computador. Use com internet antes do {{ op_noun_l }}.">
+                    <i class="fa-solid fa-images" aria-hidden="true"></i>
+                    Salvar imagens (offline)
+                </button>
+            </form>
+            <a class="admin-btn admin-btn--ghost"
+               href="{{ url_for('admin_event_stock_export_csv', event_id=event.id, q=filters.q, categoria=filters.categoria, status=filters.status, entrega=filters.entrega) }}"
+               title="Exportar a lista de estoque filtrada em CSV">
+                <i class="fa-solid fa-file-csv" aria-hidden="true"></i>
+                Exportar CSV
+            </a>
+        </div>
     </header>
 
-    <form class="admin-filters" method="get" action="{{ url_for('admin_event_stock', event_id=event.id) }}">
-        <label class="admin-filter admin-filter--search">
-            <span class="admin-filter__label">Buscar</span>
-            <span class="admin-filter__wrap">
-                <i class="fa-solid fa-magnifying-glass admin-filter__icon" aria-hidden="true"></i>
-                <input
-                    type="search"
-                    name="q"
-                    value="{{ filters.q }}"
-                    placeholder="Nome ou descrição..."
-                    class="admin-filter__input"
-                >
-            </span>
-        </label>
-
-        <label class="admin-filter">
-            <span class="admin-filter__label">Categoria</span>
-            <select name="categoria" class="admin-filter__input">
-                <option value="todos" {% if filters.categoria == 'todos' %}selected{% endif %}>Todas</option>
-                {% for c in categories %}
-                <option value="{{ c }}" {% if filters.categoria == c %}selected{% endif %}>{{ c }}</option>
-                {% endfor %}
-            </select>
-        </label>
-
-        <label class="admin-filter">
-            <span class="admin-filter__label">Situação</span>
-            <select name="status" class="admin-filter__input">
-                <option value="todos" {% if filters.status == 'todos' %}selected{% endif %}>Todas</option>
-                <option value="ok" {% if filters.status == 'ok' %}selected{% endif %}>Estoque OK</option>
-                <option value="baixo" {% if filters.status == 'baixo' %}selected{% endif %}>Abaixo do mínimo</option>
-                <option value="sem_estoque" {% if filters.status == 'sem_estoque' %}selected{% endif %}>Sem estoque</option>
-                <option value="inativo" {% if filters.status == 'inativo' %}selected{% endif %}>Inativo</option>
-            </select>
-        </label>
-
-        <label class="admin-filter">
-            <span class="admin-filter__label">Por página</span>
-            <select name="per_page" class="admin-filter__input" title="Quantidade de produtos listados por requisição">
-                {% for n in allowed_per_page %}
-                <option value="{{ n }}" {% if filters.per_page == n %}selected{% endif %}>{{ n }} produtos</option>
-                {% endfor %}
-            </select>
-        </label>
-
-        <input type="hidden" name="page" value="1" aria-hidden="true">
-
-        <div class="admin-filters__actions">
-            <button type="submit" class="admin-btn admin-btn--primary">
-                <i class="fa-solid fa-filter" aria-hidden="true"></i>
-                Aplicar
-            </button>
-            <a href="{{ url_for('admin_event_stock', event_id=event.id) }}" class="admin-btn admin-btn--ghost">Limpar</a>
-        </div>
-    </form>
-
     {# ---- Adicionar produto ---- #}
-    {% if event.active %}
+    {% if event_ops_open(event) %}
     <div class="admin-card admin-card--form" style="margin-bottom:16px;">
         <h2 class="admin-card__title">
             <i class="fa-solid fa-plus" aria-hidden="true"></i>
-            Adicionar produto ao evento
+            Adicionar produto ao {{ op_noun_l }}
         </h2>
         <form method="post"
               action="{{ url_for('admin_event_add_product', event_id=event.id) }}"
@@ -130,9 +93,13 @@
             Importar produtos via planilha
         </h2>
         <p class="admin-card__subtitle">
-            Planilha <strong>.xls</strong> de estoque:
-            coluna <strong>A</strong> = SKU, coluna <strong>E</strong> = quantidade.
-            Duplicatas são somadas; O resultado mostra o que foi importado ou não encontrado.
+            Planilha <strong>.xls</strong> ou <strong>.xlsx</strong>:
+            O preço só é atualizado se houver cabeçalho explícito
+            (<strong>PREÇO</strong>, <strong>VALOR UNITÁRIO</strong> ou <strong>VALOR UNIDADE</strong>).
+            Planilha só de estoque não altera preços já definidos no {{ op_noun_l }}.
+            Sem cabeçalho de preço, produtos novos usam o preço-base da biblioteca.
+            Sem quantidade, sobe com estoque 0. Duplicatas na planilha são somadas.
+            Se o produto já estiver no {{ op_noun_l }}, a quantidade importada é somada ao estoque atual.
         </p>
         <form method="post"
               action="{{ url_for('admin_event_import_xls', event_id=event.id) }}"
@@ -142,9 +109,9 @@
             {% include 'partials/csrf_field.html' %}
             {{ event_stock_preserved_filters(filters, pagination) }}
             <div class="admin-field">
-                <label class="admin-field__label" for="xls-upload">Arquivo de planilha (.xls)</label>
+                <label class="admin-field__label" for="xls-upload">Arquivo de planilha (.xls ou .xlsx)</label>
                 <div class="admin-import-xls__drop-zone" id="xlsDropZone" role="button" tabindex="0"
-                     aria-label="Clique ou arraste uma planilha .xls aqui">
+                     aria-label="Clique ou arraste uma planilha .xls ou .xlsx aqui">
                     <input id="xls-upload" type="file" name="xls_file"
                            accept=".xls,.xlsx"
                            class="admin-import-xls__input"
@@ -153,11 +120,11 @@
                     <div class="admin-import-xls__drop-content" id="xlsDropContent">
                         <i class="fa-solid fa-file-arrow-up admin-import-xls__icon" aria-hidden="true"></i>
                         <span class="admin-import-xls__label">Arraste a planilha aqui ou <strong>clique para selecionar</strong></span>
-                        <span class="admin-import-xls__hint" id="xlsFileHint">Aceito: .xls</span>
+                        <span class="admin-import-xls__hint" id="xlsFileHint">Aceito: .xls e .xlsx</span>
                     </div>
                 </div>
                 <span id="hint-xls-upload" class="admin-filter__hint">
-                    Coluna A = SKU/código · Coluna E = Qtd. Disponível · Máx. 5 MB.
+                    Coluna A = SKU/código · Coluna C = Preço unitário (opcional) · Coluna E = Qtd. Disponível (opcional) · Também aceita .xlsx · Máx. 5 MB.
                 </span>
             </div>
             <div class="admin-card__actions">
@@ -170,24 +137,112 @@
     </div>
     {% endif %}
 
+    <form class="admin-filters" method="get" action="{{ url_for('admin_event_stock', event_id=event.id) }}#lista"
+          data-scroll-to-table>
+        <label class="admin-filter admin-filter--search">
+            <span class="admin-filter__label">Buscar</span>
+            <span class="admin-filter__wrap">
+                <i class="fa-solid fa-magnifying-glass admin-filter__icon" aria-hidden="true"></i>
+                <input
+                    type="search"
+                    name="q"
+                    value="{{ filters.q }}"
+                    placeholder="Nome, variante, SKU ou ID..."
+                    class="admin-filter__input"
+                >
+            </span>
+        </label>
+
+        <label class="admin-filter">
+            <span class="admin-filter__label">Categoria</span>
+            <select name="categoria" class="admin-filter__input">
+                <option value="todos" {% if filters.categoria == 'todos' %}selected{% endif %}>Todas</option>
+                {% for c in categories %}
+                <option value="{{ c }}" {% if filters.categoria == c %}selected{% endif %}>{{ c }}</option>
+                {% endfor %}
+            </select>
+        </label>
+
+        <label class="admin-filter">
+            <span class="admin-filter__label">Situação</span>
+            <select name="status" class="admin-filter__input">
+                <option value="todos" {% if filters.status == 'todos' %}selected{% endif %}>Todas</option>
+                <option value="ok" {% if filters.status == 'ok' %}selected{% endif %}>Estoque OK</option>
+                <option value="baixo" {% if filters.status == 'baixo' %}selected{% endif %}>Abaixo do mínimo</option>
+                <option value="sem_estoque" {% if filters.status == 'sem_estoque' %}selected{% endif %}>Sem estoque</option>
+                <option value="inativo" {% if filters.status == 'inativo' %}selected{% endif %}>Inativo</option>
+            </select>
+        </label>
+
+        <label class="admin-filter">
+            <span class="admin-filter__label">Entrega</span>
+            <select name="entrega" class="admin-filter__input">
+                <option value="todos" {% if filters.entrega == 'todos' %}selected{% endif %}>Todas</option>
+                <option value="pendente" {% if filters.entrega == 'pendente' %}selected{% endif %}>Retirada pendente</option>
+            </select>
+        </label>
+
+        <label class="admin-filter">
+            <span class="admin-filter__label">Por página</span>
+            <select name="per_page" class="admin-filter__input" title="Quantidade de produtos listados por requisição">
+                {% for n in allowed_per_page %}
+                <option value="{{ n }}" {% if filters.per_page == n %}selected{% endif %}>{{ n }} produtos</option>
+                {% endfor %}
+            </select>
+        </label>
+
+        <input type="hidden" name="page" value="1" aria-hidden="true">
+
+        <div class="admin-filters__actions">
+            <button type="submit" class="admin-btn admin-btn--primary">
+                <i class="fa-solid fa-filter" aria-hidden="true"></i>
+                Aplicar
+            </button>
+            <a href="{{ url_for('admin_event_stock', event_id=event.id) }}" class="admin-btn admin-btn--ghost">Limpar</a>
+        </div>
+    </form>
+
     {# ---- Tabela de produtos ---- #}
+    {% with show_price=true %}
+    {% include 'partials/admin_stock_legend.html' %}
+    {% endwith %}
+
+    {% if event_ops_open(event) %}
+    <div class="admin-stock__toolbar">
+        <button type="button"
+                class="admin-btn admin-btn--primary"
+                id="bulk-stock-open-btn"
+                disabled
+                title="Selecione produtos na tabela para adicionar estoque em lote">
+            <i class="fa-solid fa-boxes-packing" aria-hidden="true"></i>
+            <span id="bulk-stock-open-label">Adicionar estoque</span>
+        </button>
+    </div>
+    {% endif %}
+
     <div
+        id="lista"
         class="admin-table admin-stock"
         role="table"
-        aria-label="Produtos do evento {{ event.name }}"
+        aria-label="Produtos do {{ op_noun_l }} {{ event.name }}"
         data-admin-event-stock
-        data-api-url="{{ url_for('admin_api_event_stock', event_id=event.id, q=filters.q, categoria=filters.categoria, status=filters.status, per_page=filters.per_page, page=pagination.page) }}"
+        data-op-noun-l="{{ op_noun_l }}"
+        data-api-url="{{ url_for('admin_api_event_stock', event_id=event.id, q=filters.q, categoria=filters.categoria, status=filters.status, entrega=filters.entrega, per_page=filters.per_page, page=pagination.page) }}"
     >
         <div class="admin-table__head admin-stock__row admin-event__row" role="row">
-            <span role="columnheader">Produto</span>
-            <span role="columnheader">Categoria</span>
-            <span class="admin-table__col--num" role="columnheader">Preço</span>
+            <span role="columnheader" class="admin-stock__product-head">
+                {% if event_ops_open(event) %}
+                <input type="checkbox" class="admin-stock__select-checkbox" id="bulk-stock-select-all"
+                       data-bulk-select-all aria-label="Selecionar todos os produtos desta página">
+                {% endif %}
+                Produto
+            </span>
+            <span class="admin-table__col--num" role="columnheader" title="Preço de venda neste {{ op_noun_l }}">Preço</span>
+            <span class="admin-table__col--num" role="columnheader" title="Unidades vendidas neste {{ op_noun_l }} (pedidos confirmados)">Vendas</span>
             <span class="admin-table__col--num" role="columnheader" data-stock-qty>Estoque</span>
             <span class="admin-table__col--num" role="columnheader">Mínimo</span>
             <span role="columnheader">Situação</span>
-            {% if event.active %}
             <span role="columnheader" class="admin-stock__actions-head">Ações</span>
-            {% endif %}
         </div>
 
         {% if products %}
@@ -195,18 +250,40 @@
             <div class="admin-stock__row admin-event__row" data-product-id="{{ p.product_id }}">
 
                 <span class="admin-stock__product">
+                    {% if event_ops_open(event) %}
+                    <input type="checkbox" class="admin-stock__select-checkbox"
+                           data-bulk-select
+                           data-product-id="{{ p.product_id }}"
+                           data-product-name="{{ p.name }}"
+                           data-product-sku="{{ p.sku or '' }}"
+                           data-product-img="{{ p.image or '' }}"
+                           aria-label="Selecionar {{ p.name }} para entrada em lote">
+                    {% endif %}
                     <img class="admin-stock__thumb" src="{{ p.image or '' }}" alt="{{ p.name }}"
                          loading="lazy" onerror="this.style.visibility='hidden'">
                     <span>
                         <span class="admin-stock__product-name-row">
                             <strong>{{ p.name }}</strong>
+                            {% set pending_n = p.pending_delivery_units or 0 %}
+                            <span class="admin-stock__delivery-wrap"
+                                  data-stock-delivery-wrap
+                                  {% if pending_n <= 0 %}hidden{% endif %}
+                                  title="{{ pending_n }} un. aguardando retirada">
+                                <span class="admin-badge admin-badge--warn admin-tx__delivery-badge"
+                                      data-stock-delivery-badge
+                                      aria-label="Retirada pendente">
+                                    <i class="fa-solid fa-box-open" aria-hidden="true"></i>
+                                </span>
+                                <span class="admin-stock__delivery-count"
+                                      data-stock-delivery-count>{{ pending_n }}</span>
+                            </span>
                             {% set promo_tip = promo_tooltips.get(p.product_id, '') %}
                             <span class="admin-stock__promo-wrap"
                                   data-stock-promo-wrap
                                   {% if p.product_id not in promo_product_ids %}hidden{% endif %}>
                                 <span class="admin-stock__promo-tag-icon"
                                       data-stock-promo-icon
-                                      title="{{ (promo_tip or 'Produto com promoção ativa neste evento')|e }}"
+                                      title="{{ (promo_tip or ('Produto com promoção ativa neste ' ~ op_noun_l))|e }}"
                                       role="img"
                                       tabindex="0"
                                       aria-label="{{ ('Promoções: ' ~ promo_tip)|e if promo_tip else 'Em promoção' }}">
@@ -217,14 +294,26 @@
                                       role="tooltip">{{ promo_tip }}</span>
                             </span>
                         </span>
+                        {% if p.variant_name %}<span class="admin-stock__variant">{{ p.variant_name }}</span>{% endif %}
+                        {% if p.subtitle %}<span class="admin-stock__subtitle">{{ p.subtitle }}</span>{% endif %}
                         <small class="admin-stock__meta">
                             ID: {{ p.product_id }} | SKU: <code class="admin-stock__sku-code">{{ p.sku or '—' }}</code>
                         </small>
                     </span>
                 </span>
 
-                <span>{{ p.category }}</span>
-                <span class="admin-table__col--num">{{ p.price | brl }}</span>
+                <span class="admin-table__col--num admin-stock__price"
+                      data-stock-price
+                      {% if p.event_price is not none %}
+                      title="Preço personalizado neste {{ op_noun_l }}. Biblioteca: {{ p.library_price | brl }}"
+                      {% else %}
+                      title="Preço da biblioteca"
+                      {% endif %}>
+                    <span data-stock-price-value>{{ p.price | brl }}</span>{% if p.event_price is not none %}<span class="admin-stock__price-flag" data-stock-price-flag aria-hidden="true" title="Preço personalizado no {{ op_noun_l }}">*</span>{% else %}<span class="admin-stock__price-flag" data-stock-price-flag hidden aria-hidden="true">*</span>{% endif %}
+                </span>
+
+                <span class="admin-table__col--num" data-stock-sales
+                      title="Unidades vendidas neste {{ op_noun_l }} (pedidos confirmados)">{{ p.units_sold or 0 }}</span>
 
                 <span class="admin-table__col--num admin-stock__qty" data-stock-qty>
                     <strong>{{ p.stock }}</strong>
@@ -250,14 +339,14 @@
                     </span>
                 </span>
 
-                {% if event.active %}
                 <span class="admin-stock__actions">
                     <a class="admin-btn admin-btn--ghost admin-btn--sm"
                        href="{{ url_for('admin_event_stock_product', event_id=event.id, product_id=p.product_id) }}"
-                       title="Gerenciar"
-                       aria-label="Gerenciar {{ p.name }} no evento">
-                        <i class="fa-solid fa-sliders" aria-hidden="true"></i>
+                       title="{{ 'Consultar' if not event_ops_open(event) else 'Gerenciar' }}"
+                       aria-label="{{ 'Consultar' if not event_ops_open(event) else 'Gerenciar' }} {{ p.name }} no {{ op_noun_l }}">
+                        <i class="fa-solid fa-{{ 'eye' if not event_ops_open(event) else 'sliders' }}" aria-hidden="true"></i>
                     </a>
+                    {% if event_ops_open(event) %}
                     <form method="post"
                           action="{{ url_for('admin_event_remove_product', event_id=event.id, product_id=p.product_id) }}"
                           style="display:contents;">
@@ -265,14 +354,14 @@
                         {{ event_stock_preserved_filters(filters, pagination) }}
                         <button type="submit"
                                 class="admin-btn admin-btn--ghost admin-btn--sm admin-btn--danger"
-                                title="Remover do evento"
-                                aria-label="Remover {{ p.name }} do evento"
-                                onclick="return confirm('Remover {{ p.name|e }} deste evento?');">
+                                title="Remover do {{ op_noun_l }}"
+                                aria-label="Remover {{ p.name }} do {{ op_noun_l }}"
+                                onclick="return confirm('Remover {{ p.name|e }} deste {{ op_noun_l }}?');">
                             <i class="fa-solid fa-trash" aria-hidden="true"></i>
                         </button>
                     </form>
+                    {% endif %}
                 </span>
-                {% endif %}
             </div>
 
             {% endfor %}
@@ -280,7 +369,11 @@
             <div class="admin-empty">
                 <i class="fa-regular fa-folder-open" aria-hidden="true"></i>
                 {% if stats.products_count == 0 %}
-                    <p>Nenhum produto neste evento. Use o formulário acima para adicionar pelo SKU ou ID.</p>
+                    {% if event_ops_open(event) %}
+                    <p>Nenhum produto neste {{ op_noun_l }}. Use o formulário acima para adicionar pelo SKU ou ID.</p>
+                    {% else %}
+                    <p>Nenhum produto neste {{ op_noun_l }}.</p>
+                    {% endif %}
                 {% else %}
                     <p>Nenhum produto corresponde aos filtros aplicados.</p>
                 {% endif %}
@@ -289,7 +382,7 @@
     </div>
 
     {% if pagination.total > 0 %}
-    <nav class="admin-pagination" aria-label="Paginação da listagem de estoque do evento">
+    <nav class="admin-pagination" aria-label="Paginação da listagem de estoque do {{ op_noun_l }}">
         <p class="admin-pagination__summary">
             Mostrando
             <strong>{{ pagination.showing_from }}–{{ pagination.showing_to }}</strong>
@@ -299,7 +392,7 @@
         <div class="admin-pagination__nav">
             {% if pagination.has_prev %}
             <a class="admin-btn admin-btn--ghost admin-btn--sm"
-               href="{{ url_for('admin_event_stock', event_id=event.id, q=filters.q, categoria=filters.categoria, status=filters.status, per_page=filters.per_page, page=pagination.page - 1) }}"
+               href="{{ url_for('admin_event_stock', event_id=event.id, q=filters.q, categoria=filters.categoria, status=filters.status, entrega=filters.entrega, per_page=filters.per_page, page=pagination.page - 1) }}"
                rel="prev">
                 <i class="fa-solid fa-chevron-left" aria-hidden="true"></i>
                 Anterior
@@ -312,7 +405,7 @@
             {% endif %}
             {% if pagination.has_next %}
             <a class="admin-btn admin-btn--ghost admin-btn--sm"
-               href="{{ url_for('admin_event_stock', event_id=event.id, q=filters.q, categoria=filters.categoria, status=filters.status, per_page=filters.per_page, page=pagination.page + 1) }}"
+               href="{{ url_for('admin_event_stock', event_id=event.id, q=filters.q, categoria=filters.categoria, status=filters.status, entrega=filters.entrega, per_page=filters.per_page, page=pagination.page + 1) }}"
                rel="next">
                 Próxima
                 <i class="fa-solid fa-chevron-right" aria-hidden="true"></i>
@@ -327,6 +420,59 @@
     </nav>
     {% endif %}
 </section>
+
+{% if event_ops_open(event) %}
+{# Modal de entrada de estoque em lote (fora de <section> para evitar overflow/clip) #}
+<dialog class="admin-modal admin-modal--bulk-stock" id="bulk-stock-modal" aria-labelledby="bulk-stock-modal-title" aria-modal="true">
+    <div class="admin-modal__panel">
+        <header class="admin-modal__header">
+            <h2 class="admin-modal__title" id="bulk-stock-modal-title">
+                <i class="fa-solid fa-boxes-packing" aria-hidden="true"></i>
+                Adicionar estoque em lote
+            </h2>
+            <button type="button" class="admin-modal__close" id="bulk-stock-close" aria-label="Fechar modal">
+                <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+            </button>
+        </header>
+
+        <form method="post"
+              action="{{ url_for('admin_event_stock_bulk_entry', event_id=event.id) }}"
+              id="bulk-stock-form">
+            {% include 'partials/csrf_field.html' %}
+            {{ event_stock_preserved_filters(filters, pagination) }}
+
+            <div class="admin-modal__body">
+                <p class="admin-modal__feedback" id="bulk-stock-feedback" hidden></p>
+
+                <div class="bulk-stock-modal__list" id="bulk-stock-list" role="table" aria-label="Produtos selecionados"></div>
+
+                <div class="admin-field">
+                    <label class="admin-field__label" for="bulk-stock-reason">Motivo / Ref.</label>
+                    <input
+                        id="bulk-stock-reason"
+                        class="admin-field__input"
+                        type="text"
+                        name="reason"
+                        maxlength="500"
+                        required
+                        placeholder="Ex.: Reposição estande — NF 8844"
+                        autocomplete="off"
+                    >
+                    <span class="admin-field__hint">Aplicado a todos os produtos selecionados nesta entrada.</span>
+                </div>
+            </div>
+
+            <div class="admin-modal__footer">
+                <button type="button" class="admin-btn admin-btn--ghost" id="bulk-stock-cancel">Cancelar</button>
+                <button type="submit" class="admin-btn admin-btn--primary" id="bulk-stock-submit">
+                    <i class="fa-solid fa-plus" aria-hidden="true"></i>
+                    Adicionar estoque
+                </button>
+            </div>
+        </form>
+    </div>
+</dialog>
+{% endif %}
 {% endblock %}
 
 {% block admin_scripts %}
@@ -346,7 +492,7 @@
             hint.textContent = '📄 ' + name;
             zone.classList.add('admin-import-xls__drop-zone--has-file');
         } else {
-            hint.textContent = 'Aceito: .xls';
+            hint.textContent = 'Aceito: .xls e .xlsx';
             zone.classList.remove('admin-import-xls__drop-zone--has-file');
         }
     }
@@ -378,7 +524,7 @@
         var file = files[0];
         var lower = file.name.toLowerCase();
         if (!lower.endsWith('.xls') && !lower.endsWith('.xlsx')) {
-            hint.textContent = '⚠ Formato inválido. Envie um arquivo .xls';
+            hint.textContent = '⚠ Formato inválido. Envie um arquivo .xls ou .xlsx';
             zone.classList.remove('admin-import-xls__drop-zone--has-file');
             return;
         }
@@ -399,6 +545,155 @@
             btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin" aria-hidden="true"></i> Importando…';
         });
     }
+}());
+</script>
+<script>
+(function () {
+    'use strict';
+
+    var openBtn    = document.getElementById('bulk-stock-open-btn');
+    var openLabel  = document.getElementById('bulk-stock-open-label');
+    var selectAll  = document.getElementById('bulk-stock-select-all');
+    var modal      = document.getElementById('bulk-stock-modal');
+    var closeBtn   = document.getElementById('bulk-stock-close');
+    var cancelBtn  = document.getElementById('bulk-stock-cancel');
+    var listEl     = document.getElementById('bulk-stock-list');
+    var reasonIn   = document.getElementById('bulk-stock-reason');
+    var feedbackEl = document.getElementById('bulk-stock-feedback');
+    var form       = document.getElementById('bulk-stock-form');
+    var submitBtn  = document.getElementById('bulk-stock-submit');
+
+    if (!openBtn) return;
+
+    function escHtml(s) {
+        return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+            return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+        });
+    }
+
+    function getCheckboxes() {
+        return Array.prototype.slice.call(document.querySelectorAll('[data-bulk-select]'));
+    }
+
+    function getChecked() {
+        return getCheckboxes().filter(function (cb) { return cb.checked; });
+    }
+
+    function updateOpenButton() {
+        var n = getChecked().length;
+        openBtn.disabled = n === 0;
+        openLabel.textContent = n > 0 ? ('Adicionar estoque (' + n + ')') : 'Adicionar estoque';
+        if (selectAll) {
+            var all = getCheckboxes();
+            selectAll.checked = all.length > 0 && n === all.length;
+            selectAll.indeterminate = n > 0 && n < all.length;
+        }
+    }
+
+    document.addEventListener('change', function (e) {
+        if (e.target.matches && e.target.matches('[data-bulk-select]')) {
+            updateOpenButton();
+        }
+    });
+
+    if (selectAll) {
+        selectAll.addEventListener('change', function () {
+            getCheckboxes().forEach(function (cb) { cb.checked = selectAll.checked; });
+            updateOpenButton();
+        });
+    }
+
+    function hideFeedback() {
+        if (!feedbackEl) return;
+        feedbackEl.textContent = '';
+        feedbackEl.setAttribute('hidden', '');
+        feedbackEl.classList.remove('admin-modal__feedback--error', 'admin-modal__feedback--success');
+    }
+
+    function showFeedbackError(msg) {
+        if (!feedbackEl) return;
+        feedbackEl.textContent = msg;
+        feedbackEl.classList.remove('admin-modal__feedback--success');
+        feedbackEl.classList.add('admin-modal__feedback--error');
+        feedbackEl.removeAttribute('hidden');
+    }
+
+    function productThumbHtml(img, name) {
+        if (img) {
+            return '<img class="admin-modal__product-thumb bulk-stock-modal__thumb" src="' +
+                escHtml(img) + '" alt="' + escHtml(name) + '">';
+        }
+        return '<span class="admin-modal__product-thumb bulk-stock-modal__thumb bulk-stock-modal__thumb--empty" aria-hidden="true">' +
+            '<i class="fa-regular fa-image"></i></span>';
+    }
+
+    function buildRow(cb) {
+        var id   = cb.dataset.productId;
+        var name = cb.dataset.productName || ('Produto #' + id);
+        var sku  = cb.dataset.productSku || '';
+        var img  = cb.dataset.productImg || '';
+        var row = document.createElement('div');
+        row.className = 'bulk-stock-modal__row';
+        row.innerHTML =
+            '<input type="hidden" name="product_ids" value="' + escHtml(id) + '">' +
+            productThumbHtml(img, name) +
+            '<span class="bulk-stock-modal__row-info">' +
+                '<strong>' + escHtml(name) + '</strong>' +
+                (sku ? '<small>SKU: ' + escHtml(sku) + '</small>' : '') +
+            '</span>' +
+            '<span class="admin-field bulk-stock-modal__row-qty">' +
+                '<label class="admin-field__label" for="bulk-stock-qty-' + escHtml(id) + '">Quantidade</label>' +
+                '<input id="bulk-stock-qty-' + escHtml(id) + '" class="admin-field__input" type="number" ' +
+                'name="qty_' + escHtml(id) + '" min="1" step="1" value="1" required>' +
+            '</span>';
+        return row;
+    }
+
+    function openModal() {
+        var checked = getChecked();
+        if (!checked.length) return;
+        listEl.innerHTML = '';
+        checked.forEach(function (cb) { listEl.appendChild(buildRow(cb)); });
+        listEl.classList.toggle('bulk-stock-modal__list--scroll', listEl.children.length >= 5);
+        if (reasonIn) reasonIn.value = '';
+        hideFeedback();
+        modal.showModal();
+        if (reasonIn) reasonIn.focus();
+    }
+
+    function closeModal() {
+        modal.close();
+        hideFeedback();
+    }
+
+    openBtn.addEventListener('click', openModal);
+    if (closeBtn)  closeBtn.addEventListener('click', closeModal);
+    if (cancelBtn) cancelBtn.addEventListener('click', closeModal);
+    modal.addEventListener('click', function (e) { if (e.target === modal) closeModal(); });
+    modal.addEventListener('keydown', function (e) { if (e.key === 'Escape') closeModal(); });
+
+    if (form) {
+        form.addEventListener('submit', function (e) {
+            hideFeedback();
+            if (!listEl.children.length) {
+                e.preventDefault();
+                showFeedbackError('Selecione ao menos um produto.');
+                return;
+            }
+            if (!reasonIn || !reasonIn.value.trim()) {
+                e.preventDefault();
+                showFeedbackError('Informe o Motivo / Ref.');
+                if (reasonIn) reasonIn.focus();
+                return;
+            }
+            if (submitBtn) {
+                submitBtn.disabled = true;
+                submitBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin" aria-hidden="true"></i> Adicionando…';
+            }
+        });
+    }
+
+    updateOpenButton();
 }());
 </script>
 {% endblock %}

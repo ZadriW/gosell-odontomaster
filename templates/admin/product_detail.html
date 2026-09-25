@@ -12,17 +12,15 @@
 >
     <header class="admin-section__header admin-section__header--row">
         <div>
-            <a class="admin-breadcrumb" href="{{ url_for('admin_products') }}">
-                <i class="fa-solid fa-arrow-left" aria-hidden="true"></i>
-                Voltar aos produtos
-            </a>
             <h1 class="admin-section__title">{{ product.nome }}</h1>
+            {% if product.variante %}<p class="admin-section__variant">{{ product.variante }}</p>{% endif %}
             <p class="admin-section__subtitle">
                 <span class="admin-product__sku">SKU <strong>{{ product.sku }}</strong></span>
                 &middot; #{{ product.id }} &middot; {{ product.categoria }} &middot; {{ product.preco | brl }}
             </p>
             <p class="admin-section__subtitle">
                 Quantidades exibidas são a <strong>soma em todos os eventos</strong>.
+                O preço de venda é definido em cada evento; aqui fica só o preço-base.
                 Para entrada, saída ou ajuste, use a seção <strong>Eventos</strong>.
             </p>
         </div>
@@ -51,6 +49,10 @@
                     <dd><code>{{ product.sku }}</code></dd>
                 </div>
                 <div>
+                    <dt>Preço-base</dt>
+                    <dd>{{ product.preco | brl }}</dd>
+                </div>
+                <div>
                     <dt>Estoque nos eventos</dt>
                     <dd data-product-stock><strong>{{ product.estoque }}</strong> un.</dd>
                 </div>
@@ -72,7 +74,7 @@
                 {% if product.ativo %}
                     <input type="hidden" name="active" value="0">
                     <button type="submit" class="admin-btn admin-btn--ghost admin-btn--danger"
-                            data-confirm="Desativar este produto? Ele deixará de aparecer no totem.">
+                            data-confirm="Desativar este produto? Ele deixará de aparecer no Go Sell.">
                         <i class="fa-solid fa-eye-slash" aria-hidden="true"></i>
                         Desativar produto
                     </button>
@@ -99,6 +101,7 @@
                 role="table"
                 aria-label="Movimentações do produto"
                 data-product-movements
+                data-movements-live
             >
                 <div class="admin-table__head admin-mov__row admin-mov__row--with-event" role="row">
                     <span role="columnheader">Data/Hora</span>

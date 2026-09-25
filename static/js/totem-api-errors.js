@@ -50,7 +50,7 @@
         if (looksOffline(err)) {
             return joinParagraphs([
                 'Sem conexão com a internet.',
-                'O totem não conseguiu alcançar o servidor (rede indisponível ou instável).',
+                'O Go Sell não conseguiu alcançar o servidor (rede indisponível ou instável).',
                 ACTION_RETRY_NETWORK,
             ]);
         }

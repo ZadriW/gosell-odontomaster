@@ -1,7 +1,18 @@
-{# Badge de status da transação (confirmado, pendente, cancelado, estornado). #}
+{# Badge de status da transação (pago, pendente, cancelado, estornado, entregue). #}
 {% macro admin_tx_status_badge(tx) -%}
 {% set st = (tx.status or '')|lower %}
-<span class="admin-badge admin-badge--{{ 'success' if st == 'confirmado' else ('warn' if st == 'pendente' else ('danger' if st == 'cancelado' else ('neutral' if st == 'estornado' else 'neutral'))) }}">
-    {{ tx.status }}
-</span>
+{% set handover = (tx.handover_status or '')|lower == 'entregue' %}
+{% if st == 'confirmado' and handover %}
+<span class="admin-badge admin-badge--info">Entregue</span>
+{% elif st == 'confirmado' %}
+<span class="admin-badge admin-badge--success">Pago</span>
+{% elif st == 'pendente' %}
+<span class="admin-badge admin-badge--warn">Pendente</span>
+{% elif st == 'cancelado' %}
+<span class="admin-badge admin-badge--danger">Cancelado</span>
+{% elif st == 'estornado' %}
+<span class="admin-badge admin-badge--neutral">Estornado</span>
+{% else %}
+<span class="admin-badge admin-badge--neutral">{{ tx.status }}</span>
+{% endif %}
 {%- endmacro %}

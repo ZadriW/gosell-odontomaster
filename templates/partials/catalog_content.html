@@ -1,4 +1,4 @@
-{# Conteúdo do catálogo (topbar + grid + carrinho). Requer: categories, categories_by_letter, products, catalog_brand_href, catalog_brand_aria #}
+{# Conteúdo do catálogo (topbar + grid + carrinho). Requer: products, catalog_brand_href, catalog_brand_aria #}
 {% from "macros/admin_brand_logo.html" import admin_brand_logo %}
 <header class="topbar">
     <a class="topbar__brand" href="{{ catalog_brand_href }}" aria-label="{{ catalog_brand_aria }}">
@@ -23,6 +23,7 @@
         type="button"
         id="openCartBtn"
         aria-label="Abrir carrinho"
+        {% if catalog_readonly %}hidden{% endif %}
     >
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <circle cx="9" cy="21" r="1"></circle>
@@ -47,63 +48,23 @@
     <span class="catalog-toast__text">Produto adicionado ao carrinho!</span>
 </div>
 
-<div class="categories-bar">
-    {% set _letters = categories_by_letter if categories_by_letter is defined else [] %}
-    <nav class="categories" aria-label="Categorias">
-        <div class="categories__scroll">
-        <button class="category-chip category-chip--all is-active" type="button" data-category="todos">Todos</button>
-        {% for letter, names in _letters %}
-        <div class="category-dropdown" data-letter="{{ letter }}">
-            <button
-                type="button"
-                class="category-letter-trigger"
-                aria-expanded="false"
-                aria-haspopup="true"
-                aria-controls="categoryDropdownPanel{{ loop.index0 }}"
-            >
-                {% if letter == '#' %}0-9{% else %}{{ letter }}{% endif %}
-            </button>
-            <div
-                id="categoryDropdownPanel{{ loop.index0 }}"
-                class="category-dropdown__panel"
-                role="menu"
-                hidden
-                aria-label="Categorias — {% if letter == '#' %}0-9 e outros{% else %}{{ letter }}{% endif %}"
-            >
-                {% for category in names %}
-                <button
-                    type="button"
-                    class="category-chip category-dropdown__item"
-                    role="menuitem"
-                    data-category="{{ category }}"
-                >{{ category }}</button>
-                {% endfor %}
-            </div>
-        </div>
-        {% endfor %}
-        </div>
-    </nav>
-    <button
-        type="button"
-        class="categories-clear"
-        id="clearCatalogFilters"
-        aria-label="Limpar filtros de categoria e busca"
-    >
-        <i class="fa-solid fa-filter-circle-xmark" aria-hidden="true"></i>
-        Limpar filtros
-    </button>
-</div>
-
-<main class="catalog">
+<main class="catalog{% if catalog_readonly %} catalog--readonly{% endif %}">
     <div class="catalog__header">
         <h1 class="catalog__title">Catálogo de Produtos</h1>
-        <p class="catalog__subtitle" id="resultsInfo">{{ products|length }} produtos disponíveis</p>
+        {% if catalog_readonly %}
+        <p class="catalog__ops-banner" role="status">
+            <i class="fa-solid fa-lock" aria-hidden="true"></i>
+            Operações encerradas — consulta de estoque e preços apenas. Novas vendas estão bloqueadas.
+        </p>
+        {% endif %}
+        <p class="catalog__subtitle" id="resultsInfo">{{ products|rejectattr('catalog_oculto')|list|length }} produtos disponíveis</p>
     </div>
 
     <div class="product-grid" id="productGrid">
-        {% for product in products %}
-        {% set sm = (product.estoque_minimo | default(0)) | int %}
-        {% set q = product.estoque | int %}
+        {% for product in products if not product.catalog_oculto %}
+        {% set sm = (product.estoque_minimo | default(5)) | int %}
+        {% set tem_opcoes = product.tem_opcoes | default(false) %}
+        {% set q = (product.estoque_opcoes if tem_opcoes else product.estoque) | int %}
         {% if q <= 0 %}
             {% set stock_tone = 'empty' %}
         {% elif sm > 0 and q < sm %}
@@ -112,31 +73,56 @@
             {% set stock_tone = 'ok' %}
         {% endif %}
         {% set em_promo = product.em_promocao | default(false) %}
+        {% set pending_n = product.pending_delivery_units or 0 %}
+        {% set bl = product.backorder_limit | default(-1) | int %}
+        {% set backorder_blocked = (not tem_opcoes) and bl == 0 and q <= 0 %}
         <article
-            class="product-card{% if em_promo %} product-card--promo{% endif %}"
+            class="product-card{% if em_promo %} product-card--promo{% endif %}{% if backorder_blocked %} product-card--backorder-blocked{% endif %}"
             data-id="{{ product.id }}"
             data-category="{{ product.categoria }}"
             data-name="{{ product.nome|lower }}"
+            data-variante="{{ (product.variante or '')|lower }}"
             data-sku="{{ (product.sku or '')|lower }}"
-            data-estoque="{{ product.estoque }}"
+            data-busca="{{ (product.busca_opcoes or '')|lower }}"
+            data-estoque="{{ q }}"
             data-estoque-min="{{ sm }}"
-            data-preco="{{ product.preco }}"
+            data-preco="{{ product.preco_a_partir if tem_opcoes else product.preco }}"
+            data-backorder-limit="{{ bl }}"
+            {% if tem_opcoes %}data-tem-opcoes="1" data-opcoes="{{ (product.opcoes or [])|join(',') }}"{% endif %}
         >
-            <div data-promo-badge-root>
-                {% if em_promo and product.promo_badge %}
-                <div class="product-card__promo-badge">
-                    <i class="fa-solid fa-tag" aria-hidden="true"></i>
-                    {{ product.promo_badge }}
-                </div>
-                {% endif %}
-            </div>
             <div class="product-card__image">
+                <div class="product-card__promo-badge-slot" data-promo-badge-root>
+                    {% if em_promo and product.promo_badge %}
+                    <div class="product-card__promo-badge">
+                        <i class="fa-solid fa-tag" aria-hidden="true"></i>
+                        {{ product.promo_badge }}
+                    </div>
+                    {% endif %}
+                </div>
+                <div class="product-card__delivery-badge-slot" data-delivery-badge-root>
+                    {% if pending_n > 0 %}
+                    <div class="product-card__delivery-badge"
+                         title="{{ pending_n }} un. aguardando retirada">
+                        <span class="admin-badge admin-badge--warn admin-tx__delivery-badge" aria-label="Retirada pendente">
+                            <i class="fa-solid fa-box-open" aria-hidden="true"></i>
+                        </span>
+                        <span class="admin-stock__delivery-count">{{ pending_n }}</span>
+                    </div>
+                    {% endif %}
+                </div>
                 <img src="{{ product.imagem }}" alt="{{ product.nome }}" loading="lazy">
             </div>
             <div class="product-card__body">
                 <span class="product-card__category">{{ product.categoria }}</span>
                 <h2 class="product-card__name">{{ product.nome }}</h2>
-                {% if product.sku %}
+                {% if not tem_opcoes and product.variante %}<p class="product-card__variant">{{ product.variante }}</p>{% endif %}
+                {% if product.subtitle %}<p class="product-card__subtitle">{{ product.subtitle }}</p>{% endif %}
+                {% if tem_opcoes %}
+                <div class="product-card__meta-line">
+                    <span class="product-card__sku">{{ product.opcoes_count or (product.opcoes|length) }} opções</span>
+                    <span class="product-card__stock product-card__stock--{{ stock_tone }}" data-stock-display>{{ q }} no estoque.</span>
+                </div>
+                {% elif product.sku %}
                 <div class="product-card__meta-line">
                     <span class="product-card__sku">SKU {{ product.sku }}</span>
                     <span class="product-card__stock product-card__stock--{{ stock_tone }}" data-stock-display>{{ product.estoque }} no estoque.</span>
@@ -144,26 +130,59 @@
                 {% else %}
                 <span class="product-card__stock product-card__stock--{{ stock_tone }} product-card__stock--alone" data-stock-display>{{ product.estoque }} no estoque.</span>
                 {% endif %}
+                {% if not tem_opcoes %}
+                <span class="product-card__backorder-info{% if bl == 0 %} product-card__backorder-info--blocked{% endif %}" data-backorder-info
+                      {% if bl < 0 %}hidden{% endif %}>
+                    <i class="fa-solid {% if bl == 0 %}fa-ban{% else %}fa-truck-clock{% endif %}" aria-hidden="true"></i>
+                    <span data-backorder-msg>
+                        {% if bl == 0 %}
+                        Vendas futuras bloqueadas
+                        {% else %}
+                        <span data-backorder-limit-value>{{ bl }}</span> vendas futuras disp.
+                        {% endif %}
+                    </span>
+                </span>
+                {% endif %}
                 <div data-catalog-pricing>
+                    {% if tem_opcoes %}
+                    <div class="product-card__price-wrap">
+                        {% if product.precos_opcoes_variam %}
+                        <span class="product-card__price-from">A partir de</span>
+                        {% endif %}
+                        <p class="product-card__price">{{ (product.preco_a_partir or product.preco) | brl }}</p>
+                    </div>
+                    {% else %}
                     {% set promo_tipo = product.promo_tipo | default('') %}
                     {% if em_promo and promo_tipo in ('percent', 'fixed') and product.preco_original is defined and product.preco_original > product.preco + 0.001 %}
                     {# percent / fixed: preço unitário efetivamente reduzido — exibe riscado + novo #}
                     <div class="product-card__price-wrap">
-                        <span class="product-card__price-original">R$ {{ '%.2f'|format(product.preco_original)|replace('.', ',') }}</span>
-                        <p class="product-card__price product-card__price--promo">R$ {{ '%.2f'|format(product.preco)|replace('.', ',') }}</p>
+                        <span class="product-card__price-original">{{ product.preco_original | brl }}</span>
+                        <p class="product-card__price product-card__price--promo">{{ product.preco | brl }}</p>
+                        {% if product.promo_nome %}<span class="product-card__promo-name">{{ product.promo_nome }}</span>{% endif %}
                     </div>
-                    {% elif em_promo and promo_tipo in ('bogo', 'min_bundle', 'exact_bundle') %}
-                    {# Desconto por quantidade: exibe preço de lista + nome da promo #}
+                    {% elif em_promo and (promo_tipo in ('bogo', 'min_bundle', 'exact_bundle', 'combo_bundle') or product.promo_nome) %}
+                    {# Desconto por quantidade (ou várias regras): preço de lista + nomes das promos #}
                     <div class="product-card__price-wrap">
-                        <p class="product-card__price">R$ {{ '%.2f'|format(product.preco)|replace('.', ',') }}</p>
+                        <p class="product-card__price">{{ product.preco | brl }}</p>
                         {% if product.promo_nome %}<span class="product-card__promo-name">{{ product.promo_nome }}</span>{% endif %}
                     </div>
                     {% else %}
-                    <p class="product-card__price">R$ {{ '%.2f'|format(product.preco)|replace('.', ',') }}</p>
+                    <p class="product-card__price">{{ product.preco | brl }}</p>
+                    {% endif %}
                     {% endif %}
                 </div>
             </div>
             <div class="product-card__actions">
+                {% if tem_opcoes %}
+                <button
+                    class="product-card__options-btn"
+                    type="button"
+                    data-open-options="{{ product.id }}"
+                    aria-label="Ver opções de {{ product.nome }}"
+                >
+                    Ver Opções
+                </button>
+                {% else %}
                 <div class="product-card__counter" role="group" aria-label="Quantidade">
                     <button type="button" class="product-card__counter-btn" data-action="dec" aria-label="Diminuir quantidade">
                         <span aria-hidden="true">&minus;</span>
@@ -181,9 +200,10 @@
                         <span aria-hidden="true">+</span>
                     </button>
                 </div>
-                <button class="product-card__button" type="button" data-id="{{ product.id }}" aria-label="Adicionar ao carrinho">
+                <button class="product-card__button" type="button" data-id="{{ product.id }}" aria-label="Adicionar ao carrinho"{% if backorder_blocked %} disabled{% endif %}>
                     <i class="fa-solid fa-cart-plus" aria-hidden="true"></i>
                 </button>
+                {% endif %}
             </div>
         </article>
         {% endfor %}
@@ -193,6 +213,69 @@
         Nenhum produto encontrado para sua busca.
     </p>
 </main>
+
+<dialog
+    class="catalog-options"
+    id="catalogOptionsDialog"
+    aria-labelledby="catalogOptionsTitle"
+>
+    <div class="catalog-options__panel">
+        <header class="catalog-options__header">
+            <div class="catalog-options__heading">
+                <p class="catalog-options__eyebrow">Opções do produto</p>
+                <h2 class="catalog-options__title" id="catalogOptionsTitle">Variantes</h2>
+            </div>
+            <button type="button" class="catalog-options__close" id="catalogOptionsClose" aria-label="Fechar opções">
+                <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+            </button>
+        </header>
+        <div class="catalog-options__body" id="catalogOptionsGrid"></div>
+    </div>
+</dialog>
+
+{% if not catalog_readonly %}
+<dialog
+    class="stock-conflict"
+    id="stockConflictDialog"
+    aria-labelledby="stockConflictTitle"
+    aria-describedby="stockConflictText"
+>
+    <div class="stock-conflict__panel">
+        <header class="stock-conflict__header">
+            <div class="stock-conflict__icon" aria-hidden="true">
+                <i class="fa-solid fa-triangle-exclamation"></i>
+            </div>
+            <h2 class="stock-conflict__title" id="stockConflictTitle">Estoque prestes a esgotar</h2>
+            <p class="stock-conflict__text" id="stockConflictText"></p>
+        </header>
+        <div class="stock-conflict__product" id="stockConflictProduct">
+            <img class="stock-conflict__image" id="stockConflictImage" alt="" hidden>
+            <div class="stock-conflict__product-info">
+                <p class="stock-conflict__name" id="stockConflictName"></p>
+                <p class="stock-conflict__meta" id="stockConflictMeta"></p>
+            </div>
+        </div>
+        <div class="stock-conflict__split" id="stockConflictSplit" hidden>
+            <div class="stock-conflict__split-now">
+                <strong id="stockConflictSellable">0 un.</strong>
+                <span>com estoque agora</span>
+            </div>
+            <div class="stock-conflict__split-pending">
+                <strong id="stockConflictPendingQty">0 un.</strong>
+                <span>retirada posterior</span>
+            </div>
+        </div>
+        <div class="stock-conflict__actions">
+            <button type="button" class="stock-conflict__btn stock-conflict__btn--pending" id="stockConflictPending">
+                Vender como unidade pendente
+            </button>
+            <button type="button" class="stock-conflict__btn stock-conflict__btn--remove" id="stockConflictRemove">
+                Remover do carrinho
+            </button>
+        </div>
+    </div>
+</dialog>
+{% endif %}
 
 <div class="cart-backdrop" id="cartBackdrop" aria-hidden="true"></div>
 
@@ -226,6 +309,10 @@
             </p>
         </div>
         <div class="cart-drawer__items" id="cartDrawerItems" hidden></div>
+        <div class="cart-drawer__warning" id="cartDrawerBackorderWarning" hidden role="alert">
+            <i class="fa-solid fa-triangle-exclamation" aria-hidden="true"></i>
+            <p>Remova os produtos com <strong>vendas futuras bloqueadas</strong> ou reduza a quantidade ao estoque disponível para finalizar a compra.</p>
+        </div>
     </div>
 
     <footer class="cart-drawer__footer">
@@ -241,6 +328,15 @@
         >
             Finalizar compra
             <i class="fa-solid fa-arrow-right" aria-hidden="true"></i>
+        </button>
+        <button
+            type="button"
+            class="cart-drawer__clear"
+            id="cartDrawerClear"
+            disabled
+        >
+            <i class="fa-solid fa-trash-can" aria-hidden="true"></i>
+            Limpar carrinho
         </button>
     </footer>
 </aside>

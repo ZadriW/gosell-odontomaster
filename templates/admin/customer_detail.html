@@ -1,0 +1,419 @@
+{% extends "admin/_layout.html" %}
+
+{% block title %}{{ customer.name }} - Clientes | Dental Odonto Master{% endblock %}
+
+{% block admin_body %}
+{% set iv = customer.intervals %}
+<section class="admin-section">
+    <header class="admin-section__header admin-section__header--row">
+        <div>
+            <h1 class="admin-section__title">{{ customer.name }}</h1>
+            <p class="admin-section__subtitle admin-customer__chips">
+                {% if customer.cpf %}
+                <span class="admin-customer__chip" title="CPF">
+                    <i class="fa-regular fa-id-card" aria-hidden="true"></i> {{ customer.cpf }}
+                </span>
+                {% endif %}
+                {% if customer.cro_numero %}
+                <span class="admin-customer__chip" title="Registro no Conselho Regional de Odontologia">
+                    <i class="fa-solid fa-user-doctor" aria-hidden="true"></i>
+                    CRO {{ customer.cro_uf }} {{ customer.cro_numero }}
+                </span>
+                {% endif %}
+                {% if customer.email %}
+                <span class="admin-customer__chip" title="E-mail">
+                    <i class="fa-regular fa-envelope" aria-hidden="true"></i> {{ customer.email }}
+                </span>
+                {% endif %}
+                {% if customer.phone %}
+                <span class="admin-customer__chip" title="Telefone">
+                    <i class="fa-solid fa-phone" aria-hidden="true"></i> {{ customer.phone }}
+                </span>
+                {% endif %}
+                {% if customer.city %}
+                <span class="admin-customer__chip">
+                    <i class="fa-solid fa-location-dot" aria-hidden="true"></i>
+                    {{ customer.city }}{% if customer.state %}/{{ customer.state }}{% endif %}
+                </span>
+                {% endif %}
+            </p>
+        </div>
+        <a class="admin-btn admin-btn--ghost" href="{{ url_for('admin_event_customers', event_id=event.id) }}">
+            <i class="fa-solid fa-arrow-left" aria-hidden="true"></i>
+            Clientes do {{ event|op_noun(lower=True) }}
+        </a>
+    </header>
+
+    <div class="admin-kpis">
+        <article class="kpi kpi--success">
+            <span class="kpi__icon"><i class="fa-solid fa-sack-dollar" aria-hidden="true"></i></span>
+            <span class="kpi__label">Faturamento do cliente</span>
+            <span class="kpi__value">{{ customer.revenue | brl }}</span>
+            <span class="kpi__hint">
+                {{ customer.revenue_share }}% do faturamento total do sistema
+            </span>
+        </article>
+
+        <article class="kpi kpi--primary">
+            <span class="kpi__icon"><i class="fa-solid fa-receipt" aria-hidden="true"></i></span>
+            <span class="kpi__label">Compras confirmadas</span>
+            <span class="kpi__value">{{ customer.orders_count }}</span>
+            <span class="kpi__hint">
+                {{ customer.units }} unidades &middot; {{ customer.distinct_products }} produto(s) distinto(s)
+            </span>
+        </article>
+
+        <article class="kpi">
+            <span class="kpi__icon"><i class="fa-solid fa-scale-balanced" aria-hidden="true"></i></span>
+            <span class="kpi__label">Ticket médio</span>
+            <span class="kpi__value">{{ customer.avg_ticket | brl }}</span>
+            <span class="kpi__hint">Maior pedido: {{ customer.max_order_total | brl }}</span>
+        </article>
+
+        <article class="kpi">
+            <span class="kpi__icon"><i class="fa-regular fa-clock" aria-hidden="true"></i></span>
+            <span class="kpi__label">Periodicidade</span>
+            <span class="kpi__value">{{ customer.avg_interval_days | periodicidade }}</span>
+            <span class="kpi__hint">
+                {% if iv.count %}
+                    Média de {{ iv.count }} intervalo(s) entre compras
+                {% else %}
+                    Ainda não há intervalo para medir
+                {% endif %}
+            </span>
+        </article>
+
+        <article class="kpi">
+            <span class="kpi__icon"><i class="fa-solid fa-clock-rotate-left" aria-hidden="true"></i></span>
+            <span class="kpi__label">Última compra</span>
+            <span class="kpi__value">{{ customer.days_since_last | desdeontem }}</span>
+            <span class="kpi__hint">{{ customer.last_purchase_at | datahora }}</span>
+        </article>
+
+        {% if customer.refunded_count or customer.pending_count or customer.cancelled_count %}
+        <article class="kpi kpi--warn">
+            <span class="kpi__icon"><i class="fa-solid fa-triangle-exclamation" aria-hidden="true"></i></span>
+            <span class="kpi__label">Fora do faturamento</span>
+            <span class="kpi__value">{{ customer.refunded_value | brl }}</span>
+            <span class="kpi__hint">
+                {{ customer.refunded_count }} estorno(s) &middot;
+                {{ customer.pending_count }} pendente(s) &middot;
+                {{ customer.cancelled_count }} cancelado(s)
+            </span>
+        </article>
+        {% endif %}
+    </div>
+</section>
+
+<section class="admin-section">
+    <div class="admin-customer__grid">
+        {# ── Participação no faturamento total ── #}
+        <article class="admin-card">
+            <header class="admin-card__header">
+                <i class="fa-solid fa-chart-pie admin-card__icon" aria-hidden="true"></i>
+                <div>
+                    <h2 class="admin-card__title">Participação no faturamento</h2>
+                    <p class="admin-card__subtitle">Peso deste cliente sobre o total vendido no sistema.</p>
+                </div>
+            </header>
+            <div>
+                <p class="admin-customer__share-value">{{ customer.revenue_share }}%</p>
+                <div class="admin-customer__share-track" role="img"
+                     aria-label="{{ customer.revenue_share }}% do faturamento total">
+                    <div class="admin-customer__share-fill"
+                         style="width: {{ [customer.revenue_share, 100] | min }}%"></div>
+                </div>
+                <dl class="admin-customer__dl">
+                    <div>
+                        <dt>Cliente</dt>
+                        <dd>{{ customer.revenue | brl }}</dd>
+                    </div>
+                    <div>
+                        <dt>Faturamento total</dt>
+                        <dd>{{ customer.total_revenue_all | brl }}</dd>
+                    </div>
+                    <div>
+                        <dt>Eventos em que comprou</dt>
+                        <dd>{{ customer.events_count }}</dd>
+                    </div>
+                </dl>
+            </div>
+        </article>
+
+        {# ── Detalhe da periodicidade ── #}
+        <article class="admin-card">
+            <header class="admin-card__header">
+                <i class="fa-regular fa-calendar-check admin-card__icon" aria-hidden="true"></i>
+                <div>
+                    <h2 class="admin-card__title">Ritmo de compra</h2>
+                    <p class="admin-card__subtitle">Intervalos entre compras confirmadas.</p>
+                </div>
+            </header>
+            {% if iv.count %}
+            <dl class="admin-customer__dl admin-customer__dl--cols">
+                <div>
+                    <dt>Intervalo médio</dt>
+                    <dd>{{ iv.avg_days | periodicidade }}</dd>
+                </div>
+                <div>
+                    <dt>Mediana</dt>
+                    <dd>{{ iv.median_days | periodicidade }}</dd>
+                </div>
+                <div>
+                    <dt>Menor intervalo</dt>
+                    <dd>{{ iv.min_days | periodicidade }}</dd>
+                </div>
+                <div>
+                    <dt>Maior intervalo</dt>
+                    <dd>{{ iv.max_days | periodicidade }}</dd>
+                </div>
+                <div>
+                    <dt>Primeira compra</dt>
+                    <dd>{{ customer.first_purchase_at | datahora }}</dd>
+                </div>
+                <div>
+                    <dt>Próxima compra estimada</dt>
+                    <dd>{{ customer.next_purchase_expected_at | datahora }}</dd>
+                </div>
+            </dl>
+            <p class="admin-card__subtitle">
+                Estimativa simples: última compra + intervalo médio. Serve como indicativo
+                de recompra, não como previsão.
+            </p>
+            {% else %}
+            <div class="admin-empty">
+                <i class="fa-regular fa-calendar" aria-hidden="true"></i>
+                <p>
+                    Cliente com uma única compra ({{ customer.first_purchase_at | datahora }}).
+                    Não há intervalo para calcular periodicidade.
+                </p>
+            </div>
+            {% endif %}
+        </article>
+    </div>
+</section>
+
+{# ── Produtos que o cliente mais comprou ── #}
+<section class="admin-section">
+    <header class="admin-section__header">
+        <h2 class="admin-section__title">Produtos mais comprados</h2>
+        <p class="admin-section__subtitle">
+            {{ customer.distinct_products }} produto(s) distinto(s) em
+            {{ customer.distinct_categories }} categoria(s) &middot; ordenado por unidades.
+        </p>
+    </header>
+
+    <div class="admin-table admin-customer-products" role="table" aria-label="Produtos mais comprados pelo cliente">
+        <div class="admin-table__head admin-customer-products__row" role="row">
+            <span role="columnheader">Produto</span>
+            <span role="columnheader">SKU</span>
+            <span class="admin-table__col--num" role="columnheader">Unidades</span>
+            <span class="admin-table__col--num" role="columnheader">Pedidos</span>
+            <span class="admin-table__col--num" role="columnheader">Valor</span>
+            <span role="columnheader">% do cliente</span>
+        </div>
+
+        {% if customer.top_products %}
+            {% set max_units = (customer.top_products | map(attribute='units') | max) or 1 %}
+            {% for p in customer.top_products %}
+            <div class="admin-customer-products__row" role="row">
+                <span class="admin-customers__person">
+                    <strong>{{ p.product_name }}</strong>
+                    {% if p.category %}<small>{{ p.category }}</small>{% endif %}
+                </span>
+                <span data-label="SKU"><code class="admin-customer__sku">{{ p.product_sku or '—' }}</code></span>
+                <span class="admin-table__col--num" data-label="Unidades"><strong>{{ p.units }}</strong></span>
+                <span class="admin-table__col--num" data-label="Pedidos">{{ p.orders }}</span>
+                <span class="admin-table__col--num" data-label="Valor">{{ p.revenue | brl }}</span>
+                <span class="admin-customers__share-cell" data-label="% do cliente">
+                    <strong>{{ p.share }}%</strong>
+                    <span class="admin-customers__bar" aria-hidden="true">
+                        <span class="admin-customers__bar-fill"
+                              style="width: {{ (p.units / max_units * 100) | round(1) }}%"></span>
+                    </span>
+                </span>
+            </div>
+            {% endfor %}
+        {% else %}
+            <div class="admin-empty">
+                <i class="fa-regular fa-folder-open" aria-hidden="true"></i>
+                <p>Nenhum item confirmado para este cliente.</p>
+            </div>
+        {% endif %}
+    </div>
+</section>
+
+{# ── Recortes: categorias, pagamento, eventos, vendedores ── #}
+<section class="admin-section">
+    <div class="admin-customer__grid admin-customer__grid--quad">
+        <article class="admin-card">
+            <header class="admin-card__header">
+                <i class="fa-solid fa-layer-group admin-card__icon" aria-hidden="true"></i>
+                <div><h2 class="admin-card__title">Categorias</h2></div>
+            </header>
+            <ul class="admin-customer__list">
+                {% for c in customer.categories %}
+                <li>
+                    <span class="admin-customer__list-label">{{ c.category }}</span>
+                    <span class="admin-customer__list-value">
+                        {{ c.units }} un. &middot; {{ c.revenue | brl }}
+                        <small>{{ c.share }}%</small>
+                    </span>
+                </li>
+                {% else %}
+                <li class="admin-customer__list-empty">Sem dados.</li>
+                {% endfor %}
+            </ul>
+        </article>
+
+        <article class="admin-card">
+            <header class="admin-card__header">
+                <i class="fa-regular fa-credit-card admin-card__icon" aria-hidden="true"></i>
+                <div><h2 class="admin-card__title">Formas de pagamento</h2></div>
+            </header>
+            <ul class="admin-customer__list">
+                {% for p in customer.payments %}
+                <li>
+                    <span class="admin-customer__list-label">{{ p.method | paymethod }}</span>
+                    <span class="admin-customer__list-value">
+                        {{ p.orders }} pedido(s) &middot; {{ p.revenue | brl }}
+                        <small>{{ p.share }}%</small>
+                    </span>
+                </li>
+                {% else %}
+                <li class="admin-customer__list-empty">Sem dados.</li>
+                {% endfor %}
+            </ul>
+        </article>
+
+        <article class="admin-card">
+            <header class="admin-card__header">
+                <i class="fa-solid fa-calendar-days admin-card__icon" aria-hidden="true"></i>
+                <div><h2 class="admin-card__title">Eventos</h2></div>
+            </header>
+            <ul class="admin-customer__list">
+                {% for e in customer.events %}
+                <li>
+                    <span class="admin-customer__list-label">
+                        {% if e.event_id %}
+                        <a href="{{ url_for('admin_event_detail', event_id=e.event_id) }}"
+                           class="admin-nav__event-badge"
+                           {% if e.badge_color | event_badge_style %}style="{{ e.badge_color | event_badge_style }}"{% endif %}>
+                            {{ e.event_name or 'Evento #' ~ e.event_id }}
+                        </a>
+                        {% else %}
+                            Sem evento
+                        {% endif %}
+                    </span>
+                    <span class="admin-customer__list-value">
+                        {{ e.orders }} pedido(s) &middot; {{ e.revenue | brl }}
+                        <small>{{ e.share }}%</small>
+                    </span>
+                </li>
+                {% else %}
+                <li class="admin-customer__list-empty">Sem dados.</li>
+                {% endfor %}
+            </ul>
+        </article>
+
+        <article class="admin-card">
+            <header class="admin-card__header">
+                <i class="fa-solid fa-user-tie admin-card__icon" aria-hidden="true"></i>
+                <div><h2 class="admin-card__title">Atendido por</h2></div>
+            </header>
+            <ul class="admin-customer__list">
+                {% for s in customer.sellers %}
+                <li>
+                    <span class="admin-customer__list-label">
+                        {% if s.seller_id %}
+                        <a href="{{ url_for('admin_seller_detail', seller_id=s.seller_id) }}">{{ s.seller_name }}</a>
+                        {% else %}
+                            {{ s.seller_name }}
+                        {% endif %}
+                    </span>
+                    <span class="admin-customer__list-value">
+                        {{ s.orders }} pedido(s) &middot; {{ s.revenue | brl }}
+                    </span>
+                </li>
+                {% else %}
+                <li class="admin-customer__list-empty">Sem dados.</li>
+                {% endfor %}
+            </ul>
+        </article>
+    </div>
+</section>
+
+{# ── Histórico completo ── #}
+<section class="admin-section">
+    <header class="admin-section__header">
+        <h2 class="admin-section__title">Histórico de pedidos</h2>
+        <p class="admin-section__subtitle">
+            {{ customer.orders | length }} pedido(s) no total, incluindo pendentes, cancelados e estornados.
+        </p>
+    </header>
+
+    <div class="admin-table admin-customer-orders" role="table" aria-label="Histórico de pedidos do cliente">
+        <div class="admin-table__head admin-customer-orders__row" role="row">
+            <span role="columnheader">Pedido</span>
+            <span role="columnheader">Data</span>
+            <span role="columnheader">Status</span>
+            <span class="admin-table__col--num" role="columnheader">Itens</span>
+            <span class="admin-table__col--num" role="columnheader">Total</span>
+            <span role="columnheader">Pagamento</span>
+            <span role="columnheader">Evento</span>
+            <span role="columnheader">Intervalo</span>
+        </div>
+
+        {% for o in customer.orders %}
+        <div class="admin-customer-orders__row" role="row">
+            <span data-label="Pedido">
+                <a href="{{ receipt_url(o.order_number) }}" target="_blank" rel="noopener"
+                   title="Abrir nota de retirada">
+                    <code class="admin-customer__sku">{{ o.order_number }}</code>
+                </a>
+            </span>
+            <span data-label="Data">{{ o.created_at | datahora }}</span>
+            <span data-label="Status">
+                {% if o.status == 'confirmado' %}
+                    <span class="admin-badge admin-badge--success">Pago</span>
+                {% elif o.status == 'pendente' %}
+                    <span class="admin-badge admin-badge--warn">Pendente</span>
+                {% elif o.status == 'estornado' %}
+                    <span class="admin-badge admin-badge--danger">Estornado</span>
+                {% else %}
+                    <span class="admin-badge admin-badge--neutral">Cancelado</span>
+                {% endif %}
+            </span>
+            <span class="admin-table__col--num" data-label="Itens">{{ o.items_count }}</span>
+            <span class="admin-table__col--num" data-label="Total"><strong>{{ o.total | brl }}</strong></span>
+            <span data-label="Pagamento">
+                {{ o.payment_method | paymethod(o.card_installments) }}
+            </span>
+            <span data-label="Evento">
+                {% if o.event_id %}
+                <a href="{{ url_for('admin_event_detail', event_id=o.event_id) }}"
+                   class="admin-nav__event-badge"
+                   {% if o.event_badge_color | event_badge_style %}style="{{ o.event_badge_color | event_badge_style }}"{% endif %}>
+                    {{ o.event_name or 'Evento #' ~ o.event_id }}
+                </a>
+                {% else %}—{% endif %}
+            </span>
+            <span data-label="Intervalo">
+                {% if o.days_since_previous is defined and o.days_since_previous is not none %}
+                    <small class="admin-customers__sub">
+                        +{{ o.days_since_previous | periodicidade }} após a anterior
+                    </small>
+                {% else %}
+                    —
+                {% endif %}
+            </span>
+        </div>
+        {% else %}
+        <div class="admin-empty">
+            <i class="fa-regular fa-folder-open" aria-hidden="true"></i>
+            <p>Nenhum pedido registrado.</p>
+        </div>
+        {% endfor %}
+    </div>
+</section>
+{% endblock %}

@@ -9,10 +9,11 @@
 
 {% block body %}
 <p class="seller-restore-msg">Restaurando carrinho e redirecionando para o pagamento…</p>
-<script>
-window.__SELLER_RESTORE_CHECKOUT__ = {{ restore_payload | tojson }};
-window.__SELLER_RESTORE_PAYMENT_URL__ = {{ payment_url | tojson }};
-window.__SELLER_RESTORE_FALLBACK_URL__ = {{ url_for('seller_sale') | tojson }};
-</script>
+<script type="application/json" id="totem-page-boot">{{ {
+    '__SELLER_RESTORE_CHECKOUT__': restore_payload,
+    '__SELLER_RESTORE_PAYMENT_URL__': payment_url,
+    '__SELLER_RESTORE_FALLBACK_URL__': url_for('seller_sale')
+} | tojson }}</script>
+<script src="{{ url_for('static', filename='js/totem-page-boot.js') }}"></script>
 <script src="{{ url_for('static', filename='js/seller-restore-checkout.js') }}"></script>
 {% endblock %}

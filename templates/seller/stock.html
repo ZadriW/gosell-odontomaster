@@ -11,24 +11,19 @@
 {% endif %}
 
 <section class="admin-section">
-    <header class="admin-section__header admin-section__header--row">
-        <div>
-            <h1 class="admin-section__title">Estoque{% if seller_event %} do evento{% endif %}</h1>
-            <p class="admin-section__subtitle" data-seller-stock-subtitle>
-                {{ stock.products_count }} produto(s) &middot;
-                {{ stock.units_in_stock }} unidade(s) &middot;
-                <strong>{{ stock.below_min }}</strong> abaixo do mínimo.
-                Visualização somente leitura.
-            </p>
-        </div>
-        <a class="admin-btn admin-btn--ghost" href="{{ url_for('seller_movements') }}">
-            <i class="fa-solid fa-right-left" aria-hidden="true"></i>
-            Ver movimentações
-        </a>
+    <header class="admin-section__header">
+        <h1 class="admin-section__title">Estoque{% if seller_event %} do evento{% endif %}</h1>
+        <p class="admin-section__subtitle" data-seller-stock-subtitle>
+            {{ stock.products_count }} produto(s) &middot;
+            {{ stock.units_in_stock }} unidade(s) &middot;
+            <strong>{{ stock.below_min }}</strong> abaixo do mínimo.
+            Visualização somente leitura.
+        </p>
     </header>
 
     {% if seller_event %}
-    <form class="admin-filters" method="get" action="{{ url_for('seller_stock') }}">
+    <form class="admin-filters" method="get" action="{{ url_for('seller_stock') }}#lista"
+          data-scroll-to-table>
         <label class="admin-filter admin-filter--search">
             <span class="admin-filter__label">Buscar</span>
             <span class="admin-filter__wrap">
@@ -37,7 +32,7 @@
                     type="search"
                     name="q"
                     value="{{ filters.q }}"
-                    placeholder="Nome, SKU ou ID do produto..."
+                    placeholder="Nome, variante, SKU ou ID..."
                     class="admin-filter__input"
                     autocomplete="off"
                     inputmode="search"
@@ -78,7 +73,8 @@
     {% endif %}
 
     {% if not seller_event %}
-    <form class="admin-filters" method="get" action="{{ url_for('seller_stock') }}">
+    <form class="admin-filters" method="get" action="{{ url_for('seller_stock') }}#lista"
+          data-scroll-to-table>
         <label class="admin-filter admin-filter--search">
             <span class="admin-filter__label">Buscar</span>
             <span class="admin-filter__wrap">
@@ -87,7 +83,7 @@
                     type="search"
                     name="q"
                     value="{{ filters.q }}"
-                    placeholder="Nome, descrição ou SKU..."
+                    placeholder="Nome, variante, SKU ou ID..."
                     class="admin-filter__input"
                 >
             </span>
@@ -135,7 +131,12 @@
     </form>
     {% endif %}
 
+    {% with show_delivery=false %}
+    {% include 'partials/admin_stock_legend.html' %}
+    {% endwith %}
+
     <div
+        id="lista"
         class="admin-table admin-stock"
         role="table"
         aria-label="Produtos em estoque para vendedor"
@@ -144,21 +145,23 @@
     >
         <div class="admin-table__head admin-stock__row" role="row">
             <span role="columnheader">Produto</span>
-            <span role="columnheader">Categoria</span>
-            <span class="admin-table__col--num" role="columnheader">Preço</span>
+            <span class="admin-table__col--num" role="columnheader"
+                  title="{% if seller_event %}Suas unidades vendidas deste produto neste evento (pedidos confirmados){% else %}Suas unidades vendidas deste produto (pedidos confirmados){% endif %}">Vendas</span>
             <span class="admin-table__col--num" role="columnheader">Estoque</span>
             <span class="admin-table__col--num" role="columnheader">Mínimo</span>
             <span role="columnheader">Situação</span>
+            <span role="columnheader" class="admin-stock__actions-head">Ações</span>
         </div>
 
         {% if products %}
             {% for p in products %}
             <div class="admin-stock__row" data-product-id="{{ p.id }}">
                 <span class="admin-stock__product">
-                    <img class="admin-stock__thumb" src="{{ p.imagem }}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">
+                    <img class="admin-stock__thumb" src="{{ p.imagem }}" alt="{{ p.nome }}" loading="lazy" onerror="this.style.visibility='hidden'">
                     <span>
                         <span class="admin-stock__product-name-row">
                             <strong>{{ p.nome }}</strong>
+                            {% if p.variante %}<span class="admin-stock__variant">{{ p.variante }}</span>{% endif %}
                             {% set promo_tip = promo_tooltips.get(p.id, '') %}
                             <span class="admin-stock__promo-wrap"
                                   data-stock-promo-wrap
@@ -179,8 +182,8 @@
                         <small class="admin-stock__meta">ID: {{ p.id }} | SKU: <code class="admin-stock__sku-code">{{ p.sku or '—' }}</code></small>
                     </span>
                 </span>
-                <span>{{ p.categoria }}</span>
-                <span class="admin-table__col--num">{{ p.preco | brl }}</span>
+                <span class="admin-table__col--num" data-stock-sales
+                      title="{% if seller_event %}Suas unidades vendidas neste evento (pedidos confirmados){% else %}Suas unidades vendidas (pedidos confirmados){% endif %}">{{ p.units_sold or 0 }}</span>
                 <span class="admin-table__col--num admin-stock__qty" data-stock-qty><strong>{{ p.estoque }}</strong></span>
                 <span class="admin-table__col--num">{{ p.estoque_minimo }}</span>
                 <span class="admin-stock__status-cell" data-stock-status>
@@ -199,6 +202,14 @@
                           {% if p.id not in promo_product_ids %}hidden{% endif %}>
                         <span data-stock-promo-badge-text>{{ promo_name }}</span>
                     </span>
+                </span>
+                <span class="admin-stock__actions">
+                    <a class="admin-btn admin-btn--ghost admin-btn--sm"
+                       href="{{ url_for('seller_stock_product', product_id=p.id) }}"
+                       title="Minhas vendas deste produto"
+                       aria-label="Minhas vendas de {{ p.nome }}">
+                        <i class="fa-solid fa-dollar-sign" aria-hidden="true"></i>
+                    </a>
                 </span>
             </div>
             {% endfor %}

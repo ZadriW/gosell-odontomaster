@@ -35,6 +35,8 @@ from contextlib import contextmanager
 from datetime import datetime
 from typing import Dict, Iterable, List, Optional, Tuple
 
+from database.sku_helpers import _product_sku_label
+
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_DIR = os.path.join(BASE_DIR, "database")
@@ -861,7 +863,8 @@ def _apply_movement(
         "SELECT id, name, stock FROM products WHERE id = ?", (int(product_id),)
     ).fetchone()
     if row is None:
-        raise ValueError(f"Produto {product_id} não encontrado.")
+        sku = _product_sku_label(product_id, conn=conn)
+        raise ValueError(f"Produto {sku} não encontrado.")
 
     current = int(row["stock"] or 0)
     new_stock = current + int(delta)
@@ -977,7 +980,8 @@ def register_stock_adjustment(
             "SELECT stock FROM products WHERE id = ?", (int(product_id),)
         ).fetchone()
         if row is None:
-            raise ValueError(f"Produto {product_id} não encontrado.")
+            sku = _product_sku_label(product_id, conn=conn)
+            raise ValueError(f"Produto {sku} não encontrado.")
         delta = target - int(row["stock"] or 0)
         if delta == 0:
             raise ValueError("O estoque informado é igual ao atual.")
@@ -1201,7 +1205,10 @@ def create_transaction(
                 "SELECT name, stock FROM products WHERE id = ?", (pid,)
             ).fetchone()
             if row is None:
-                raise ValueError(f"Produto {pid} não encontrado no catálogo.")
+                raise ValueError(
+                    f"Produto {_product_sku_label(pid, sku=sku_by_id.get(pid))} "
+                    f"não encontrado no catálogo."
+                )
             if int(row["stock"] or 0) < qty:
                 raise ValueError(
                     f"Estoque insuficiente para '{row['name']}': "

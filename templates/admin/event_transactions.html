@@ -1,28 +1,33 @@
 {% extends "admin/_layout.html" %}
-{% from "macros/admin_tx_client.html" import admin_tx_client_section %}
-{% from "macros/admin_tx_order_cell.html" import admin_tx_order_cell %}
-{% from "macros/admin_tx_receipt_link.html" import admin_tx_receipt_link %}
-{% from "macros/admin_tx_status_badge.html" import admin_tx_status_badge %}
-{% from "macros/admin_tx_item_cells.html" import admin_tx_item_cells, admin_tx_discount_summary %}
 
 {% block title %}Transações — {{ event.name }} | Dental Odonto Master{% endblock %}
 
 {% block admin_body %}
+{% set op_noun_l = event|op_noun(lower=True) %}
 <section class="admin-section">
     <header class="admin-section__header admin-section__header--row">
         <div>
-            <a class="admin-breadcrumb" href="{{ url_for('admin_event_detail', event_id=event.id) }}">
-                <i class="fa-solid fa-arrow-left" aria-hidden="true"></i>
-                {{ event.name }}
-            </a>
-            <h2 class="admin-section__title">Exportar vendas (CSV)</h2>
+            <h2 class="admin-section__title">Exportar vendas (planilha)</h2>
             <p class="admin-section__subtitle">
-                Pedidos confirmados com movimentação de venda neste evento. Opcional: período pela data do pedido.
-                Campos vazios exportam o histórico completo (até os limites do servidor).
+                Pedidos confirmados com movimentação de venda neste {{ op_noun_l }}.
+                Filtre por vendedor para baixar só as vendas dele, ou deixe em «Todos».
+                Período pela data do pedido é opcional; campos vazios exportam o histórico completo
+                (até os limites do servidor). O arquivo é baixado em .xlsx (Excel).
             </p>
         </div>
     </header>
-    <form class="admin-filters" method="get" action="{{ url_for('admin_event_sales_export_csv', event_id=event.id) }}" aria-label="Exportar vendas em CSV">
+    <form class="admin-filters" method="get" action="{{ url_for('admin_event_sales_export_xlsx', event_id=event.id) }}" aria-label="Exportar vendas em planilha Excel">
+        <label class="admin-filter">
+            <span class="admin-filter__label">Vendedor</span>
+            <select name="vendedor" class="admin-filter__input" title="Exportar vendas de um vendedor ou de todos">
+                <option value="0">Todos</option>
+                {% for s in movement_filter_sellers %}
+                <option value="{{ s.id }}">
+                    {{ s.name }}{% if not s.active %} (inativo){% endif %}
+                </option>
+                {% endfor %}
+            </select>
+        </label>
         <label class="admin-filter">
             <span class="admin-filter__label">Data inicial</span>
             <input type="date" name="data_inicio" class="admin-filter__input">
@@ -33,15 +38,16 @@
         </label>
         <label class="admin-filter">
             <span class="admin-filter__label">Detalhe</span>
-            <select name="nivel" class="admin-filter__input" title="Um arquivo por pedido ou uma linha por item vendido">
+            <select name="nivel" class="admin-filter__input" title="Resumo por pedido, uma linha por item, ou pedido com cliente e produtos">
                 <option value="pedidos">Resumo por pedido</option>
                 <option value="itens">Uma linha por item</option>
+                <option value="completo">Pedido + itens</option>
             </select>
         </label>
         <div class="admin-filters__actions">
             <button type="submit" class="admin-btn admin-btn--primary">
-                <i class="fa-solid fa-file-csv" aria-hidden="true"></i>
-                Baixar CSV
+                <i class="fa-solid fa-file-excel" aria-hidden="true"></i>
+                Baixar planilha
             </button>
         </div>
     </form>
@@ -52,14 +58,24 @@
         <div>
             <h1 class="admin-section__title">Histórico de transações</h1>
             <p class="admin-section__subtitle">
-                Pedidos registrados neste evento (campo <em>evento</em> na transação).
+                Pedidos registrados neste {{ op_noun_l }}.
                 Toque em uma linha para ver itens e totais.
             </p>
+        </div>
+        {# ── Mobilidade: Movimentações saiu do menu do evento e é acessada por aqui ── #}
+        <div class="admin-section__header-actions" style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;">
+            <a class="admin-btn admin-btn--ghost"
+               href="{{ url_for('admin_event_movements', event_id=event.id) }}"
+               title="Histórico de vendas, entradas e saídas de estoque deste {{ op_noun_l }}">
+                <i class="fa-solid fa-right-left" aria-hidden="true"></i>
+                Movimentações de estoque
+            </a>
         </div>
     </header>
 
     <form class="admin-filters" method="get"
-          action="{{ url_for('admin_event_transactions', event_id=event.id) }}">
+          action="{{ url_for('admin_event_transactions', event_id=event.id) }}#lista"
+          data-scroll-to-table>
         <label class="admin-filter">
             <span class="admin-filter__label">Venda por vendedor</span>
             <select name="vendedor" class="admin-filter__input">
@@ -76,10 +92,20 @@
             <span class="admin-filter__label">Status</span>
             <select name="status" class="admin-filter__input">
                 <option value="todos" {% if filters.status == 'todos' %}selected{% endif %}>Todos</option>
-                <option value="confirmado" {% if filters.status == 'confirmado' %}selected{% endif %}>Confirmado</option>
+                <option value="confirmado" {% if filters.status == 'confirmado' %}selected{% endif %}>Pago</option>
                 <option value="pendente" {% if filters.status == 'pendente' %}selected{% endif %}>Pendente</option>
                 <option value="cancelado" {% if filters.status == 'cancelado' %}selected{% endif %}>Cancelado</option>
                 <option value="estornado" {% if filters.status == 'estornado' %}selected{% endif %}>Estornado</option>
+                <option value="entregue" {% if filters.status == 'entregue' %}selected{% endif %}>Entregue</option>
+            </select>
+        </label>
+
+        <label class="admin-filter">
+            <span class="admin-filter__label">Entrega futura</span>
+            <select name="entrega" class="admin-filter__input"
+                    title="Pedidos com itens aguardando retirada (estoque ainda não baixado)">
+                <option value="todos" {% if filters.entrega == 'todos' %}selected{% endif %}>Todas</option>
+                <option value="parcial" {% if filters.entrega == 'parcial' %}selected{% endif %}>Retirada pendente</option>
             </select>
         </label>
 
@@ -130,177 +156,19 @@
         </div>
     </form>
 
-    <header class="admin-section__header admin-section__header--row" style="margin-top: 8px;">
-        <div>
-            <p class="admin-section__subtitle" style="margin: 0;">
-                {% if pagination.total > 0 %}
-                Mostrando <strong>{{ pagination.showing_from }}–{{ pagination.showing_to }}</strong>
-                de <strong>{{ pagination.total }}</strong>
-                transação(ões) · página {{ pagination.page }} de {{ pagination.total_pages }}.
-                {% else %}
-                Nenhuma transação para os filtros aplicados.
-                {% endif %}
-            </p>
-        </div>
-    </header>
-
-    <div class="admin-table admin-table--tx-wide" role="table" aria-label="Histórico de transações do evento">
-        <div class="admin-table__head" role="row">
-            <span class="admin-table__col admin-table__col--toggle" aria-hidden="true"></span>
-            <span class="admin-table__col" role="columnheader">Pedido</span>
-            <span class="admin-table__col" role="columnheader">Data/Hora</span>
-            <span class="admin-table__col admin-table__col--num" role="columnheader">Itens</span>
-            <span class="admin-table__col" role="columnheader">Total</span>
-            <span class="admin-table__col" role="columnheader">Pagamento</span>
-            <span class="admin-table__col" role="columnheader">Vendedor</span>
-            <span class="admin-table__col" role="columnheader">Status</span>
-        </div>
-
-        {% if transactions %}
-            {% for tx in transactions %}
-            <div class="admin-tx" data-tx-id="{{ tx.id }}">
-                <div
-                    class="admin-tx__row"
-                    role="button"
-                    tabindex="0"
-                    aria-expanded="false"
-                    aria-controls="event-tx-details-{{ tx.id }}"
-                >
-                    <span class="admin-table__col admin-table__col--toggle">
-                        <i class="fa-solid fa-chevron-right admin-tx__chevron" aria-hidden="true"></i>
-                    </span>
-                    {{ admin_tx_order_cell(tx.order_number, tx.client_name) }}
-                    <span class="admin-table__col">{{ tx.created_at | datahora }}</span>
-                    <span class="admin-table__col admin-table__col--num">{{ tx.items_count }}</span>
-                    <span class="admin-table__col admin-table__col--num">
-                        <strong>{{ tx.total | brl }}</strong>
-                    </span>
-                    <span class="admin-table__col">
-                        {{ tx.payment_method | paymethod(tx.card_installments) }}
-                    </span>
-                    <span class="admin-table__col admin-table__col--seller">
-                        {{ tx.seller_name or '—' }}
-                    </span>
-                    <span class="admin-table__col admin-table__col--num admin-tx__status">
-                        <span class="admin-tx__status-stack">
-                            {{ admin_tx_status_badge(tx) }}
-                            {{ admin_tx_receipt_link(tx) }}
-                        </span>
-                    </span>
-                </div>
-
-                <div
-                    class="admin-tx__details"
-                    id="event-tx-details-{{ tx.id }}"
-                    hidden
-                >
-                    <div class="admin-tx__details-inner">
-                        {% set tx_items = tx['items'] %}
-                        <h3 class="admin-tx__details-title">
-                            Itens do pedido
-                            <span class="admin-tx__details-count">
-                                {{ tx_items|length }} produto{% if tx_items|length != 1 %}s{% endif %}
-                            </span>
-                        </h3>
-                        <div class="admin-tx__items">
-                            <div class="admin-tx__items-head">
-                                <span>Produto</span>
-                                <span>SKU</span>
-                                <span>Categoria</span>
-                                <span class="admin-table__col--num">Qtd.</span>
-                                <span class="admin-table__col--num">Unit.</span>
-                                <span class="admin-table__col--num">Subtotal</span>
-                            </div>
-                            {% for it in tx_items %}
-                            <div class="admin-tx__items-row">
-                                {{ admin_tx_item_cells(it) }}
-                            </div>
-                            {% endfor %}
-                        </div>
-                        {{ admin_tx_client_section(tx) }}
-                        <div class="admin-tx__summary">
-                            <div class="admin-tx__summary-row">
-                                <span>Forma de pagamento</span>
-                                <strong>{{ tx.payment_method | paymethod(tx.card_installments) }}</strong>
-                            </div>
-                            {% set parcelas_txt = tx.total | parcelas_cartao(tx.payment_method, tx.card_installments) %}
-                            {% if parcelas_txt %}
-                            <div class="admin-tx__summary-row">
-                                <span>Valor das parcelas</span>
-                                <strong>{{ parcelas_txt }}</strong>
-                            </div>
-                            {% endif %}
-                            {% if tx.aut %}
-                            <div class="admin-tx__summary-row">
-                                <span>AUT</span>
-                                <strong><code class="admin-mov__aut">{{ tx.aut }}</code></strong>
-                            </div>
-                            {% endif %}
-                            {{ admin_tx_discount_summary(tx_items, tx.total) }}
-                            <div class="admin-tx__summary-row admin-tx__summary-row--total">
-                                <span>Total da transação</span>
-                                <strong>{{ tx.total | brl }}</strong>
-                            </div>
-                        </div>
-                        {% if tx.status == 'confirmado' %}
-                        <div class="admin-tx__actions">
-                            <form
-                                method="post"
-                                action="{{ url_for('admin_event_transaction_refund', event_id=event.id, tx_id=tx.id) }}"
-                                onsubmit="return confirm('Estornar este pedido? O estoque será reposto e o valor sairá dos totais de vendas.');"
-                            >
-                                {% include 'partials/csrf_field.html' %}
-                                <button type="submit" class="admin-btn admin-btn--danger admin-btn--sm">
-                                    <i class="fa-solid fa-rotate-left" aria-hidden="true"></i>
-                                    Estornar venda
-                                </button>
-                            </form>
-                        </div>
-                        {% endif %}
-                    </div>
-                </div>
-            </div>
-            {% endfor %}
-        {% else %}
-            <div class="admin-empty">
-                <i class="fa-regular fa-folder-open" aria-hidden="true"></i>
-                <p>Nenhuma transação encontrada para os filtros aplicados.</p>
-            </div>
-        {% endif %}
+    <div
+        id="lista"
+        data-admin-event-tx-live
+        data-api-url="{{ url_for('admin_api_event_transactions', event_id=event.id) }}"
+        data-poll-ms="20000"
+        aria-live="polite"
+    >
+        {% include 'admin/partials/event_transactions_live.html' %}
     </div>
-
-    {% if pagination.total > 0 %}
-    <nav class="admin-pagination" aria-label="Paginação das transações">
-        <div class="admin-pagination__nav">
-            {% if pagination.has_prev %}
-            <a class="admin-btn admin-btn--ghost admin-btn--sm"
-               href="{{ url_for('admin_event_transactions', event_id=event.id, pedido=filters.pedido, status=filters.status, vendedor=filters.vendedor, data=filters.data, per_page=filters.per_page, page=pagination.page - 1) }}"
-               rel="prev">
-                <i class="fa-solid fa-chevron-left" aria-hidden="true"></i>
-                Anterior
-            </a>
-            {% else %}
-            <span class="admin-pagination__disabled admin-btn admin-btn--ghost admin-btn--sm" aria-disabled="true">
-                <i class="fa-solid fa-chevron-left" aria-hidden="true"></i>
-                Anterior
-            </span>
-            {% endif %}
-            {% if pagination.has_next %}
-            <a class="admin-btn admin-btn--ghost admin-btn--sm"
-               href="{{ url_for('admin_event_transactions', event_id=event.id, pedido=filters.pedido, status=filters.status, vendedor=filters.vendedor, data=filters.data, per_page=filters.per_page, page=pagination.page + 1) }}"
-               rel="next">
-                Próxima
-                <i class="fa-solid fa-chevron-right" aria-hidden="true"></i>
-            </a>
-            {% else %}
-            <span class="admin-pagination__disabled admin-btn admin-btn--ghost admin-btn--sm" aria-disabled="true">
-                Próxima
-                <i class="fa-solid fa-chevron-right" aria-hidden="true"></i>
-            </span>
-            {% endif %}
-        </div>
-    </nav>
-    {% endif %}
 </section>
 
+{% endblock %}
+
+{% block admin_scripts %}
+<script src="{{ url_for('static', filename='js/admin-tx-live.js') }}"></script>
 {% endblock %}

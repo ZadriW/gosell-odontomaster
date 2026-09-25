@@ -3,23 +3,30 @@
 {% block title %}Promoções — {{ event.name }} | Dental Odonto Master{% endblock %}
 
 {% block admin_body %}
+{% set op_noun_l = event|op_noun(lower=True) %}
 <section class="admin-section">
     <header class="admin-section__header admin-section__header--row">
         <div>
-            <a class="admin-breadcrumb" href="{{ url_for('admin_event_detail', event_id=event.id) }}">
-                <i class="fa-solid fa-arrow-left" aria-hidden="true"></i>
-                {{ event.name }}
-            </a>
             <h1 class="admin-section__title">Promoções</h1>
             <p class="admin-section__subtitle">
                 {{ promotions|length }} promoção(ões) · {{ promotions|selectattr('active')|list|length }} ativa(s)
             </p>
         </div>
+        {% if promotions %}
+        <div style="align-self:center;">
+            <a class="admin-btn admin-btn--ghost"
+               href="{{ url_for('admin_event_promotions_export_xlsx', event_id=event.id) }}"
+               title="Exportar promoções como planilha .xlsx">
+                <i class="fa-solid fa-file-excel" aria-hidden="true"></i>
+                Exportar Planilha
+            </a>
+        </div>
+        {% endif %}
     </header>
 
     {# ---- Lista de promoções ---- #}
     {% if promotions %}
-    <div class="admin-table admin-promos-list" role="table" aria-label="Promoções do evento">
+    <div class="admin-table admin-promos-list" role="table" aria-label="Promoções do {{ op_noun_l }}">
         <div class="admin-table__head admin-promos-list__row" role="row">
             <span role="columnheader">Nome</span>
             <span role="columnheader">Regra</span>
@@ -42,13 +49,20 @@
                         R$ {{ '%.2f'|format(promo.rule_value)|replace('.',',') }} de desconto
                     {% elif promo.rule_type == 'bogo' %}
                         <i class="fa-solid fa-gift" aria-hidden="true"></i>
+                        {% if promo.bogo_buy_sku and promo.bogo_free_sku and promo.bogo_buy_sku != promo.bogo_free_sku %}
+                        Compre {{ promo.min_qty }} SKU {{ promo.bogo_buy_sku }} · leve {{ promo.free_qty }} SKU {{ promo.bogo_free_sku }}
+                        {% else %}
                         Compre {{ promo.min_qty }} Leve {{ promo.min_qty + promo.free_qty }}
+                        {% endif %}
                     {% elif promo.rule_type == 'min_bundle' %}
                         <i class="fa-solid fa-layer-group" aria-hidden="true"></i>
                         A partir de {{ promo.min_qty }} un. — R$ {{ '%.2f'|format(promo.rule_value)|replace('.',',') }}
                     {% elif promo.rule_type == 'exact_bundle' %}
                         <i class="fa-solid fa-box" aria-hidden="true"></i>
                         Kit de {{ promo.min_qty }} un. — R$ {{ '%.2f'|format(promo.rule_value)|replace('.',',') }}
+                    {% elif promo.rule_type == 'combo_bundle' %}
+                        <i class="fa-solid fa-object-group" aria-hidden="true"></i>
+                        Combo — R$ {{ '%.2f'|format(promo.rule_value)|replace('.',',') }}
                     {% endif %}
                 </span>
             </span>
@@ -72,9 +86,10 @@
             <span class="admin-promos-list__actions">
                 <a class="admin-btn admin-btn--ghost admin-btn--sm"
                    href="{{ url_for('admin_event_promotion_detail', event_id=event.id, promo_id=promo.id) }}"
-                   title="Editar promoção">
-                    <i class="fa-solid fa-pen-to-square" aria-hidden="true"></i>
+                   title="{{ 'Ver promoção' if not event_ops_open(event) else 'Editar promoção' }}">
+                    <i class="fa-solid fa-{{ 'eye' if not event_ops_open(event) else 'pen-to-square' }}" aria-hidden="true"></i>
                 </a>
+                {% if event_ops_open(event) %}
                 <form method="post"
                       action="{{ url_for('admin_event_promotion_toggle', event_id=event.id, promo_id=promo.id) }}"
                       style="display:contents;">
@@ -96,6 +111,7 @@
                         <i class="fa-solid fa-trash" aria-hidden="true"></i>
                     </button>
                 </form>
+                {% endif %}
             </span>
         </div>
         {% endfor %}
@@ -103,12 +119,12 @@
     {% else %}
     <div class="admin-empty">
         <i class="fa-solid fa-tag" aria-hidden="true"></i>
-        <p>Nenhuma promoção cadastrada para este evento.</p>
+        <p>Nenhuma promoção cadastrada para este {{ op_noun_l }}.</p>
     </div>
     {% endif %}
 
     {# ---- Criar nova promoção ---- #}
-    {% if event.active %}
+    {% if event_ops_open(event) %}
     <div class="admin-card admin-card--form admin-promo-form" id="nova-promocao" style="margin-top:32px;">
         <h2 class="admin-card__title">
             <i class="fa-solid fa-plus" aria-hidden="true"></i>
@@ -158,23 +174,35 @@
 
             {# Campos condicional: bogo #}
             <div class="admin-promo-rule-fields" data-rule-fields="bogo" style="display:none; gap:16px; flex-wrap:wrap;">
-                <div class="admin-field" style="flex:1; min-width:130px;">
+                <div class="admin-field" style="flex:1; min-width:200px;">
                     <label class="admin-field__label" for="promo-min-qty">Compre (qtd. paga)</label>
                     <input id="promo-min-qty" type="number" name="min_qty_bogo"
                            class="admin-field__input"
                            min="1" step="1" value="2"
                            placeholder="Ex.: 2">
+                    <label class="admin-field__label" for="promo-bogo-buy-sku" style="margin-top:10px;">SKU a comprar</label>
+                    <select id="promo-bogo-buy-sku" name="bogo_buy_product_id"
+                            class="admin-field__input"
+                            data-bogo-buy-sku>
+                        <option value="">Marque produtos participantes primeiro</option>
+                    </select>
                 </div>
-                <div class="admin-field" style="flex:1; min-width:130px;">
+                <div class="admin-field" style="flex:1; min-width:200px;">
                     <label class="admin-field__label" for="promo-free-qty">Leve a mais (grátis)</label>
                     <input id="promo-free-qty" type="number" name="free_qty"
                            class="admin-field__input"
                            min="1" step="1" value="1"
                            placeholder="Ex.: 1">
+                    <label class="admin-field__label" for="promo-bogo-free-sku" style="margin-top:10px;">SKU grátis</label>
+                    <select id="promo-bogo-free-sku" name="bogo_free_product_id"
+                            class="admin-field__input"
+                            data-bogo-free-sku>
+                        <option value="">Marque produtos participantes primeiro</option>
+                    </select>
                 </div>
                 <div class="admin-promo-bogo-preview admin-field__hint" aria-live="polite" style="width:100%;">
                     <i class="fa-solid fa-circle-info" aria-hidden="true"></i>
-                    <span data-bogo-summary>Compre 2, leve 3 (1 grátis)</span>
+                    <span data-bogo-summary>Compre 2, leve 3 (1 grátis). Escolha os SKUs abaixo.</span>
                 </div>
             </div>
 
@@ -200,6 +228,21 @@
                 <div class="admin-promo-bundle-preview admin-field__hint" aria-live="polite" style="width:100%;">
                     <i class="fa-solid fa-circle-info" aria-hidden="true"></i>
                     <span data-bundle-summary></span>
+                </div>
+            </div>
+
+            {# Campos condicional: combo_bundle #}
+            <div class="admin-promo-rule-fields" data-rule-fields="combo_bundle" style="display:none; gap:16px; flex-wrap:wrap;">
+                <div class="admin-field" style="flex:1; min-width:160px;">
+                    <label class="admin-field__label" for="promo-combo-value">Valor total do combo (R$)</label>
+                    <input id="promo-combo-value" type="number" name="rule_value_combo"
+                           class="admin-field__input"
+                           min="0.01" step="0.01" value=""
+                           placeholder="Ex.: 99,90">
+                </div>
+                <div class="admin-promo-combo-preview admin-field__hint" aria-live="polite" style="width:100%;">
+                    <i class="fa-solid fa-circle-info" aria-hidden="true"></i>
+                    <span data-combo-summary>Selecione 2+ produtos e defina o valor do combo</span>
                 </div>
             </div>
 
@@ -247,7 +290,7 @@
                 {% else %}
                 <p class="admin-field__hint">
                     <i class="fa-solid fa-circle-info" aria-hidden="true"></i>
-                    Adicione produtos ao evento antes de criar promoções.
+                    Adicione produtos ao {{ op_noun_l }} antes de criar promoções.
                 </p>
                 {% endif %}
             </div>
@@ -277,16 +320,19 @@
     const percentFixedFields = document.querySelector('[data-rule-fields="percent fixed"]');
     const bogoFields = document.querySelector('[data-rule-fields="bogo"]');
     const bundleFields = document.querySelector('[data-rule-fields="min_bundle exact_bundle"]');
+    const comboFields = document.querySelector('[data-rule-fields="combo_bundle"]');
     const labelPercent = document.querySelector('[data-rule-label-percent]');
     const labelFixed = document.querySelector('[data-rule-label-fixed]');
     const labelMinBundle = document.querySelector('[data-rule-label-min-bundle]');
     const labelExactBundle = document.querySelector('[data-rule-label-exact-bundle]');
     const bogoSummary = document.querySelector('[data-bogo-summary]');
     const bundleSummary = document.querySelector('[data-bundle-summary]');
+    const comboSummary = document.querySelector('[data-combo-summary]');
     const minQtyInput = document.getElementById('promo-min-qty');
     const freeQtyInput = document.getElementById('promo-free-qty');
     const bundleQtyInput = document.getElementById('promo-bundle-qty');
     const bundleValueInput = document.getElementById('promo-bundle-value');
+    const comboValueInput = document.getElementById('promo-combo-value');
 
     function updateRuleFields() {
         if (!ruleSelect) return;
@@ -294,11 +340,13 @@
         if (percentFixedFields) percentFixedFields.style.display = (val === 'percent' || val === 'fixed') ? 'flex' : 'none';
         if (bogoFields) bogoFields.style.display = val === 'bogo' ? 'flex' : 'none';
         if (bundleFields) bundleFields.style.display = (val === 'min_bundle' || val === 'exact_bundle') ? 'flex' : 'none';
+        if (comboFields) comboFields.style.display = val === 'combo_bundle' ? 'flex' : 'none';
         if (labelPercent) labelPercent.style.display = val === 'percent' ? '' : 'none';
         if (labelFixed) labelFixed.style.display = val === 'fixed' ? '' : 'none';
         if (labelMinBundle) labelMinBundle.style.display = val === 'min_bundle' ? '' : 'none';
         if (labelExactBundle) labelExactBundle.style.display = val === 'exact_bundle' ? '' : 'none';
         updateBundleSummary();
+        updateComboSummary();
     }
 
     function updateBogoSummary() {
@@ -321,9 +369,18 @@
                 : `Informe a quantidade mínima e o valor total do conjunto`;
         } else if (type === 'exact_bundle') {
             bundleSummary.textContent = val > 0
-                ? `Kit de ${qty} unidades por R$ ${valFmt} — unidades excedentes pagam preço normal`
+                ? `Kit de ${qty} unidades por R$ ${valFmt}. Unidades além do pacote (ex.: a 6ª de um kit de 5) pagam o preço normal; outro kit só com +${qty} un.`
                 : `Informe a quantidade exata e o valor total do kit`;
         }
+    }
+
+    function updateComboSummary() {
+        if (!comboSummary || !comboValueInput) return;
+        const val = parseFloat(comboValueInput.value) || 0;
+        const valFmt = val.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        comboSummary.textContent = val > 0
+            ? `Combo: na compra de 1 un. de cada produto selecionado, o conjunto sai por R$ ${valFmt}`
+            : 'Selecione 2+ produtos e defina o valor do combo';
     }
 
     if (ruleSelect) {
@@ -334,6 +391,7 @@
     if (freeQtyInput) freeQtyInput.addEventListener('input', updateBogoSummary);
     if (bundleQtyInput) { bundleQtyInput.addEventListener('input', updateBundleSummary); }
     if (bundleValueInput) { bundleValueInput.addEventListener('input', updateBundleSummary); }
+    if (comboValueInput) { comboValueInput.addEventListener('input', updateComboSummary); }
 
     document.addEventListener('click', function (e) {
         const form = e.target.closest('#formNovaPromo') || e.target.closest('#formEditPromo');
@@ -347,4 +405,5 @@
     });
 })();
 </script>
+<script src="{{ url_for('static', filename='js/admin-promo-bogo-sku.js') }}"></script>
 {% endblock %}

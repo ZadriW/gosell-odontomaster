@@ -2,6 +2,8 @@
 {% macro admin_tx_client_section(tx) -%}
 {% set cn = (tx.client_name or '')|trim %}
 {% set cpf = (tx.client_cpf or '')|trim %}
+{% set email = (tx.client_email or '')|trim %}
+{% set phone = (tx.client_phone or '')|trim %}
 {% set zipc = (tx.client_zipcode or '')|trim %}
 {% set addr = (tx.client_address or '')|trim %}
 {% set num = (tx.client_number or '')|trim %}
@@ -10,7 +12,7 @@
 {% set st = (tx.client_state or '')|trim %}
 {% set cro_uf = (tx.client_cro_uf or '')|trim %}
 {% set cro_num = (tx.client_cro_numero or '')|trim %}
-{% set has_client = cn or cpf or zipc or addr or num or comp or city or st or cro_uf or cro_num %}
+{% set has_client = cn or cpf or email or phone or zipc or addr or num or comp or city or st or cro_uf or cro_num %}
 {% if has_client %}
 <h3 class="admin-tx__details-title">
     Dados do cliente (Pedido)
@@ -27,6 +29,18 @@
         <div class="admin-tx__client-item">
             <dt>CPF</dt>
             <dd>{{ cpf }}</dd>
+        </div>
+        {% endif %}
+        {% if email %}
+        <div class="admin-tx__client-item">
+            <dt>E-mail</dt>
+            <dd><a href="mailto:{{ email }}" class="admin-tx__client-link">{{ email }}</a></dd>
+        </div>
+        {% endif %}
+        {% if phone %}
+        <div class="admin-tx__client-item">
+            <dt>Telefone</dt>
+            <dd>{{ phone }}</dd>
         </div>
         {% endif %}
         {% if cro_uf or cro_num %}

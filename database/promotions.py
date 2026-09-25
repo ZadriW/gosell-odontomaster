@@ -7,7 +7,7 @@ from typing import Dict, List, Optional
 
 from .connection import _now_iso, get_conn
 
-_VALID_RULE_TYPES = {"percent", "fixed", "bogo", "min_bundle", "exact_bundle"}
+_VALID_RULE_TYPES = {"percent", "fixed", "bogo", "min_bundle", "exact_bundle", "combo_bundle"}
 
 RULE_TYPE_LABELS = {
     "percent": "Desconto (%)",
@@ -15,12 +15,33 @@ RULE_TYPE_LABELS = {
     "bogo": "Compre X, Leve Y",
     "min_bundle": "A partir de (pacote mínimo)",
     "exact_bundle": "Na compra de (pacote exato)",
+    "combo_bundle": "Combo de itens (combinação)",
 }
 
 
 # ---------------------------------------------------------------------------
 # Helpers internos
 # ---------------------------------------------------------------------------
+
+def _pack_groups_and_extra(qty: int, pack_qty: int) -> tuple[int, int]:
+    """Quantos pacotes completos e quantas unidades avulsas.
+
+    Ex.: pack_qty=5, qty=6 → (1 pacote, 1 avulsa). qty=10 → (2, 0).
+    """
+    pack = max(2, int(pack_qty))
+    q = max(0, int(qty))
+    return q // pack, q % pack
+
+
+def _pack_subtotal(qty: int, pack_qty: int, pack_total: float, list_price: float) -> float:
+    """Pacotes completos pelo valor da promoção; o resto pelo preço de lista.
+
+    Ex.: 5 un. a R$ 15 (lista R$ 75) com kit de 5 por R$ 50 → R$ 50.
+    6 un. → R$ 50 + 1×R$ 15 = R$ 65. 10 un. → 2 kits = R$ 100.
+    """
+    groups, extra = _pack_groups_and_extra(qty, pack_qty)
+    return round(groups * max(0.0, float(pack_total)) + extra * float(list_price), 2)
+
 
 def _compute_effective_subtotal(
     rule_type: str,
@@ -51,27 +72,77 @@ def _compute_effective_subtotal(
         # "A partir de min_qty unidades": exige atingir o mínimo; cada grupo completo
         # de min_qty paga rule_value; unidades excedentes pagam preço de lista.
         min_q = max(2, int(min_qty))
-        bundle_total = max(0.0, float(rule_value))
         if qty < min_q:
             return round(list_price * qty, 2)
-        groups = qty // min_q
-        extra = qty % min_q
-        eff = round(groups * bundle_total + extra * list_price, 2)
+        eff = _pack_subtotal(qty, min_q, rule_value, list_price)
         if eff >= round(list_price * qty, 2):  # conjunto mais caro → sem desconto
             return round(list_price * qty, 2)
         return eff
     if rule_type == "exact_bundle":
-        # "Na compra de min_qty": cada grupo completo paga rule_value; extras pagam lista.
-        # Abaixo de min_qty (sem grupo completo) → preço de lista.
+        # "Na compra de min_qty": só pacotes completos usam o valor da promoção.
+        # Unidades além do múltiplo (ex.: 6ª de um kit de 5) pagam preço de lista.
         min_q = max(2, int(min_qty))
-        bundle_total = max(0.0, float(rule_value))
-        groups = qty // min_q
-        extra = qty % min_q
-        eff = round(groups * bundle_total + extra * list_price, 2)
+        groups, _extra = _pack_groups_and_extra(qty, min_q)
+        if groups <= 0:
+            return round(list_price * qty, 2)
+        eff = _pack_subtotal(qty, min_q, rule_value, list_price)
         if eff >= round(list_price * qty, 2):  # kit mais caro → sem desconto
             return round(list_price * qty, 2)
         return eff
     return round(list_price * qty, 2)
+
+
+def _int_or_none(value) -> Optional[int]:
+    if value is None or value == "":
+        return None
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return None
+    return n if n else None
+
+
+def _fetch_promo_products(conn: sqlite3.Connection, promo_id: int):
+    return conn.execute(
+        """
+        SELECT pp.product_id, p.name, p.sku
+          FROM promotion_products pp
+          JOIN products p ON p.id = pp.product_id
+         WHERE pp.promotion_id = ?
+         ORDER BY p.name COLLATE NOCASE
+        """,
+        (int(promo_id),),
+    ).fetchall()
+
+
+def _sku_by_product_id(products: List) -> Dict[int, str]:
+    out: Dict[int, str] = {}
+    for r in products or []:
+        d = dict(r) if not isinstance(r, dict) else r
+        pid = int(d.get("product_id") or 0)
+        if pid:
+            out[pid] = str(d.get("sku") or "").strip()
+    return out
+
+
+def _normalize_bogo_product_ids(
+    rule_type: str,
+    product_ids: List[int],
+    bogo_buy_product_id: Optional[int],
+    bogo_free_product_id: Optional[int],
+) -> tuple[Optional[int], Optional[int]]:
+    if rule_type != "bogo":
+        return None, None
+    buy_id = _int_or_none(bogo_buy_product_id)
+    free_id = _int_or_none(bogo_free_product_id)
+    if not buy_id or not free_id:
+        raise ValueError("Selecione o SKU a comprar e o SKU que o cliente leva grátis.")
+    id_set = {int(p) for p in product_ids}
+    if buy_id not in id_set:
+        raise ValueError("O SKU a comprar deve estar na lista de produtos participantes.")
+    if free_id not in id_set:
+        raise ValueError("O SKU grátis deve estar na lista de produtos participantes.")
+    return buy_id, free_id
 
 
 def _rows_to_promo(rows, product_rows) -> Dict:
@@ -80,6 +151,13 @@ def _rows_to_promo(rows, product_rows) -> Dict:
     promo["rule_label"] = RULE_TYPE_LABELS.get(promo.get("rule_type", ""), "")
     promo["product_ids"] = [int(r["product_id"]) for r in product_rows]
     promo["products"] = [dict(r) for r in product_rows]
+    promo["bogo_buy_product_id"] = _int_or_none(promo.get("bogo_buy_product_id"))
+    promo["bogo_free_product_id"] = _int_or_none(promo.get("bogo_free_product_id"))
+    sku_map = _sku_by_product_id(promo["products"])
+    buy_id = promo["bogo_buy_product_id"]
+    free_id = promo["bogo_free_product_id"]
+    promo["bogo_buy_sku"] = sku_map.get(buy_id, "") if buy_id else ""
+    promo["bogo_free_sku"] = sku_map.get(free_id, "") if free_id else ""
     return promo
 
 
@@ -96,6 +174,8 @@ def create_promotion(
     min_qty: int = 1,
     free_qty: int = 0,
     product_ids: List[int],
+    bogo_buy_product_id: Optional[int] = None,
+    bogo_free_product_id: Optional[int] = None,
 ) -> Dict:
     """Cria uma promoção para o evento e associa os produtos. Retorna o dict criado."""
     name_s = (name or "").strip()
@@ -119,8 +199,16 @@ def create_promotion(
             raise ValueError("A quantidade do pacote deve ser pelo menos 2.")
         if rule_value <= 0:
             raise ValueError("O valor do pacote deve ser maior que zero.")
+    elif rule_type == "combo_bundle":
+        if rule_value <= 0:
+            raise ValueError("O valor do combo deve ser maior que zero.")
     if not product_ids:
         raise ValueError("Selecione ao menos um produto para a promoção.")
+    if rule_type == "combo_bundle" and len(product_ids) < 2:
+        raise ValueError("O combo precisa de pelo menos 2 produtos diferentes.")
+    buy_id, free_id = _normalize_bogo_product_ids(
+        rule_type, product_ids, bogo_buy_product_id, bogo_free_product_id,
+    )
 
     now = _now_iso()
     with get_conn() as conn:
@@ -130,20 +218,17 @@ def create_promotion(
         cur = conn.execute(
             """
             INSERT INTO promotions
-                (event_id, name, rule_type, rule_value, min_qty, free_qty, active, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
+                (event_id, name, rule_type, rule_value, min_qty, free_qty,
+                 bogo_buy_product_id, bogo_free_product_id, active, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
             """,
             (int(event_id), name_s, rule_type, float(rule_value),
-             int(min_qty), int(free_qty), now, now),
+             int(min_qty), int(free_qty), buy_id, free_id, now, now),
         )
         promo_id = int(cur.lastrowid)
         _sync_promo_products(conn, promo_id, product_ids)
         row = conn.execute("SELECT * FROM promotions WHERE id = ?", (promo_id,)).fetchone()
-        p_rows = conn.execute(
-            "SELECT pp.product_id, p.name FROM promotion_products pp "
-            "JOIN products p ON p.id = pp.product_id WHERE pp.promotion_id = ?",
-            (promo_id,),
-        ).fetchall()
+        p_rows = _fetch_promo_products(conn, promo_id)
     return _rows_to_promo(row, p_rows)
 
 
@@ -157,6 +242,8 @@ def update_promotion(
     free_qty: int,
     active: bool,
     product_ids: List[int],
+    bogo_buy_product_id: Optional[int] = None,
+    bogo_free_product_id: Optional[int] = None,
 ) -> Dict:
     """Atualiza nome, regra, produtos e status de uma promoção existente."""
     name_s = (name or "").strip()
@@ -180,8 +267,16 @@ def update_promotion(
             raise ValueError("A quantidade do pacote deve ser pelo menos 2.")
         if rule_value <= 0:
             raise ValueError("O valor do pacote deve ser maior que zero.")
+    elif rule_type == "combo_bundle":
+        if rule_value <= 0:
+            raise ValueError("O valor do combo deve ser maior que zero.")
     if not product_ids:
         raise ValueError("Selecione ao menos um produto para a promoção.")
+    if rule_type == "combo_bundle" and len(product_ids) < 2:
+        raise ValueError("O combo precisa de pelo menos 2 produtos diferentes.")
+    buy_id, free_id = _normalize_bogo_product_ids(
+        rule_type, product_ids, bogo_buy_product_id, bogo_free_product_id,
+    )
 
     now = _now_iso()
     with get_conn() as conn:
@@ -192,19 +287,16 @@ def update_promotion(
             """
             UPDATE promotions
                SET name = ?, rule_type = ?, rule_value = ?, min_qty = ?,
-                   free_qty = ?, active = ?, updated_at = ?
+                   free_qty = ?, bogo_buy_product_id = ?, bogo_free_product_id = ?,
+                   active = ?, updated_at = ?
              WHERE id = ?
             """,
             (name_s, rule_type, float(rule_value), int(min_qty),
-             int(free_qty), 1 if active else 0, now, int(promo_id)),
+             int(free_qty), buy_id, free_id, 1 if active else 0, now, int(promo_id)),
         )
         _sync_promo_products(conn, int(promo_id), product_ids)
         row = conn.execute("SELECT * FROM promotions WHERE id = ?", (int(promo_id),)).fetchone()
-        p_rows = conn.execute(
-            "SELECT pp.product_id, p.name FROM promotion_products pp "
-            "JOIN products p ON p.id = pp.product_id WHERE pp.promotion_id = ?",
-            (int(promo_id),),
-        ).fetchall()
+        p_rows = _fetch_promo_products(conn, int(promo_id))
     return _rows_to_promo(row, p_rows)
 
 
@@ -221,11 +313,7 @@ def toggle_promotion_active(promo_id: int) -> Dict:
             (new_active, now, int(promo_id)),
         )
         row = conn.execute("SELECT * FROM promotions WHERE id = ?", (int(promo_id),)).fetchone()
-        p_rows = conn.execute(
-            "SELECT pp.product_id, p.name FROM promotion_products pp "
-            "JOIN products p ON p.id = pp.product_id WHERE pp.promotion_id = ?",
-            (int(promo_id),),
-        ).fetchall()
+        p_rows = _fetch_promo_products(conn, int(promo_id))
     return _rows_to_promo(row, p_rows)
 
 
@@ -244,11 +332,7 @@ def get_promotion(promo_id: int) -> Optional[Dict]:
         row = conn.execute("SELECT * FROM promotions WHERE id = ?", (int(promo_id),)).fetchone()
         if row is None:
             return None
-        p_rows = conn.execute(
-            "SELECT pp.product_id, p.name FROM promotion_products pp "
-            "JOIN products p ON p.id = pp.product_id WHERE pp.promotion_id = ?",
-            (int(promo_id),),
-        ).fetchall()
+        p_rows = _fetch_promo_products(conn, int(promo_id))
     return _rows_to_promo(row, p_rows)
 
 
@@ -262,11 +346,7 @@ def list_promotions_for_event(event_id: int) -> List[Dict]:
         result = []
         for row in rows:
             pid = int(row["id"])
-            p_rows = conn.execute(
-                "SELECT pp.product_id, p.name FROM promotion_products pp "
-                "JOIN products p ON p.id = pp.product_id WHERE pp.promotion_id = ?",
-                (pid,),
-            ).fetchall()
+            p_rows = _fetch_promo_products(conn, pid)
             result.append(_rows_to_promo(row, p_rows))
     return result
 
@@ -278,17 +358,76 @@ def get_active_promotions_for_event(event_id: int) -> List[Dict]:
             "SELECT * FROM promotions WHERE event_id = ? AND active = 1",
             (int(event_id),),
         ).fetchall()
+        if not rows:
+            return []
+        promo_ids = [int(r["id"]) for r in rows]
+        placeholders = ",".join("?" * len(promo_ids))
+        product_rows = conn.execute(
+            f"""
+            SELECT pp.promotion_id, pp.product_id, p.name, p.sku
+              FROM promotion_products pp
+              JOIN products p ON p.id = pp.product_id
+             WHERE pp.promotion_id IN ({placeholders})
+             ORDER BY p.name COLLATE NOCASE
+            """,
+            promo_ids,
+        ).fetchall()
+        by_promo: Dict[int, List] = defaultdict(list)
+        for r in product_rows:
+            by_promo[int(r["promotion_id"])].append(r)
+
+        result = []
+        for row in rows:
+            pid = int(row["id"])
+            p_rows = by_promo.get(pid, [])
+            d = dict(row)
+            d["product_ids"] = [int(r["product_id"]) for r in p_rows]
+            d["products"] = [dict(r) for r in p_rows]
+            d["rule_label"] = RULE_TYPE_LABELS.get(d.get("rule_type", ""), "")
+            d["bogo_buy_product_id"] = _int_or_none(d.get("bogo_buy_product_id"))
+            d["bogo_free_product_id"] = _int_or_none(d.get("bogo_free_product_id"))
+            sku_map = _sku_by_product_id(d["products"])
+            d["bogo_buy_sku"] = sku_map.get(d["bogo_buy_product_id"], "") if d["bogo_buy_product_id"] else ""
+            d["bogo_free_sku"] = sku_map.get(d["bogo_free_product_id"], "") if d["bogo_free_product_id"] else ""
+            result.append(d)
+    return result
+
+
+def list_promotions_for_event_export(event_id: int) -> List[Dict]:
+    """Promoções do evento com dados completos de cada produto (SKU, preço, categoria).
+
+    Cada item de ``products`` traz ``product_id``, ``name``, ``sku``, ``category``,
+    ``library_price`` e ``event_price`` (preço efetivo no evento).
+    """
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM promotions WHERE event_id = ? ORDER BY active DESC, created_at DESC",
+            (int(event_id),),
+        ).fetchall()
         result = []
         for row in rows:
             pid = int(row["id"])
             p_rows = conn.execute(
-                "SELECT pp.product_id FROM promotion_products pp WHERE pp.promotion_id = ?",
-                (pid,),
+                """
+                SELECT pp.product_id,
+                       p.name,
+                       p.sku,
+                       p.category,
+                       p.price                         AS library_price,
+                       COALESCE(ep.price, p.price)     AS event_price
+                  FROM promotion_products pp
+                  JOIN products p ON p.id = pp.product_id
+                  LEFT JOIN event_products ep
+                    ON ep.product_id = pp.product_id AND ep.event_id = ?
+                 WHERE pp.promotion_id = ?
+                 ORDER BY p.name COLLATE NOCASE
+                """,
+                (int(event_id), pid),
             ).fetchall()
-            d = dict(row)
-            d["product_ids"] = [int(r["product_id"]) for r in p_rows]
-            d["rule_label"] = RULE_TYPE_LABELS.get(d.get("rule_type", ""), "")
-            result.append(d)
+            promo = dict(row)
+            promo["rule_label"] = RULE_TYPE_LABELS.get(promo.get("rule_type", ""), "")
+            promo["products"] = [dict(r) for r in p_rows]
+            result.append(promo)
     return result
 
 
@@ -323,13 +462,23 @@ def _format_promo_tooltip_line(promo: Dict) -> str:
         return f"{name}: R$ {brv} de desconto no preço unitário"
     if rt == "bogo":
         total = min_q + free_q if free_q > 0 else min_q
+        buy_sku = (promo.get("bogo_buy_sku") or "").strip()
+        free_sku = (promo.get("bogo_free_sku") or "").strip()
+        if buy_sku and free_sku and buy_sku != free_sku:
+            return (
+                f"{name}: compre {min_q} un. do SKU {buy_sku}, "
+                f"leve {free_q} un. do SKU {free_sku} grátis"
+            )
         return f"{name}: compre {min_q}, leve {total}"
     if rt == "min_bundle":
         brv = f"{rv:.2f}".replace(".", ",")
         return f"{name}: a partir de {min_q} un. por R$ {brv}"
     if rt == "exact_bundle":
         brv = f"{rv:.2f}".replace(".", ",")
-        return f"{name}: kit de {min_q} un. por R$ {brv}"
+        return f"{name}: kit de {min_q} un. por R$ {brv} (extras no preço normal)"
+    if rt == "combo_bundle":
+        brv = f"{rv:.2f}".replace(".", ",")
+        return f"{name}: combo de itens por R$ {brv}"
     return name
 
 
@@ -361,6 +510,310 @@ def active_promotion_names_by_product_id(event_id: int) -> Dict[int, str]:
 # Aplicação de promoções aos itens da transação
 # ---------------------------------------------------------------------------
 
+def _line_subtotal(item: Dict) -> float:
+    if item.get("subtotal") is not None:
+        return float(item["subtotal"])
+    qty = int(item.get("quantity") or 0)
+    return round(
+        float(item.get("original_price") or item.get("unit_price") or 0) * qty,
+        2,
+    )
+
+
+def _apply_exact_bundle_cross_product(
+    promo: dict,
+    item_indices: List[int],
+    result: List[Dict],
+) -> None:
+    """Aplica exact_bundle somando quantidades de todos os produtos da promoção.
+
+    Distribui o desconto proporcionalmente entre os itens participantes.
+    Ex.: kit de 3 por R$100, itens A(1 un. R$50) + B(1 un. R$40) + C(1 un. R$30)
+    → subtotal original R$120, subtotal promo R$100, rateio proporcional.
+    """
+    pack_qty = max(2, int(promo["min_qty"]))
+    pack_total = float(promo["rule_value"])
+    promo_id = int(promo["id"])
+
+    total_qty = sum(int(result[i].get("quantity") or 0) for i in item_indices)
+    groups, extra = _pack_groups_and_extra(total_qty, pack_qty)
+    if groups <= 0:
+        return
+
+    original_subtotal = round(
+        sum(float(result[i].get("original_price") or result[i].get("unit_price") or 0)
+            * int(result[i].get("quantity") or 0) for i in item_indices), 2,
+    )
+    if original_subtotal <= 0:
+        return
+
+    bundle_subtotal = round(groups * pack_total, 2)
+    extra_remaining = extra
+
+    extra_subtotal = 0.0
+    item_extras: Dict[int, int] = {}
+    for idx in reversed(item_indices):
+        qty_i = int(result[idx].get("quantity") or 0)
+        take = min(qty_i, extra_remaining)
+        item_extras[idx] = take
+        extra_remaining -= take
+        list_p = float(result[idx].get("original_price") or result[idx].get("unit_price") or 0)
+        extra_subtotal += round(take * list_p, 2)
+        if extra_remaining <= 0:
+            break
+
+    promo_total = round(bundle_subtotal + extra_subtotal, 2)
+    if promo_total >= original_subtotal:
+        return
+    current_subtotal = round(sum(_line_subtotal(result[i]) for i in item_indices), 2)
+    if promo_total >= current_subtotal - 0.001:
+        return
+
+    for idx in item_indices:
+        qty_i = int(result[idx].get("quantity") or 0)
+        if qty_i <= 0:
+            continue
+        list_p = float(result[idx].get("original_price") or result[idx].get("unit_price") or 0)
+        item_original = round(list_p * qty_i, 2)
+        share = item_original / original_subtotal if original_subtotal else 0
+        item_promo_subtotal = round(promo_total * share, 2)
+        if item_promo_subtotal < item_original:
+            eff_unit = round(item_promo_subtotal / qty_i, 6) if qty_i else 0.0
+            result[idx]["unit_price"] = eff_unit
+            result[idx]["subtotal"] = item_promo_subtotal
+            result[idx]["promotion_id"] = promo_id
+
+
+def _apply_combo_bundle(
+    promo: dict,
+    item_indices: List[int],
+    result: List[Dict],
+    promo_pids: set,
+) -> None:
+    """Aplica combo_bundle: exige ao menos 1 un. de CADA produto vinculado à promoção.
+
+    Número de combos = min(qtd de cada produto participante presente no carrinho).
+    Cada combo completo custa rule_value; unidades excedentes pagam preço de lista.
+    """
+    combo_total = float(promo["rule_value"])
+    promo_id = int(promo["id"])
+
+    pids_in_cart = {int(result[i]["product_id"]) for i in item_indices}
+    if not promo_pids.issubset(pids_in_cart):
+        return
+
+    qty_per_pid: Dict[int, List[int]] = {}
+    for i in item_indices:
+        pid = int(result[i]["product_id"])
+        if pid in promo_pids:
+            qty_per_pid.setdefault(pid, []).append(i)
+
+    min_combos = min(
+        sum(int(result[i].get("quantity") or 0) for i in idxs)
+        for idxs in qty_per_pid.values()
+    )
+    if min_combos <= 0:
+        return
+
+    num_products = len(promo_pids)
+    original_combo_subtotal = 0.0
+    for i in item_indices:
+        pid = int(result[i]["product_id"])
+        if pid not in promo_pids:
+            continue
+        qty_i = int(result[i].get("quantity") or 0)
+        lp = float(result[i].get("original_price") or result[i].get("unit_price") or 0)
+        in_combo = min(qty_i, min_combos)
+        original_combo_subtotal += round(in_combo * lp, 2)
+
+    promo_subtotal = round(min_combos * combo_total, 2)
+    if promo_subtotal >= original_combo_subtotal:
+        return
+
+    for i in item_indices:
+        pid = int(result[i]["product_id"])
+        if pid not in promo_pids:
+            continue
+        qty_i = int(result[i].get("quantity") or 0)
+        lp = float(result[i].get("original_price") or result[i].get("unit_price") or 0)
+        in_combo = min(qty_i, min_combos)
+        extra = qty_i - in_combo
+
+        share = (round(in_combo * lp, 2) / original_combo_subtotal) if original_combo_subtotal else 0
+        item_promo_subtotal = round(promo_subtotal * share, 2)
+        item_total = round(item_promo_subtotal + extra * lp, 2)
+        item_original_total = round(lp * qty_i, 2)
+
+        if item_total < item_original_total:
+            eff_unit = round(item_total / qty_i, 6) if qty_i else 0.0
+            result[i]["unit_price"] = eff_unit
+            result[i]["subtotal"] = item_total
+            result[i]["promotion_id"] = promo_id
+
+
+def _is_cross_bogo(promo: dict) -> bool:
+    buy_id = _int_or_none(promo.get("bogo_buy_product_id"))
+    free_id = _int_or_none(promo.get("bogo_free_product_id"))
+    return bool(buy_id and free_id and buy_id != free_id)
+
+
+def _is_same_sku_bogo(promo: dict) -> bool:
+    buy_id = _int_or_none(promo.get("bogo_buy_product_id"))
+    free_id = _int_or_none(promo.get("bogo_free_product_id"))
+    return bool(buy_id and free_id and buy_id == free_id)
+
+
+def _is_bogo_pair(promo: dict) -> bool:
+    buy_id = _int_or_none(promo.get("bogo_buy_product_id"))
+    free_id = _int_or_none(promo.get("bogo_free_product_id"))
+    return bool(buy_id and free_id)
+
+
+def _is_bogo_gift_line(item: Dict) -> bool:
+    return bool(item.get("bogo_auto_free"))
+
+
+def _apply_bogo_cross_product(promo: dict, result: List[Dict]) -> List[int]:
+    """Compre X do SKU A, leve Y do SKU B grátis. Retorna índices com desconto.
+
+    Também cobre o mesmo SKU (compre 1, leve 2): a linha paga não entra
+    em ``free_indices``; só as linhas ``bogo_auto_free``.
+    """
+    buy_id = _int_or_none(promo.get("bogo_buy_product_id"))
+    free_id = _int_or_none(promo.get("bogo_free_product_id"))
+    if not buy_id or not free_id:
+        return []
+    same_sku = buy_id == free_id
+    min_q = max(1, int(promo.get("min_qty") or 1))
+    free_q = max(0, int(promo.get("free_qty") or 0))
+    if free_q <= 0:
+        return []
+
+    buy_qty = 0
+    free_indices: List[int] = []
+    for i, it in enumerate(result):
+        pid = it.get("product_id")
+        qty = int(it.get("quantity") or 0)
+        if pid is None or qty <= 0:
+            continue
+        pid_i = int(pid)
+        is_gift = _is_bogo_gift_line(it)
+        if pid_i == buy_id and not is_gift:
+            buy_qty += qty
+        if pid_i == free_id and (is_gift if same_sku else True):
+            free_indices.append(i)
+    if buy_qty < min_q or not free_indices:
+        return []
+
+    granted = (buy_qty // min_q) * free_q
+    remaining = granted
+    applied: List[int] = []
+    promo_id = int(promo["id"])
+    for i in free_indices:
+        if remaining <= 0:
+            break
+        qty_i = int(result[i].get("quantity") or 0)
+        take = min(qty_i, remaining)
+        if take <= 0:
+            continue
+        lp = float(result[i].get("original_price") or result[i].get("unit_price") or 0)
+        orig = round(lp * qty_i, 2)
+        paid_qty = qty_i - take
+        new_sub = round(lp * paid_qty, 2)
+        if new_sub < orig:
+            result[i]["subtotal"] = new_sub
+            result[i]["unit_price"] = round(new_sub / qty_i, 6) if qty_i else 0.0
+            result[i]["promotion_id"] = promo_id
+            applied.append(i)
+        remaining -= take
+    return applied
+
+
+def _inject_bogo_gift_items(
+    conn: sqlite3.Connection,
+    event_id: int,
+    promo: dict,
+    result: List[Dict],
+) -> None:
+    """Inclui o SKU grátis (Y) quando o SKU pago (X) atinge o mínimo da promoção.
+
+    No mesmo SKU, a linha paga nunca é reaproveitada: cria/atualiza uma
+    linha ``bogo_auto_free`` à parte.
+    """
+    buy_id = _int_or_none(promo.get("bogo_buy_product_id"))
+    free_id = _int_or_none(promo.get("bogo_free_product_id"))
+    if not buy_id or not free_id:
+        return
+    same_sku = buy_id == free_id
+    min_q = max(1, int(promo.get("min_qty") or 1))
+    free_q = max(0, int(promo.get("free_qty") or 0))
+    if free_q <= 0:
+        return
+
+    buy_qty = 0
+    free_item = None
+    for it in result:
+        pid = it.get("product_id")
+        qty = int(it.get("quantity") or 0)
+        if pid is None or qty <= 0:
+            continue
+        pid_i = int(pid)
+        is_gift = _is_bogo_gift_line(it)
+        if pid_i == buy_id and not is_gift:
+            buy_qty += qty
+        if pid_i == free_id and (is_gift if same_sku else True):
+            free_item = it
+
+    granted = (buy_qty // min_q) * free_q
+    if granted <= 0:
+        return
+
+    if free_item is not None:
+        if same_sku:
+            lp = float(free_item.get("original_price") or free_item.get("unit_price") or 0)
+            free_item["quantity"] = granted
+            free_item["bogo_auto_free"] = True
+            free_item["subtotal"] = 0.0
+            free_item["unit_price"] = 0.0
+            return
+        current = int(free_item.get("quantity") or 0)
+        if current < granted:
+            lp = float(free_item.get("original_price") or free_item.get("unit_price") or 0)
+            free_item["quantity"] = granted
+            free_item["subtotal"] = round(lp * granted, 2)
+        return
+
+    row = conn.execute(
+        """
+        SELECT p.id, p.name, p.sku, p.category,
+               COALESCE(ep.price, p.price) AS price
+          FROM products p
+          LEFT JOIN event_products ep
+            ON ep.product_id = p.id AND ep.event_id = ?
+         WHERE p.id = ?
+        """,
+        (int(event_id), int(free_id)),
+    ).fetchone()
+    if not row:
+        return
+    lp = float(row["price"] or 0)
+    result.append(
+        {
+            "product_id": int(row["id"]),
+            "product_id_str": str(row["id"]),
+            "product_name": str(row["name"] or "Produto"),
+            "product_sku": row["sku"],
+            "category": row["category"],
+            "unit_price": lp,
+            "original_price": lp,
+            "quantity": granted,
+            "subtotal": round(lp * granted, 2),
+            "promotion_id": None,
+            "bogo_auto_free": True,
+        }
+    )
+
+
 def apply_promotions_to_items_in_conn(
     conn: sqlite3.Connection,
     event_id: int,
@@ -368,18 +821,24 @@ def apply_promotions_to_items_in_conn(
 ) -> List[Dict]:
     """Aplica promoções ativas do evento sobre ``items`` normalizados.
 
-    Retorna nova lista com ``unit_price``, ``subtotal``, ``original_price`` e
-    ``promotion_id`` ajustados para cada item que possua ``product_id`` e tenha
-    ao menos uma promoção ativa cobrindo esse produto.
+    Para ``exact_bundle``: soma as quantidades de **todos** os produtos da
+    mesma promoção para formar os pacotes (cross-product). Ex.: kit de 3 com
+    produtos A, B e C — 1 de cada ativa o pacote, assim como 3 de um mesmo.
 
-    Invariante: ``subtotal == round(unit_price * quantity, 2)`` sempre se mantém.
-    Se mais de uma promoção cobrir o mesmo produto, aplica a que resulta no menor
-    subtotal (melhor desconto).
+    Para ``combo_bundle``: exige ao menos 1 un. de cada produto vinculado;
+    cada combo completo (1 de cada) custa rule_value.
+
+    Para os demais tipos (incluindo kits ``exact_bundle`` / ``min_bundle`` no
+    mesmo produto): avalia cada item isoladamente e escolhe a promoção
+    com menor subtotal. Assim, 3 un. ativam o kit de 3 e 5 un. o kit de 5.
+
+    Kits ``exact_bundle`` com vários produtos no carrinho só substituem o
+    preço já aplicado se o pacote cruzado ficar mais barato.
     """
-    # Carrega promos ativas do evento junto com os product_ids de cada uma.
     promo_rows = conn.execute(
         """
         SELECT pr.id, pr.rule_type, pr.rule_value, pr.min_qty, pr.free_qty,
+               pr.bogo_buy_product_id, pr.bogo_free_product_id,
                pp.product_id
           FROM promotions pr
           JOIN promotion_products pp ON pp.promotion_id = pr.id
@@ -391,35 +850,85 @@ def apply_promotions_to_items_in_conn(
     if not promo_rows:
         return items
 
-    # Agrupa: product_id -> lista de promos
     product_promos: dict = {}
+    promo_defs: Dict[int, dict] = {}
+    promo_pids: Dict[int, set] = {}
     for r in promo_rows:
         pid = int(r["product_id"])
-        product_promos.setdefault(pid, []).append({
+        pr = {
             "id": int(r["id"]),
             "rule_type": r["rule_type"],
             "rule_value": float(r["rule_value"]),
             "min_qty": int(r["min_qty"]),
             "free_qty": int(r["free_qty"]),
-        })
+            "bogo_buy_product_id": _int_or_none(r["bogo_buy_product_id"]),
+            "bogo_free_product_id": _int_or_none(r["bogo_free_product_id"]),
+        }
+        product_promos.setdefault(pid, []).append(pr)
+        promo_defs[pr["id"]] = pr
+        promo_pids.setdefault(pr["id"], set()).add(pid)
 
     result = []
     for item in items:
-        pid = item.get("product_id")
-        list_price = float(item.get("unit_price") or 0.0)
-        qty = int(item.get("quantity") or 0)
         new_item = dict(item)
+        list_price = float(item.get("unit_price") or 0.0)
+        qty = int(new_item.get("quantity") or 0)
         new_item["original_price"] = list_price
         new_item["promotion_id"] = None
+        new_item["subtotal"] = round(list_price * qty, 2)
+        result.append(new_item)
+
+    handled_by_cross: set = set()
+
+    # --- combo_bundle: exige 1 de cada produto vinculado ---
+    for promo_id, promo in promo_defs.items():
+        if promo["rule_type"] != "combo_bundle":
+            continue
+        indices = [
+            i for i, it in enumerate(result)
+            if it.get("product_id") is not None
+            and int(it["product_id"]) in promo_pids[promo_id]
+            and int(it.get("quantity") or 0) > 0
+        ]
+        if not indices:
+            continue
+        _apply_combo_bundle(promo, indices, result, promo_pids[promo_id])
+        for i in indices:
+            if result[i].get("promotion_id") is not None:
+                handled_by_cross.add(i)
+
+    # --- bogo: compre SKU A, leve SKU B grátis (incluindo o mesmo SKU) ---
+    for promo_id, promo in promo_defs.items():
+        if promo["rule_type"] != "bogo" or not _is_bogo_pair(promo):
+            continue
+        _inject_bogo_gift_items(conn, event_id, promo, result)
+        applied = _apply_bogo_cross_product(promo, result)
+        handled_by_cross.update(applied)
+
+    for i, new_item in enumerate(result):
+        if i in handled_by_cross:
+            continue
+        if _is_bogo_gift_line(new_item):
+            continue
+        pid = new_item.get("product_id")
+        list_price = float(new_item.get("original_price") or new_item.get("unit_price") or 0.0)
+        qty = int(new_item.get("quantity") or 0)
 
         if pid is None or pid not in product_promos or qty <= 0:
-            result.append(new_item)
             continue
 
-        # Seleciona a promoção com menor subtotal efetivo
         best_subtotal: Optional[float] = None
         best_promo = None
         for promo in product_promos[pid]:
+            if promo["rule_type"] == "combo_bundle":
+                continue
+            if promo["rule_type"] == "bogo" and _is_bogo_pair(promo):
+                continue
+            if promo["rule_type"] == "bogo":
+                buy_id = _int_or_none(promo.get("bogo_buy_product_id"))
+                free_id = _int_or_none(promo.get("bogo_free_product_id"))
+                if buy_id and free_id and int(pid) not in (buy_id, free_id):
+                    continue
             eff = _compute_effective_subtotal(
                 promo["rule_type"], promo["rule_value"],
                 promo["min_qty"], promo["free_qty"],
@@ -436,23 +945,51 @@ def apply_promotions_to_items_in_conn(
             new_item["subtotal"] = round(best_subtotal, 2)
             new_item["promotion_id"] = int(best_promo["id"])
 
-        result.append(new_item)
+    # --- exact_bundle cruzado: só se for melhor que o preço já aplicado ---
+    for promo_id, promo in promo_defs.items():
+        if promo["rule_type"] != "exact_bundle":
+            continue
+        indices = [
+            i for i, it in enumerate(result)
+            if it.get("product_id") is not None
+            and int(it["product_id"]) in promo_pids[promo_id]
+            and int(it.get("quantity") or 0) > 0
+            and i not in handled_by_cross
+        ]
+        if len(indices) < 2:
+            continue
+        _apply_exact_bundle_cross_product(promo, indices, result)
+
     return result
 
 
 def apply_list_prices_to_normalized_items(
     conn: sqlite3.Connection,
     items: List[Dict],
+    event_id: Optional[int] = None,
 ) -> None:
-    """Substitui ``unit_price`` pelo preço de lista do catálogo antes de aplicar promoções."""
+    """Substitui ``unit_price`` pelo preço de lista (evento, senão biblioteca) antes das promoções."""
     pids = {int(i["product_id"]) for i in items if i.get("product_id") is not None}
     if not pids:
         return
     placeholders = ",".join("?" * len(pids))
-    rows = conn.execute(
-        f"SELECT id, price FROM products WHERE id IN ({placeholders})",
-        list(pids),
-    ).fetchall()
+    pid_list = list(pids)
+    if event_id is not None:
+        rows = conn.execute(
+            f"""
+            SELECT p.id, COALESCE(ep.price, p.price) AS price
+              FROM products p
+              LEFT JOIN event_products ep
+                ON ep.product_id = p.id AND ep.event_id = ?
+             WHERE p.id IN ({placeholders})
+            """,
+            [int(event_id), *pid_list],
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            f"SELECT id, price FROM products WHERE id IN ({placeholders})",
+            pid_list,
+        ).fetchall()
     prices = {int(r["id"]): float(r["price"] or 0) for r in rows}
     for item in items:
         pid = item.get("product_id")
@@ -496,6 +1033,7 @@ def quote_cart_items_for_event(event_id: int, cart_items: List[Dict]) -> Dict:
                 "unit_price": list_p,
                 "quantity": qty,
                 "subtotal": round(list_p * qty, 2),
+                "bogo_auto_free": bool(raw.get("bogo_auto_free")),
             }
         )
 
@@ -503,39 +1041,56 @@ def quote_cart_items_for_event(event_id: int, cart_items: List[Dict]) -> Dict:
         return {"items": [], "total": 0.0, "subtotal_lista": 0.0, "economia_total": 0.0}
 
     promo_names: Dict[int, str] = {}
+    promo_types: Dict[int, str] = {}
+    promo_values: Dict[int, float] = {}
+    promo_min_qtys: Dict[int, int] = {}
+    promo_free_qtys: Dict[int, int] = {}
     with get_conn() as conn:
-        apply_list_prices_to_normalized_items(conn, normalized)
+        apply_list_prices_to_normalized_items(conn, normalized, event_id=int(event_id))
         subtotal_lista = round(sum(i["subtotal"] for i in normalized), 2)
         priced = apply_promotions_to_items_in_conn(conn, int(event_id), normalized)
         promo_ids = {int(i["promotion_id"]) for i in priced if i.get("promotion_id")}
         if promo_ids:
             placeholders = ",".join("?" * len(promo_ids))
             for r in conn.execute(
-                f"SELECT id, name FROM promotions WHERE id IN ({placeholders})",
+                f"SELECT id, name, rule_type, rule_value, min_qty, free_qty "
+                f"FROM promotions WHERE id IN ({placeholders})",
                 list(promo_ids),
             ).fetchall():
                 promo_names[int(r["id"])] = str(r["name"] or "")
+                promo_types[int(r["id"])] = str(r["rule_type"] or "")
+                promo_values[int(r["id"])] = float(r["rule_value"] or 0)
+                promo_min_qtys[int(r["id"])] = int(r["min_qty"] or 1)
+                promo_free_qtys[int(r["id"])] = int(r["free_qty"] or 0)
 
     out_items: List[Dict] = []
-    for src, row in zip(normalized, priced):
+    for row in priced:
         pid = int(row["product_id"])
         qty = int(row["quantity"])
-        list_p = float(row.get("original_price") or src["unit_price"] or 0)
+        list_p = float(row.get("original_price") or row.get("unit_price") or 0)
         eff_unit = float(row.get("unit_price") or 0)
         subtotal = float(row.get("subtotal") or 0)
         promo_id = row.get("promotion_id")
-        has_promo = promo_id is not None and subtotal < round(list_p * qty, 2) - 0.001
+        is_gift = bool(row.get("bogo_auto_free"))
+        has_promo = is_gift or (
+            promo_id is not None and subtotal < round(list_p * qty, 2) - 0.001
+        )
         out_items.append(
             {
                 "id": pid,
                 "quantidade": qty,
                 "preco_lista": list_p,
-                "preco": eff_unit,
-                "subtotal": subtotal,
+                "preco": 0.0 if is_gift else eff_unit,
+                "subtotal": 0.0 if is_gift else subtotal,
                 "em_promocao": has_promo,
                 "promotion_id": int(promo_id) if promo_id is not None else None,
                 "promo_nome": promo_names.get(int(promo_id), "") if promo_id else "",
-                "economia": round(max(0.0, list_p * qty - subtotal), 2),
+                "promo_tipo": promo_types.get(int(promo_id), "") if promo_id else "",
+                "promo_rule_value": promo_values.get(int(promo_id), 0) if promo_id else 0,
+                "promo_min_qty": promo_min_qtys.get(int(promo_id), 1) if promo_id else 0,
+                "promo_free_qty": promo_free_qtys.get(int(promo_id), 0) if promo_id else 0,
+                "economia": round(max(0.0, list_p * qty - (0.0 if is_gift else subtotal)), 2),
+                "bogo_auto_free": is_gift,
             }
         )
 
@@ -553,27 +1108,105 @@ def quote_cart_items_for_event(event_id: int, cart_items: List[Dict]) -> Dict:
 # Helper de exibição no catálogo
 # ---------------------------------------------------------------------------
 
+def _promo_display_entry(promo: Dict) -> Dict:
+    return {
+        "promo_id": int(promo.get("id") or 0),
+        "promo_nome": promo.get("name") or "",
+        "promo_tipo": promo.get("rule_type") or "",
+        "promo_label": promo.get("rule_label", ""),
+        "rule_value": float(promo.get("rule_value") or 0),
+        "min_qty": int(promo.get("min_qty") or 1),
+        "free_qty": int(promo.get("free_qty") or 0),
+        "bogo_buy_product_id": _int_or_none(promo.get("bogo_buy_product_id")),
+        "bogo_free_product_id": _int_or_none(promo.get("bogo_free_product_id")),
+        "bogo_buy_sku": str(promo.get("bogo_buy_sku") or ""),
+        "bogo_free_sku": str(promo.get("bogo_free_sku") or ""),
+    }
+
+
+def _promo_badge_text(entry: Dict, *, pid: int = 0) -> str:
+    rule = entry.get("promo_tipo") or ""
+    val = float(entry.get("rule_value") or 0)
+    min_q = int(entry.get("min_qty") or 1)
+    free_q = int(entry.get("free_qty") or 0)
+    if rule == "percent":
+        pct = min(100.0, max(0.0, val))
+        return f"{int(pct) if pct == int(pct) else pct}% OFF"
+    if rule == "fixed":
+        return f"- R$ {val:.2f}".replace(".", ",")
+    if rule == "bogo":
+        buy_sku = str(entry.get("bogo_buy_sku") or "").strip()
+        free_sku = str(entry.get("bogo_free_sku") or "").strip()
+        if buy_sku and free_sku and buy_sku != free_sku:
+            if pid == int(entry.get("bogo_free_product_id") or 0):
+                return f"Grátis na compra de {min_q} un. do SKU {buy_sku}"
+            return f"Compre {min_q} leve {free_q} SKU {free_sku}"
+        return f"Compre {min_q} Leve {min_q + free_q}"
+    if rule == "min_bundle":
+        if min_q >= 2 and val > 0:
+            return f"A partir de {min_q}: R$ {val:.2f}".replace(".", ",") + " no conjunto"
+        return ""
+    if rule == "exact_bundle":
+        if min_q >= 2 and val > 0:
+            return f"Kit de {min_q}: R$ {val:.2f}".replace(".", ",")
+        return ""
+    if rule == "combo_bundle":
+        if val > 0:
+            return f"Combo: R$ {val:.2f}".replace(".", ",")
+        return ""
+    return ""
+
+
+def _map_entries(raw: Dict) -> List[Dict]:
+    entries = list(raw.get("promos") or [])
+    if entries:
+        return entries
+    return [raw]
+
+
+def _stamp_primary_promo(product: Dict, entry: Dict, list_price: float) -> None:
+    product["promo_id"] = int(entry.get("promo_id") or 0)
+    product["promo_tipo"] = entry.get("promo_tipo") or ""
+    product["promo_label"] = entry.get("promo_label") or ""
+    product["promo_min_qty"] = int(entry.get("promo_min_qty") or entry.get("min_qty") or 1)
+    product["promo_rule_value"] = float(entry.get("promo_rule_value") or entry.get("rule_value") or 0)
+    product["promo_free_qty"] = int(entry.get("promo_free_qty") or entry.get("free_qty") or 0)
+    product["promo_bogo_buy_id"] = int(entry.get("promo_bogo_buy_id") or entry.get("bogo_buy_product_id") or 0)
+    product["promo_bogo_free_id"] = int(entry.get("promo_bogo_free_id") or entry.get("bogo_free_product_id") or 0)
+    product["promo_bogo_buy_sku"] = str(entry.get("promo_bogo_buy_sku") or entry.get("bogo_buy_sku") or "")
+    product["promo_bogo_free_sku"] = str(entry.get("promo_bogo_free_sku") or entry.get("bogo_free_sku") or "")
+    rule = product["promo_tipo"]
+    val = product["promo_rule_value"]
+    if rule == "percent":
+        pct = min(100.0, max(0.0, val))
+        product["preco"] = round(list_price * (1.0 - pct / 100.0), 2)
+    elif rule == "fixed":
+        product["preco"] = round(max(0.0, list_price - val), 2)
+    else:
+        product["preco"] = list_price
+
+
 def build_promo_display_map(promotions: List[Dict]) -> Dict[int, Dict]:
     """Constrói {product_id -> promo_display} para enriquecer o catálogo do vendedor.
 
-    ``promo_display`` contém: ``promo_id``, ``promo_nome``, ``promo_tipo``,
-    ``promo_label``, ``rule_value``, ``min_qty``, ``free_qty``.
+    Um produto pode participar de várias promoções. ``promos`` lista todas;
+    os demais campos repetem a primeira (compatibilidade com leitores antigos).
     """
-    best: Dict[int, Dict] = {}
+    grouped: Dict[int, List[Dict]] = defaultdict(list)
     for promo in promotions:
+        entry = _promo_display_entry(promo)
+        buy_id = entry["bogo_buy_product_id"]
+        free_id = entry["bogo_free_product_id"]
         for pid in promo.get("product_ids", []):
-            # Se um produto tiver múltiplas promos, mantém a mais recente ativa
-            # (lista já vem ordenada por created_at DESC da query).
-            if pid not in best:
-                best[pid] = {
-                    "promo_id": promo["id"],
-                    "promo_nome": promo["name"],
-                    "promo_tipo": promo["rule_type"],
-                    "promo_label": promo.get("rule_label", ""),
-                    "rule_value": float(promo.get("rule_value") or 0),
-                    "min_qty": int(promo.get("min_qty") or 1),
-                    "free_qty": int(promo.get("free_qty") or 0),
-                }
+            if promo.get("rule_type") == "bogo" and buy_id and free_id and int(pid) not in (buy_id, free_id):
+                continue
+            grouped[int(pid)].append(entry)
+
+    best: Dict[int, Dict] = {}
+    for pid, entries in grouped.items():
+        primary = dict(entries[0])
+        primary["promos"] = entries
+        best[pid] = primary
     return best
 
 
@@ -582,13 +1215,11 @@ def enrich_product_with_promo(product: Dict, promo_map: Dict[int, Dict]) -> Dict
 
     Campos adicionados:
     - ``em_promocao`` (bool)
-    - ``promo_nome`` (str)
-    - ``promo_tipo`` (str)
-    - ``promo_label`` (str)
-    - ``preco_original`` (float) — preço de lista
-    - ``preco`` (float) — preço efetivo (já com desconto para percent/fixed;
-      mantém o preço de lista para bogo, pois o desconto é de quantidade)
-    - ``promo_badge`` (str) — texto curto para exibição no card, ex. "15% OFF"
+    - ``promos`` (lista de regras elegíveis)
+    - ``promo_nome`` (str) — nomes unidos por ·
+    - ``promo_tipo`` (str) — regra principal (percent/fixed, senão a primeira)
+    - ``promo_badge`` (str) — badges unidos por ·
+    - ``preco_original`` / ``preco``
     """
     pid = int(product.get("id") or 0)
     p = dict(product)
@@ -599,56 +1230,70 @@ def enrich_product_with_promo(product: Dict, promo_map: Dict[int, Dict]) -> Dict
     p["promo_label"] = ""
     p["promo_badge"] = ""
     p["promo_min_qty"] = 0
+    p["promos"] = []
 
     if pid not in promo_map:
         return p
 
-    promo = promo_map[pid]
-    p["em_promocao"] = True
-    p["promo_nome"] = promo["promo_nome"]
-    p["promo_tipo"] = promo["promo_tipo"]
-    p["promo_label"] = promo["promo_label"]
-    p["promo_min_qty"] = int(promo.get("min_qty") or 1)
-    p["promo_rule_value"] = float(promo.get("rule_value") or 0)
-    p["promo_free_qty"] = int(promo.get("free_qty") or 0)
-
     list_price = float(p.get("preco") or 0)
-    rule = promo["promo_tipo"]
-    val = float(promo.get("rule_value") or 0)
-    min_q = int(promo.get("min_qty") or 1)
-    free_q = int(promo.get("free_qty") or 0)
+    promos_out: List[Dict] = []
+    for entry in _map_entries(promo_map[pid]):
+        rule = entry.get("promo_tipo") or ""
+        val = float(entry.get("rule_value") or 0)
+        min_q = int(entry.get("min_qty") or 1)
+        free_q = int(entry.get("free_qty") or 0)
+        promos_out.append({
+            "promo_id": int(entry.get("promo_id") or 0),
+            "promo_nome": entry.get("promo_nome") or "",
+            "promo_tipo": rule,
+            "promo_label": entry.get("promo_label") or "",
+            "promo_rule_value": val,
+            "promo_min_qty": min_q,
+            "promo_free_qty": free_q,
+            "promo_badge": _promo_badge_text(entry, pid=pid),
+            "promo_bogo_buy_id": int(entry.get("bogo_buy_product_id") or 0),
+            "promo_bogo_free_id": int(entry.get("bogo_free_product_id") or 0),
+            "promo_bogo_buy_sku": str(entry.get("bogo_buy_sku") or ""),
+            "promo_bogo_free_sku": str(entry.get("bogo_free_sku") or ""),
+        })
 
-    if rule == "percent":
-        pct = min(100.0, max(0.0, val))
-        eff_price = round(list_price * (1.0 - pct / 100.0), 2)
-        p["preco"] = eff_price
-        p["promo_badge"] = f"{int(pct) if pct == int(pct) else pct}% OFF"
-    elif rule == "fixed":
-        eff_price = round(max(0.0, list_price - val), 2)
-        p["preco"] = eff_price
-        p["promo_badge"] = f"- R$ {val:.2f}".replace(".", ",")
-    elif rule == "bogo":
-        # Preço unitário não muda; desconto é de quantidade
-        p["preco"] = list_price
-        p["promo_badge"] = f"Compre {min_q} Leve {min_q + free_q}"
-    elif rule == "min_bundle":
-        # A partir de min_qty: conjuntos completos custam val; excedentes = preço de lista.
-        p["preco"] = list_price
-        if min_q >= 2 and val > 0:
-            val_fmt = f"{val:.2f}".replace(".", ",")
-            p["promo_badge"] = f"A partir de {min_q}: R$ {val_fmt} no conjunto"
-        else:
-            p["promo_badge"] = ""
-    elif rule == "exact_bundle":
-        # Kit exato: cada grupo completo de min_qty custa val; extras pagam preço normal.
-        # Preço de catálogo inalterado — desconto só ao atingir múltiplo do kit.
-        p["preco"] = list_price
-        if min_q >= 2 and val > 0:
-            val_fmt = f"{val:.2f}".replace(".", ",")
-            p["promo_badge"] = f"Kit de {min_q}: R$ {val_fmt}"
-        else:
-            p["promo_badge"] = ""
+    if not promos_out:
+        return p
 
+    names = []
+    badges = []
+    for item in promos_out:
+        name = (item.get("promo_nome") or "").strip()
+        if name and name not in names:
+            names.append(name)
+        badge = (item.get("promo_badge") or "").strip()
+        if badge and badge not in badges:
+            badges.append(badge)
+
+    immediate = [
+        item for item in promos_out if item.get("promo_tipo") in ("percent", "fixed")
+    ]
+    primary = None
+    if immediate:
+        best_price = None
+        for item in immediate:
+            rule = item["promo_tipo"]
+            val = float(item.get("promo_rule_value") or 0)
+            if rule == "percent":
+                price = round(list_price * (1.0 - min(100.0, max(0.0, val)) / 100.0), 2)
+            else:
+                price = round(max(0.0, list_price - val), 2)
+            if best_price is None or price < best_price:
+                best_price = price
+                primary = item
+    if primary is None:
+        primary = promos_out[0]
+
+    p["em_promocao"] = True
+    p["promos"] = promos_out
+    p["promo_nome"] = " · ".join(names)
+    p["promo_badge"] = " · ".join(badges)
+    _stamp_primary_promo(p, primary, list_price)
     return p
 
 

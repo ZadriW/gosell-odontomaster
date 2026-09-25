@@ -1,4 +1,5 @@
 {% extends "admin/_layout.html" %}
+{% from 'macros/admin_event_operation_type.html' import event_operation_type_field %}
 
 {% block title %}Eventos de Estoque - Admin | Dental Odonto Master{% endblock %}
 
@@ -48,6 +49,7 @@
                     autocomplete="off"
                 >
             </div>
+            {{ event_operation_type_field('new-event-operation-type', 'evento') }}
             <div class="admin-field">
                 <label class="admin-field__label" for="new-event-desc">Descrição (opcional)</label>
                 <input
@@ -121,6 +123,10 @@
                     <i class="fa-solid fa-droplet" aria-hidden="true"></i>
                 </span>
                 {% endif %}
+                {% if ev.operations_closed %}
+                <span class="admin-badge admin-badge--warn">Encerrado</span>
+                {% endif %}
+                <span class="admin-badge admin-badge--info">{{ ev.operation_type | event_operation_type_label }}</span>
                 {% if ev.description %}
                 <small class="admin-stock__meta">{{ ev.description }}</small>
                 {% endif %}
@@ -179,6 +185,7 @@
                     {% if ev.description %}
                     <small class="admin-stock__meta">{{ ev.description }}</small>
                     {% endif %}
+                    <span class="admin-badge admin-badge--info">{{ ev.operation_type | event_operation_type_label }}</span>
                     <span class="admin-badge admin-badge--neutral">Arquivado</span>
                 </span>
                 <div class="admin-events-list__meta">

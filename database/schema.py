@@ -4,8 +4,9 @@ from __future__ import annotations
 import sqlite3
 from typing import List
 
-from .connection import _now_iso, get_conn
+from .connection import DEFAULT_MIN_STOCK, _now_iso, get_conn
 from .sku_helpers import _default_sku_for_id
+from .sqlutil import sql_ident
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS products (
@@ -17,7 +18,7 @@ CREATE TABLE IF NOT EXISTS products (
     price        REAL    NOT NULL DEFAULT 0,
     image        TEXT,
     stock        INTEGER NOT NULL DEFAULT 0,
-    min_stock    INTEGER NOT NULL DEFAULT 0,
+    min_stock    INTEGER NOT NULL DEFAULT 5,
     active       INTEGER NOT NULL DEFAULT 1,
     created_at   TEXT    NOT NULL,
     updated_at   TEXT    NOT NULL,
@@ -79,6 +80,7 @@ CREATE TABLE IF NOT EXISTS sellers (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
     name           TEXT    NOT NULL,
     email          TEXT    UNIQUE NOT NULL,
+    username       TEXT    UNIQUE,
     password_hash  TEXT    NOT NULL,
     pin_hash       TEXT,
     active         INTEGER NOT NULL DEFAULT 1,
@@ -92,19 +94,26 @@ CREATE TABLE IF NOT EXISTS events (
     name         TEXT    NOT NULL,
     description  TEXT,
     badge_color  TEXT,
+    operation_type TEXT NOT NULL DEFAULT 'evento',
+    revenue_goal REAL,
+    volume_goal  INTEGER,
+    operations_closed INTEGER NOT NULL DEFAULT 0,
+    operations_closed_at TEXT,
     active       INTEGER NOT NULL DEFAULT 1,
     created_at   TEXT    NOT NULL,
     updated_at   TEXT    NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS event_products (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    event_id    INTEGER NOT NULL,
-    product_id  INTEGER NOT NULL,
-    stock       INTEGER NOT NULL DEFAULT 0,
-    min_stock   INTEGER NOT NULL DEFAULT 0,
-    created_at  TEXT    NOT NULL,
-    updated_at  TEXT    NOT NULL,
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id         INTEGER NOT NULL,
+    product_id       INTEGER NOT NULL,
+    stock            INTEGER NOT NULL DEFAULT 0,
+    min_stock        INTEGER NOT NULL DEFAULT 5,
+    backorder_limit  INTEGER NOT NULL DEFAULT -1,
+    price            REAL,
+    created_at       TEXT    NOT NULL,
+    updated_at       TEXT    NOT NULL,
     UNIQUE (event_id, product_id),
     FOREIGN KEY (event_id)   REFERENCES events(id)   ON DELETE CASCADE,
     FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
@@ -123,15 +132,43 @@ CREATE INDEX IF NOT EXISTS idx_sellers_email
 CREATE INDEX IF NOT EXISTS idx_event_products_event
     ON event_products(event_id);
 
+CREATE TABLE IF NOT EXISTS checkout_holds (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id     INTEGER NOT NULL,
+    seller_id    INTEGER NOT NULL,
+    seller_name  TEXT    NOT NULL DEFAULT 'Vendedor',
+    product_id   INTEGER NOT NULL,
+    quantity     INTEGER NOT NULL DEFAULT 1,
+    created_at   TEXT    NOT NULL,
+    updated_at   TEXT    NOT NULL,
+    UNIQUE (event_id, seller_id, product_id),
+    FOREIGN KEY (event_id)   REFERENCES events(id)   ON DELETE CASCADE,
+    FOREIGN KEY (seller_id)  REFERENCES sellers(id)  ON DELETE CASCADE,
+    FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_checkout_holds_event_product
+    ON checkout_holds(event_id, product_id);
+CREATE INDEX IF NOT EXISTS idx_checkout_holds_updated
+    ON checkout_holds(updated_at);
+
+CREATE TABLE IF NOT EXISTS checkout_hold_sync (
+    event_id  INTEGER NOT NULL,
+    seller_id INTEGER NOT NULL,
+    sync_seq  INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (event_id, seller_id)
+);
+
 CREATE TABLE IF NOT EXISTS promotions (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     event_id    INTEGER NOT NULL,
     name        TEXT    NOT NULL,
     rule_type   TEXT    NOT NULL
-        CHECK (rule_type IN ('percent', 'fixed', 'bogo', 'min_bundle', 'exact_bundle')),
+        CHECK (rule_type IN ('percent', 'fixed', 'bogo', 'min_bundle', 'exact_bundle', 'combo_bundle')),
     rule_value  REAL    NOT NULL DEFAULT 0,
     min_qty     INTEGER NOT NULL DEFAULT 1,
     free_qty    INTEGER NOT NULL DEFAULT 0,
+    bogo_buy_product_id  INTEGER,
+    bogo_free_product_id INTEGER,
     active      INTEGER NOT NULL DEFAULT 1,
     created_at  TEXT    NOT NULL,
     updated_at  TEXT    NOT NULL,
@@ -152,7 +189,8 @@ CREATE INDEX IF NOT EXISTS idx_promotions_event
 
 
 def _table_columns(conn: sqlite3.Connection, table: str) -> set:
-    return {r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    ident = sql_ident(table)
+    return {r[1] for r in conn.execute(f"PRAGMA table_info({ident})").fetchall()}
 
 def _ensure_products_sku_column(conn: sqlite3.Connection) -> None:
     """Bases antigas: adiciona ``sku``; preenche valores; garante índice único."""
@@ -206,12 +244,13 @@ def _ensure_transactions_client_columns(conn: sqlite3.Connection) -> None:
     """Adiciona colunas de dados do cliente/vendedor em transactions."""
     cols = _table_columns(conn, "transactions")
     client_fields = [
-        "client_name", "client_cpf", "client_zipcode", "client_address",
+        "client_name", "client_cpf", "client_email", "client_phone",
+        "client_zipcode", "client_address",
         "client_number", "client_complement", "client_city", "client_state"
     ]
     for field in client_fields:
         if field not in cols:
-            conn.execute(f"ALTER TABLE transactions ADD COLUMN {field} TEXT")
+            conn.execute(f"ALTER TABLE transactions ADD COLUMN {sql_ident(field)} TEXT")
     if "seller_id" not in cols:
         conn.execute("ALTER TABLE transactions ADD COLUMN seller_id INTEGER")
     if "seller_name" not in cols:
@@ -230,7 +269,7 @@ def _ensure_transactions_cro_columns(conn: sqlite3.Connection) -> None:
     }
     for field, ddl in cro_fields.items():
         if field not in cols:
-            conn.execute(f"ALTER TABLE transactions ADD COLUMN {field} {ddl}")
+            conn.execute(f"ALTER TABLE transactions ADD COLUMN {sql_ident(field)} {ddl}")
 
 
 def _ensure_events_tables(conn: sqlite3.Connection) -> None:
@@ -241,18 +280,25 @@ def _ensure_events_tables(conn: sqlite3.Connection) -> None:
             name         TEXT    NOT NULL,
             description  TEXT,
             badge_color  TEXT,
+            operation_type TEXT NOT NULL DEFAULT 'evento',
+            revenue_goal REAL,
+            volume_goal  INTEGER,
+            operations_closed INTEGER NOT NULL DEFAULT 0,
+            operations_closed_at TEXT,
             active       INTEGER NOT NULL DEFAULT 1,
             created_at   TEXT    NOT NULL,
             updated_at   TEXT    NOT NULL
         );
         CREATE TABLE IF NOT EXISTS event_products (
-            id          INTEGER PRIMARY KEY AUTOINCREMENT,
-            event_id    INTEGER NOT NULL,
-            product_id  INTEGER NOT NULL,
-            stock       INTEGER NOT NULL DEFAULT 0,
-            min_stock   INTEGER NOT NULL DEFAULT 0,
-            created_at  TEXT    NOT NULL,
-            updated_at  TEXT    NOT NULL,
+            id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            event_id         INTEGER NOT NULL,
+            product_id       INTEGER NOT NULL,
+            stock            INTEGER NOT NULL DEFAULT 0,
+            min_stock        INTEGER NOT NULL DEFAULT 5,
+            backorder_limit  INTEGER NOT NULL DEFAULT -1,
+            price            REAL,
+            created_at       TEXT    NOT NULL,
+            updated_at       TEXT    NOT NULL,
             UNIQUE (event_id, product_id),
             FOREIGN KEY (event_id)   REFERENCES events(id)   ON DELETE CASCADE,
             FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
@@ -267,6 +313,147 @@ def _ensure_events_badge_color(conn: sqlite3.Connection) -> None:
     if "badge_color" in _table_columns(conn, "events"):
         return
     conn.execute("ALTER TABLE events ADD COLUMN badge_color TEXT")
+
+
+def _ensure_events_goals(conn: sqlite3.Connection) -> None:
+    """Metas comerciais do evento: faturamento (R$) e volume (unidades)."""
+    cols = _table_columns(conn, "events")
+    if "revenue_goal" not in cols:
+        conn.execute("ALTER TABLE events ADD COLUMN revenue_goal REAL")
+    if "volume_goal" not in cols:
+        conn.execute("ALTER TABLE events ADD COLUMN volume_goal INTEGER")
+
+
+def _ensure_events_operations_closed(conn: sqlite3.Connection) -> None:
+    """Modo consulta: evento permanece ativo, mas sem vendas nem edições."""
+    cols = _table_columns(conn, "events")
+    if "operations_closed" not in cols:
+        conn.execute(
+            "ALTER TABLE events ADD COLUMN operations_closed INTEGER NOT NULL DEFAULT 0"
+        )
+    if "operations_closed_at" not in cols:
+        conn.execute("ALTER TABLE events ADD COLUMN operations_closed_at TEXT")
+
+
+def _ensure_events_operation_type(conn: sqlite3.Connection) -> None:
+    """Classificação operacional: evento, congresso ou stand."""
+    cols = _table_columns(conn, "events")
+    if "operation_type" in cols:
+        return
+    conn.execute(
+        "ALTER TABLE events ADD COLUMN operation_type TEXT NOT NULL DEFAULT 'evento'"
+    )
+
+
+def _ensure_checkout_holds_table(conn: sqlite3.Connection) -> None:
+    """Reservas temporárias de carrinho na tela de pagamento (bases antigas)."""
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS checkout_holds (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            event_id     INTEGER NOT NULL,
+            seller_id    INTEGER NOT NULL,
+            seller_name  TEXT    NOT NULL DEFAULT 'Vendedor',
+            product_id   INTEGER NOT NULL,
+            quantity     INTEGER NOT NULL DEFAULT 1,
+            created_at   TEXT    NOT NULL DEFAULT '',
+            updated_at   TEXT    NOT NULL,
+            UNIQUE (event_id, seller_id, product_id),
+            FOREIGN KEY (event_id)   REFERENCES events(id)   ON DELETE CASCADE,
+            FOREIGN KEY (seller_id)  REFERENCES sellers(id)  ON DELETE CASCADE,
+            FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_checkout_holds_event_product
+            ON checkout_holds(event_id, product_id);
+        CREATE INDEX IF NOT EXISTS idx_checkout_holds_updated
+            ON checkout_holds(updated_at);
+        CREATE TABLE IF NOT EXISTS checkout_hold_sync (
+            event_id  INTEGER NOT NULL,
+            seller_id INTEGER NOT NULL,
+            sync_seq  INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (event_id, seller_id)
+        );
+    """)
+    cols = _table_columns(conn, "checkout_holds")
+    if "created_at" not in cols:
+        conn.execute("ALTER TABLE checkout_holds ADD COLUMN created_at TEXT")
+        cols = _table_columns(conn, "checkout_holds")
+    if "created_at" in cols:
+        conn.execute(
+            """
+            UPDATE checkout_holds
+               SET created_at = updated_at
+             WHERE created_at IS NULL OR TRIM(created_at) = ''
+            """
+        )
+
+
+def _ensure_event_products_price(conn: sqlite3.Connection) -> None:
+    """Preço de venda do produto no evento. ``NULL`` herda ``products.price``."""
+    if "price" in _table_columns(conn, "event_products"):
+        return
+    conn.execute("ALTER TABLE event_products ADD COLUMN price REAL")
+
+
+def _ensure_event_products_backorder_limit(conn: sqlite3.Connection) -> None:
+    """Acrescenta ``backorder_limit`` em ``event_products`` em bases antigas.
+
+    ``-1`` (padrão/"sem limite") permite entrega pendente livremente.
+    ``0`` bloqueia qualquer entrega pendente do produto no evento.
+    Um valor ``> 0`` é o total de unidades pendentes permitidas.
+    """
+    if "backorder_limit" not in _table_columns(conn, "event_products"):
+        conn.execute(
+            "ALTER TABLE event_products ADD COLUMN backorder_limit INTEGER NOT NULL DEFAULT -1"
+        )
+    _ensure_schema_migrations_table(conn)
+    migration_name = "event_products_backorder_limit_unlimited_sentinel"
+    if _migration_applied(conn, migration_name):
+        return
+    # A coluna foi introduzida com ``0`` significando "sem limite"; agora ``0``
+    # passa a significar "bloqueado", então valores antigos de ``0`` precisam
+    # ser convertidos para o novo sentinel de "sem limite" (``-1``).
+    conn.execute("UPDATE event_products SET backorder_limit = -1 WHERE backorder_limit = 0")
+    _mark_migration_applied(conn, migration_name)
+
+
+def _ensure_event_products_backorder_omit_insert_unlimited(conn: sqlite3.Connection) -> None:
+    """INSERTs antigos omitiam ``backorder_limit`` e o SQLite usava DEFAULT 0.
+
+    Nesta base a coluna foi criada com ``DEFAULT 0`` (quando 0 ainda significava
+    'sem limite'). Depois 0 passou a bloquear vendas futuras, então produtos
+    importados por planilha (estoque 0 + limite 0) apareciam como bloqueados.
+    """
+    _ensure_schema_migrations_table(conn)
+    migration_name = "event_products_backorder_omit_insert_unlimited"
+    if _migration_applied(conn, migration_name):
+        return
+    conn.execute("UPDATE event_products SET backorder_limit = -1 WHERE backorder_limit = 0")
+    _mark_migration_applied(conn, migration_name)
+
+
+def _ensure_schema_migrations_table(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS schema_migrations (
+            name        TEXT PRIMARY KEY,
+            applied_at  TEXT NOT NULL
+        )
+        """
+    )
+
+
+def _migration_applied(conn: sqlite3.Connection, name: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM schema_migrations WHERE name = ?", (name,),
+    ).fetchone()
+    return row is not None
+
+
+def _mark_migration_applied(conn: sqlite3.Connection, name: str) -> None:
+    conn.execute(
+        "INSERT OR IGNORE INTO schema_migrations (name, applied_at) VALUES (?, ?)",
+        (name, _now_iso()),
+    )
 
 
 def _ensure_event_extensions(conn: sqlite3.Connection) -> None:
@@ -339,12 +526,82 @@ def _ensure_transaction_items_promo_columns(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE transaction_items ADD COLUMN promotion_id INTEGER")
 
 
+def _ensure_delivery_columns(conn: sqlite3.Connection) -> None:
+    """Colunas de controle de entrega por item (venda com estoque parcial).
+
+    - ``transaction_items.quantity_delivered``: unidades já entregues (estoque baixado).
+    - ``transactions.delivery_status``: ``completa`` | ``parcial`` | ``pendente``.
+
+    Backfill: transações já confirmadas/estornadas antes desta migração tiveram
+    baixa integral de estoque, logo ``quantity_delivered = quantity``.
+    """
+    ti_cols = _table_columns(conn, "transaction_items")
+    tx_cols = _table_columns(conn, "transactions")
+    is_new = "quantity_delivered" not in ti_cols
+    if is_new:
+        conn.execute(
+            "ALTER TABLE transaction_items "
+            "ADD COLUMN quantity_delivered INTEGER NOT NULL DEFAULT 0"
+        )
+    if "delivery_status" not in tx_cols:
+        conn.execute(
+            "ALTER TABLE transactions "
+            "ADD COLUMN delivery_status TEXT NOT NULL DEFAULT 'completa'"
+        )
+    if is_new:
+        conn.execute(
+            """
+            UPDATE transaction_items
+               SET quantity_delivered = quantity
+             WHERE transaction_id IN (
+                       SELECT id FROM transactions
+                        WHERE status IN ('confirmado', 'estornado')
+                   )
+            """
+        )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_transactions_delivery_status "
+        "ON transactions(event_id, delivery_status)"
+    )
+
+
+def _ensure_transactions_receipt_note(conn: sqlite3.Connection) -> None:
+    """Texto livre impresso no rodapé da nota não fiscal."""
+    cols = _table_columns(conn, "transactions")
+    if "receipt_note" not in cols:
+        conn.execute("ALTER TABLE transactions ADD COLUMN receipt_note TEXT")
+
+
+def _ensure_transactions_handover_status(conn: sqlite3.Connection) -> None:
+    """Confirmação geral de entrega do pedido (retirada no balcão pelo cliente).
+
+    - ``transactions.handover_status``: ``pendente`` | ``entregue``.
+    - ``transactions.handover_confirmed_at``: data/hora da confirmação.
+
+    Independente do controle de retirada pendente por item (``delivery_status``
+    / ``quantity_delivered``), que continua exigindo baixa de estoque. Este
+    campo apenas sinaliza, para fins de acompanhamento, que o pedido como um
+    todo já foi entregue ao cliente.
+    """
+    cols = _table_columns(conn, "transactions")
+    if "handover_status" not in cols:
+        conn.execute(
+            "ALTER TABLE transactions "
+            "ADD COLUMN handover_status TEXT NOT NULL DEFAULT 'pendente'"
+        )
+    if "handover_confirmed_at" not in cols:
+        conn.execute(
+            "ALTER TABLE transactions ADD COLUMN handover_confirmed_at TEXT"
+        )
+
+
 def _ensure_sellers_columns(conn: sqlite3.Connection) -> None:
     """Migrações leves para contas de vendedores."""
     cols = _table_columns(conn, "sellers")
     for field, ddl in {
         "name": "TEXT NOT NULL DEFAULT 'Vendedor'",
         "email": "TEXT",
+        "username": "TEXT",
         "password_hash": "TEXT",
         "pin_hash": "TEXT",
         "active": "INTEGER NOT NULL DEFAULT 1",
@@ -353,20 +610,45 @@ def _ensure_sellers_columns(conn: sqlite3.Connection) -> None:
         "last_login_at": "TEXT",
     }.items():
         if field not in cols:
-            conn.execute(f"ALTER TABLE sellers ADD COLUMN {field} {ddl}")
+            conn.execute(f"ALTER TABLE sellers ADD COLUMN {sql_ident(field)} {ddl}")
+    used: set[str] = set()
+    rows = conn.execute("SELECT id, email, username FROM sellers").fetchall()
+    for row in rows:
+        current = (row["username"] or "").strip().lower()
+        if current:
+            used.add(current)
+            continue
+        email = (row["email"] or "").strip().lower()
+        base = email.split("@", 1)[0] if "@" in email else email
+        base = "".join(ch for ch in base if ch.isalnum() or ch in "._-") or f"vendedor{int(row['id'])}"
+        if len(base) < 3:
+            base = f"{base}{int(row['id'])}"
+        candidate = base[:40]
+        n = 2
+        while candidate in used:
+            suffix = str(n)
+            candidate = f"{base[: max(1, 40 - len(suffix))]}{suffix}"
+            n += 1
+        used.add(candidate)
+        conn.execute(
+            "UPDATE sellers SET username = ? WHERE id = ?",
+            (candidate, int(row["id"])),
+        )
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_sellers_email ON sellers(email)")
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_sellers_username ON sellers(username)")
 
 
 def _ensure_products_wake_columns(conn: sqlite3.Connection) -> None:
-    """Colunas Wake em ``products`` (variante principal, nome da variante)."""
+    """Colunas Wake em ``products`` (variante principal, nome da variante, subtítulo)."""
     cols = _table_columns(conn, "products")
     for field, ddl in {
         "wake_product_id": "INTEGER",
         "variant_name": "TEXT",
         "main_variant": "INTEGER NOT NULL DEFAULT 0",
+        "subtitle": "TEXT",
     }.items():
         if field not in cols:
-            conn.execute(f"ALTER TABLE products ADD COLUMN {field} {ddl}")
+            conn.execute(f"ALTER TABLE products ADD COLUMN {sql_ident(field)} {ddl}")
 
 
 def _ensure_product_sku_aliases_table(conn: sqlite3.Connection) -> None:
@@ -386,7 +668,7 @@ def _ensure_product_sku_aliases_table(conn: sqlite3.Connection) -> None:
 
 
 def _ensure_promotions_extended_rule_types(conn: sqlite3.Connection) -> None:
-    """Recria promotions com CHECK ampliado para incluir min_bundle e exact_bundle.
+    """Recria promotions com CHECK ampliado (min_bundle, exact_bundle, combo_bundle).
 
     Em bases existentes o DDL ``CREATE TABLE IF NOT EXISTS`` não altera a restrição
     CHECK — por isso recriamos a tabela preservando os dados.
@@ -396,7 +678,7 @@ def _ensure_promotions_extended_rule_types(conn: sqlite3.Connection) -> None:
     ).fetchone()
     if row is None:
         return  # tabela ainda não existe; _SCHEMA criará com CHECK correto
-    if 'min_bundle' in (row[0] or ''):
+    if 'combo_bundle' in (row[0] or ''):
         return  # já migrada
 
     conn.execute("PRAGMA foreign_keys = OFF")
@@ -408,7 +690,7 @@ def _ensure_promotions_extended_rule_types(conn: sqlite3.Connection) -> None:
             event_id    INTEGER NOT NULL,
             name        TEXT    NOT NULL,
             rule_type   TEXT    NOT NULL
-                CHECK (rule_type IN ('percent','fixed','bogo','min_bundle','exact_bundle')),
+                CHECK (rule_type IN ('percent','fixed','bogo','min_bundle','exact_bundle','combo_bundle')),
             rule_value  REAL    NOT NULL DEFAULT 0,
             min_qty     INTEGER NOT NULL DEFAULT 1,
             free_qty    INTEGER NOT NULL DEFAULT 0,
@@ -428,6 +710,7 @@ def _ensure_promotions_extended_rule_types(conn: sqlite3.Connection) -> None:
         "  WHEN 'na_compra_de' THEN 'exact_bundle' "
         "  WHEN 'min_bundle' THEN 'min_bundle' "
         "  WHEN 'exact_bundle' THEN 'exact_bundle' "
+        "  WHEN 'combo_bundle' THEN 'combo_bundle' "
         "  ELSE rule_type END, "
         "rule_value, min_qty, free_qty, active, created_at, updated_at "
         "FROM promotions"
@@ -441,6 +724,15 @@ def _ensure_promotions_extended_rule_types(conn: sqlite3.Connection) -> None:
     conn.execute("PRAGMA foreign_keys = ON")
 
 
+def _ensure_promotions_bogo_product_columns(conn: sqlite3.Connection) -> None:
+    """Adiciona SKUs de compra/grátis no BOGO (bases já criadas sem essas colunas)."""
+    cols = _table_columns(conn, "promotions")
+    if "bogo_buy_product_id" not in cols:
+        conn.execute("ALTER TABLE promotions ADD COLUMN bogo_buy_product_id INTEGER")
+    if "bogo_free_product_id" not in cols:
+        conn.execute("ALTER TABLE promotions ADD COLUMN bogo_free_product_id INTEGER")
+
+
 # ---------------------------------------------------------------------------
 # Conexão
 # ---------------------------------------------------------------------------
@@ -449,6 +741,43 @@ def _ensure_promotions_extended_rule_types(conn: sqlite3.Connection) -> None:
 # ---------------------------------------------------------------------------
 # Inicialização + seed
 # ---------------------------------------------------------------------------
+
+def _consolidate_legacy_movement_types(conn: sqlite3.Connection) -> None:
+    """Converte tipos legados ``ajuste``/``inicial`` para ``entrada`` ou ``saída``."""
+    conn.execute(
+        "DELETE FROM stock_movements WHERE movement_type IN ('ajuste', 'inicial') AND delta = 0"
+    )
+    conn.execute(
+        """
+        UPDATE stock_movements
+           SET movement_type = 'entrada'
+         WHERE movement_type IN ('inicial', 'ajuste') AND delta > 0
+        """
+    )
+    conn.execute(
+        """
+        UPDATE stock_movements
+           SET movement_type = 'saida'
+         WHERE movement_type = 'ajuste' AND delta < 0
+        """
+    )
+
+
+def _ensure_min_stock_default_five(conn: sqlite3.Connection) -> None:
+    """Migração única: produtos com mínimo 0 passam a usar o padrão (5 un.)."""
+    version = int(conn.execute("PRAGMA user_version").fetchone()[0])
+    if version >= 1:
+        return
+    conn.execute(
+        "UPDATE products SET min_stock = ? WHERE min_stock = 0",
+        (DEFAULT_MIN_STOCK,),
+    )
+    conn.execute(
+        "UPDATE event_products SET min_stock = ? WHERE min_stock = 0",
+        (DEFAULT_MIN_STOCK,),
+    )
+    conn.execute("PRAGMA user_version = 1")
+
 
 def init_db() -> None:
     """Cria as tabelas, aplica migrações leves e remove resíduos do seed antigo."""
@@ -467,11 +796,25 @@ def init_db() -> None:
         _ensure_product_sku_aliases_table(conn)
         _ensure_events_tables(conn)
         _ensure_promotions_extended_rule_types(conn)
+        _ensure_promotions_bogo_product_columns(conn)
         _ensure_events_badge_color(conn)
+        _ensure_events_goals(conn)
+        _ensure_events_operations_closed(conn)
+        _ensure_events_operation_type(conn)
         _ensure_event_extensions(conn)
+        _ensure_checkout_holds_table(conn)
+        _ensure_event_products_backorder_limit(conn)
+        _ensure_event_products_backorder_omit_insert_unlimited(conn)
+        _ensure_event_products_price(conn)
         _ensure_transaction_items_promo_columns(conn)
+        _ensure_delivery_columns(conn)
+        _ensure_transactions_handover_status(conn)
+        _ensure_transactions_receipt_note(conn)
+        _consolidate_legacy_movement_types(conn)
         _purge_invalid_product_ids(conn)
         _purge_legacy_demo_products(conn)
+        _restore_retired_variant_parents(conn)
+        _ensure_min_stock_default_five(conn)
 
 
 def _purge_invalid_product_ids(conn: sqlite3.Connection) -> None:
@@ -513,3 +856,15 @@ def _purge_legacy_demo_products(conn: sqlite3.Connection) -> None:
         f"DELETE FROM products WHERE id IN ({placeholders})",
         ids,
     )
+
+
+def _restore_retired_variant_parents(conn: sqlite3.Connection) -> None:
+    """Reativa SKUs-base que a rotina antiga desligou do catálogo/evento."""
+    _ensure_schema_migrations_table(conn)
+    migration_name = "restore_variant_parent_products_v2"
+    if _migration_applied(conn, migration_name):
+        return
+    from .products import restore_retired_variant_parents_in_conn
+
+    restore_retired_variant_parents_in_conn(conn)
+    _mark_migration_applied(conn, migration_name)

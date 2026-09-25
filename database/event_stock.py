@@ -5,10 +5,12 @@ import sqlite3
 from typing import Dict, List, Optional
 
 from .connection import _now_iso, get_conn
+from .sku_helpers import _product_sku_label
 from .stock import (
-    _normalize_order_reference,
+    _order_or_client_search_sql,
     _stock_movements_product_search_sql,
-    _VALID_TYPES,
+    ACTIVE_MOVEMENT_TYPES,
+    normalize_movement_type_filter,
 )
 
 # ---------------------------------------------------------------------------
@@ -34,7 +36,7 @@ def _insert_event_stock_movement_row(
 
     Usado para auditoria com delta 0 (ex.: produto associado ao evento sem estoque inicial).
     """
-    if movement_type not in _VALID_TYPES:
+    if movement_type not in ACTIVE_MOVEMENT_TYPES:
         raise ValueError(f"Tipo de movimentação inválido: {movement_type}")
     now = _now_iso()
     cur = conn.execute(
@@ -84,7 +86,7 @@ def _apply_event_movement(
     transaction_id: Optional[int] = None,
 ) -> Dict:
     """Atomicamente: atualiza event_products.stock e insere stock_movements com event_id."""
-    if movement_type not in _VALID_TYPES:
+    if movement_type not in ACTIVE_MOVEMENT_TYPES:
         raise ValueError(f"Tipo de movimentação inválido: {movement_type}")
     if delta == 0:
         raise ValueError("Movimentação com quantidade zero.")
@@ -99,7 +101,8 @@ def _apply_event_movement(
         (int(event_id), int(product_id)),
     ).fetchone()
     if ep is None:
-        raise ValueError(f"Produto {product_id} não pertence ao evento {event_id}.")
+        sku = _product_sku_label(product_id, conn=conn)
+        raise ValueError(f"Produto {sku} não pertence ao evento {event_id}.")
 
     current = int(ep["stock"] or 0)
     new_stock = current + int(delta)
@@ -199,25 +202,30 @@ def register_event_stock_adjustment(
     reason: str,
     created_by: Optional[str] = None,
 ) -> Dict:
-    """Ajusta o estoque de um produto no evento para um valor absoluto."""
+    """Corrige o estoque de um produto no evento para um valor absoluto.
+
+    Registra **entrada** ou **saída** conforme o delta necessário.
+    """
     target = int(new_stock)
     if target < 0:
         raise ValueError("O estoque final não pode ser negativo.")
     if not (reason or "").strip():
-        raise ValueError("Informe o motivo do ajuste.")
+        raise ValueError("Informe o motivo da correção.")
     with get_conn() as conn:
         ep = conn.execute(
             "SELECT stock FROM event_products WHERE event_id = ? AND product_id = ?",
             (int(event_id), int(product_id)),
         ).fetchone()
         if ep is None:
-            raise ValueError(f"Produto {product_id} não pertence ao evento {event_id}.")
+            sku = _product_sku_label(product_id, conn=conn)
+            raise ValueError(f"Produto {sku} não pertence ao evento {event_id}.")
         delta = target - int(ep["stock"] or 0)
         if delta == 0:
             raise ValueError("O estoque informado é igual ao atual.")
+        movement_type = "entrada" if delta > 0 else "saida"
         return _apply_event_movement(
             conn, event_id=event_id, product_id=product_id,
-            movement_type="ajuste", delta=delta,
+            movement_type=movement_type, delta=delta,
             reason=reason.strip(), created_by=created_by,
         )
 
@@ -237,8 +245,8 @@ def list_event_stock_movements(
     ``product_search`` filtra por nome, descrição, SKU ou ID do produto (mesma
     semântica que em ``list_stock_movements``).
 
-    ``reference`` filtra pelo código do pedido (campo ``m.reference``, vendas no totem),
-    como em ``list_stock_movements``.
+    ``reference`` filtra pelo código do pedido (``m.reference``) **ou** pelo
+    nome do cliente na transação, como em ``list_stock_movements``.
 
     ``seller_id`` (quando > 0): apenas **vendas** do vendedor indicado
     (``movement_type = 'venda'`` e ``transactions.seller_id`` coincidente).
@@ -263,19 +271,19 @@ def list_event_stock_movements(
     if product_id is not None:
         sql += " AND m.product_id = ?"
         params.append(int(product_id))
-    if movement_type and movement_type in _VALID_TYPES:
+    if movement_type:
+        movement_type = normalize_movement_type_filter(movement_type)
+    if movement_type and movement_type in ACTIVE_MOVEMENT_TYPES:
         sql += " AND m.movement_type = ?"
         params.append(movement_type)
     frag, extra = _stock_movements_product_search_sql(product_search)
     sql += frag
     params.extend(extra)
-    ref_norm = _normalize_order_reference(reference)
-    if ref_norm:
-        sql += (
-            " AND m.reference IS NOT NULL "
-            "AND INSTR(LOWER(m.reference), LOWER(?)) > 0"
-        )
-        params.append(ref_norm)
+    frag_ref, extra_ref = _order_or_client_search_sql(
+        reference, order_column="m.reference"
+    )
+    sql += frag_ref
+    params.extend(extra_ref)
     if seller_id is not None:
         sql += (
             " AND m.movement_type = 'venda' "

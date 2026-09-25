@@ -5,6 +5,8 @@
 {% from "macros/admin_tx_status_badge.html" import admin_tx_status_badge %}
 {% from "macros/admin_tx_pending_actions.html" import admin_tx_pending_actions %}
 {% from "macros/admin_tx_item_cells.html" import admin_tx_item_cells, admin_tx_discount_summary %}
+{% from "macros/admin_tx_delivery.html" import admin_tx_delivery_badge %}
+{% from "macros/admin_tx_note.html" import admin_tx_note_form %}
 
 {% block title %}Dashboard do vendedor - Vendedor | Dental Odonto Master{% endblock %}
 
@@ -12,7 +14,13 @@
 {% if seller_event %}
 <div class="seller-event-banner">
     <i class="fa-solid fa-calendar-star" aria-hidden="true"></i>
-    <span>Você está operando no evento <strong>{{ seller_event.name }}</strong>. Os dados exibidos são exclusivos deste evento.</span>
+    <span>
+        {% if event_ops_open(seller_event) %}
+        Você está operando no evento <strong>{{ seller_event.name }}</strong>. Os dados exibidos são exclusivos deste evento.
+        {% else %}
+        Evento <strong>{{ seller_event.name }}</strong> com operações encerradas. Consulta apenas — vendas e edições bloqueadas.
+        {% endif %}
+    </span>
 </div>
 {% endif %}
 
@@ -50,26 +58,140 @@
             <span class="kpi__hint">Unidades vendidas por você</span>
         </article>
 
-        <article class="kpi {% if stock.below_min > 0 %}kpi--warn{% endif %}" data-dash-kpi-card="below_min">
-            <span class="kpi__icon"><i class="fa-solid fa-triangle-exclamation" aria-hidden="true"></i></span>
-            <span class="kpi__label">Abaixo do mínimo{% if seller_event %} no evento{% endif %}</span>
-            <span class="kpi__value" data-dash-kpi="below_min">{{ stock.below_min }}</span>
-            <span class="kpi__hint" data-dash-kpi="out_of_stock">{{ stock.out_of_stock }} sem estoque</span>
-        </article>
+        <a class="kpi kpi--link {% if pending_sales_count > 0 %}kpi--warn{% endif %}"
+           href="{{ url_for('seller_dashboard', status='pendente') }}"
+           data-dash-kpi-card="pending_sales"
+           title="Ver carrinhos abandonados{% if seller_event %} no evento {{ seller_event.name }}{% endif %}">
+            <span class="kpi__link-arrow" aria-hidden="true"><i class="fa-solid fa-arrow-right"></i></span>
+            <span class="kpi__icon"><i class="fa-solid fa-cart-shopping" aria-hidden="true"></i></span>
+            <span class="kpi__label">Carrinho abandonado{% if seller_event %} no evento{% endif %}</span>
+            <span class="kpi__value" data-dash-kpi="pending_sales">{{ pending_sales_count }}</span>
+            <span class="kpi__hint">Checkout não finalizado (AUT) — toque para ver</span>
+        </a>
+
+        <a class="kpi kpi--link {% if pending_delivery_count > 0 %}kpi--warn{% endif %}"
+           href="{{ url_for('seller_dashboard', entrega='parcial') }}"
+           data-dash-kpi-card="pending_delivery"
+           title="Ver pedidos pagos com itens aguardando retirada{% if seller_event %} no evento {{ seller_event.name }}{% endif %}">
+            <span class="kpi__link-arrow" aria-hidden="true"><i class="fa-solid fa-arrow-right"></i></span>
+            <span class="kpi__icon"><i class="fa-solid fa-box-open" aria-hidden="true"></i></span>
+            <span class="kpi__label">Retiradas pendentes{% if seller_event %} no evento{% endif %}</span>
+            <span class="kpi__value" data-dash-kpi="pending_delivery">{{ pending_delivery_count }}</span>
+            <span class="kpi__hint">Itens pagos aguardando retirada — consulte o administrador</span>
+        </a>
     </div>
 </section>
 
 <section class="admin-section">
     <header class="admin-section__header admin-section__header--row">
         <div>
-            <h2 class="admin-section__title">Últimas transações</h2>
-            <p class="admin-section__subtitle" data-seller-tx-subtitle>
-                Exibindo {{ transactions|length }} {% if transactions|length == 1 %}transação{% else %}transações{% endif %}.
+            <h2 class="admin-section__title">
+                {% if filters.status == 'pendente' %}
+                    Carrinho abandonado{% if seller_event %} no evento{% endif %}
+                {% elif filters.entrega == 'parcial' %}
+                    Retiradas pendentes
+                {% else %}
+                    Histórico de transações
+                {% endif %}
+            </h2>
+            <p class="admin-section__subtitle">
+                {% if filters.status == 'pendente' %}
+                    {% if seller_event %}
+                    Seus pedidos com checkout iniciado e ainda sem confirmação de AUT no evento <strong>{{ seller_event.name }}</strong>.
+                    Você pode retomar o carrinho ou descartar cada um.
+                    {% else %}
+                    Seus pedidos com checkout iniciado e ainda sem confirmação de AUT. Você pode retomar o carrinho ou descartar cada um.
+                    {% endif %}
+                {% elif filters.entrega == 'parcial' %}
+                    Pedidos pagos com itens ainda não entregues.
+                    A confirmação de retirada é feita pelo administrador no painel Admin.
+                {% elif seller_event %}
+                Pedidos registrados neste evento em seu nome. Toque em uma linha para ver itens e totais.
+                {% else %}
+                Todas as suas transações registradas no sistema. Toque em uma linha para ver itens e totais.
+                {% endif %}
             </p>
         </div>
     </header>
 
-    <div class="admin-table admin-table--with-payment" role="table" aria-label="Histórico de transações do vendedor">
+    <form class="admin-filters" method="get" action="{{ url_for('seller_dashboard') }}#lista"
+          data-scroll-to-table>
+        <label class="admin-filter">
+            <span class="admin-filter__label">Status</span>
+            <select name="status" class="admin-filter__input">
+                <option value="todos" {% if filters.status == 'todos' %}selected{% endif %}>Todos</option>
+                <option value="confirmado" {% if filters.status == 'confirmado' %}selected{% endif %}>Pago</option>
+                <option value="pendente" {% if filters.status == 'pendente' %}selected{% endif %}>Pendente</option>
+                <option value="cancelado" {% if filters.status == 'cancelado' %}selected{% endif %}>Cancelado</option>
+                <option value="estornado" {% if filters.status == 'estornado' %}selected{% endif %}>Estornado</option>
+                <option value="entregue" {% if filters.status == 'entregue' %}selected{% endif %}>Entregue</option>
+            </select>
+        </label>
+
+        <label class="admin-filter">
+            <span class="admin-filter__label">Entrega futura</span>
+            <select name="entrega" class="admin-filter__input"
+                    title="Pedidos com itens aguardando retirada (estoque ainda não baixado)">
+                <option value="todos" {% if filters.entrega == 'todos' %}selected{% endif %}>Todas</option>
+                <option value="parcial" {% if filters.entrega == 'parcial' %}selected{% endif %}>Retirada pendente</option>
+            </select>
+        </label>
+
+        <label class="admin-filter">
+            <span class="admin-filter__label">Data do pedido</span>
+            <input type="date" name="data" class="admin-filter__input"
+                   value="{{ filters.data }}"
+                   title="Filtrar pelo dia da transação (data de registro no sistema); deixe vazio para todos os dias">
+        </label>
+
+        <label class="admin-filter admin-filter--wide">
+            <span class="admin-filter__label">Código do pedido</span>
+            <span class="admin-filter__wrap">
+                <i class="fa-solid fa-receipt admin-filter__icon" aria-hidden="true"></i>
+                <input
+                    type="search"
+                    name="pedido"
+                    value="{{ filters.pedido }}"
+                    class="admin-filter__input"
+                    placeholder="Código do pedido ou nome do cliente…"
+                    autocomplete="off"
+                    inputmode="search"
+                    aria-describedby="hint-filtro-pedido-seller-dash"
+                >
+            </span>
+            <span id="hint-filtro-pedido-seller-dash" class="admin-filter__hint">
+                Busca pelo número do pedido (ex.: OM260422-1234) ou pelo nome do cliente.
+            </span>
+        </label>
+
+        <input type="hidden" name="page" value="1" aria-hidden="true">
+
+        <div class="admin-filters__actions">
+            <button type="submit" class="admin-btn admin-btn--primary">
+                <i class="fa-solid fa-filter" aria-hidden="true"></i>
+                Aplicar
+            </button>
+            <a href="{{ url_for('seller_dashboard') }}" class="admin-btn admin-btn--ghost">Limpar</a>
+        </div>
+    </form>
+
+    <header class="admin-section__header admin-section__header--row" style="margin-top: 8px;">
+        <div>
+            <p class="admin-section__subtitle" style="margin: 0;" data-seller-tx-subtitle>
+                {% if pagination.total > 0 %}
+                Mostrando <strong>{{ pagination.showing_from }}–{{ pagination.showing_to }}</strong>
+                de <strong>{{ pagination.total }}</strong>
+                transação(ões) · página {{ pagination.page }} de {{ pagination.total_pages }}.
+                {% else %}
+                Nenhuma transação para os filtros aplicados.
+                {% endif %}
+            </p>
+        </div>
+    </header>
+
+    {% include 'partials/admin_tx_legend.html' %}
+
+    <div id="lista" class="admin-table admin-table--with-payment" role="table" aria-label="Histórico de transações do vendedor">
         <div class="admin-table__head" role="row">
             <span class="admin-table__col admin-table__col--toggle" aria-hidden="true"></span>
             <span class="admin-table__col" role="columnheader">Pedido</span>
@@ -94,7 +216,7 @@
                     <span class="admin-table__col admin-table__col--toggle">
                         <i class="fa-solid fa-chevron-right admin-tx__chevron" aria-hidden="true"></i>
                     </span>
-                    {{ admin_tx_order_cell(tx.order_number) }}
+                    {{ admin_tx_order_cell(tx.order_number, tx.client_name) }}
                     <span class="admin-table__col">{{ tx.created_at | datahora }}</span>
                     <span class="admin-table__col admin-table__col--num">{{ tx.items_count }}</span>
                     <span class="admin-table__col admin-table__col--num"><strong>{{ tx.total | brl }}</strong></span>
@@ -102,8 +224,9 @@
                     <span class="admin-table__col admin-table__col--num admin-tx__status">
                         <span class="admin-tx__status-stack">
                             {{ admin_tx_status_badge(tx) }}
+                            {{ admin_tx_delivery_badge(tx) }}
                             {{ admin_tx_receipt_link(tx) }}
-                            {{ admin_tx_pending_actions(tx) }}
+                            {{ admin_tx_pending_actions(tx, writable=event_ops_open(seller_event) if seller_event else true) }}
                         </span>
                     </span>
                 </div>
@@ -121,14 +244,14 @@
                             <div class="admin-tx__items-head">
                                 <span>Produto</span>
                                 <span>SKU</span>
-                                <span>Categoria</span>
+                                <span class="admin-tx__category">Categoria</span>
                                 <span class="admin-table__col--num">Qtd.</span>
                                 <span class="admin-table__col--num">Unit.</span>
                                 <span class="admin-table__col--num">Subtotal</span>
                             </div>
                             {% for it in tx_items %}
                             <div class="admin-tx__items-row">
-                                {{ admin_tx_item_cells(it) }}
+                                {{ admin_tx_item_cells(it, seller_id=seller_id) }}
                             </div>
                             {% endfor %}
                         </div>
@@ -157,6 +280,9 @@
                                 <strong>{{ tx.total | brl }}</strong>
                             </div>
                         </div>
+                        <div class="admin-tx__actions">
+                            {{ admin_tx_note_form(tx, 'seller_transaction_note', writable=event_ops_open(seller_event) if seller_event else true) }}
+                        </div>
                     </div>
                 </div>
             </div>
@@ -164,10 +290,43 @@
         {% else %}
             <div class="admin-empty">
                 <i class="fa-regular fa-folder-open" aria-hidden="true"></i>
-                <p>Nenhuma transação registrada até o momento.</p>
+                <p>Nenhuma transação encontrada para os filtros aplicados.</p>
             </div>
         {% endif %}
         </div>
     </div>
+
+    {% if pagination.total > 0 %}
+    <nav class="admin-pagination" aria-label="Paginação das transações">
+        <div class="admin-pagination__nav">
+            {% if pagination.has_prev %}
+            <a class="admin-btn admin-btn--ghost admin-btn--sm"
+               href="{{ url_for('seller_dashboard', pedido=filters.pedido, status=filters.status, entrega=filters.entrega, data=filters.data, page=pagination.page - 1) }}"
+               rel="prev">
+                <i class="fa-solid fa-chevron-left" aria-hidden="true"></i>
+                Anterior
+            </a>
+            {% else %}
+            <span class="admin-pagination__disabled admin-btn admin-btn--ghost admin-btn--sm" aria-disabled="true">
+                <i class="fa-solid fa-chevron-left" aria-hidden="true"></i>
+                Anterior
+            </span>
+            {% endif %}
+            {% if pagination.has_next %}
+            <a class="admin-btn admin-btn--ghost admin-btn--sm"
+               href="{{ url_for('seller_dashboard', pedido=filters.pedido, status=filters.status, entrega=filters.entrega, data=filters.data, page=pagination.page + 1) }}"
+               rel="next">
+                Próxima
+                <i class="fa-solid fa-chevron-right" aria-hidden="true"></i>
+            </a>
+            {% else %}
+            <span class="admin-pagination__disabled admin-btn admin-btn--ghost admin-btn--sm" aria-disabled="true">
+                Próxima
+                <i class="fa-solid fa-chevron-right" aria-hidden="true"></i>
+            </span>
+            {% endif %}
+        </div>
+    </nav>
+    {% endif %}
 </section>
 {% endblock %}

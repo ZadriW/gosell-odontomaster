@@ -2,12 +2,30 @@
 from __future__ import annotations
 
 import sqlite3
+from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
 from .connection import _now_iso, get_conn
 from .products import _EVT_PRODUCTS_JOIN
+from .sku_helpers import _product_sku_label
 
-_VALID_TYPES = {"entrada", "saida", "venda", "ajuste", "inicial"}
+ACTIVE_MOVEMENT_TYPES = frozenset({"entrada", "saida", "venda"})
+_LEGACY_MOVEMENT_TYPES = frozenset({"ajuste", "inicial"})
+_VALID_TYPES = ACTIVE_MOVEMENT_TYPES | _LEGACY_MOVEMENT_TYPES
+
+
+def normalize_movement_type_filter(movement_type: Optional[str]) -> Optional[str]:
+    """Normaliza filtro de listagem; tipos legados ``ajuste``/``inicial`` foram unificados."""
+    mt = (movement_type or "").strip().lower()
+    if not mt or mt == "todos":
+        return None
+    if mt == "inicial":
+        return "entrada"
+    if mt == "ajuste":
+        return None
+    if mt in ACTIVE_MOVEMENT_TYPES:
+        return mt
+    return None
 
 
 def _apply_movement(
@@ -24,12 +42,12 @@ def _apply_movement(
 ) -> Dict:
     """Aplica uma movimentação e atualiza o saldo do produto.
 
-    - ``delta`` é **sinalizado** (positivo para entrada/ajuste+,
-      negativo para saída/venda/ajuste-).
+    - ``delta`` é **sinalizado** (positivo para entrada,
+      negativo para saída/venda).
     - Levanta ``ValueError`` se o saldo resultante ficaria negativo.
     - Deve ser chamado dentro de uma conexão já aberta (transação SQLite).
     """
-    if movement_type not in _VALID_TYPES:
+    if movement_type not in ACTIVE_MOVEMENT_TYPES:
         raise ValueError(f"Tipo de movimentação inválido: {movement_type}")
     if delta == 0:
         raise ValueError("Movimentação com quantidade zero.")
@@ -38,7 +56,8 @@ def _apply_movement(
         "SELECT id, name, stock FROM products WHERE id = ?", (int(product_id),)
     ).fetchone()
     if row is None:
-        raise ValueError(f"Produto {product_id} não encontrado.")
+        sku = _product_sku_label(product_id, conn=conn)
+        raise ValueError(f"Produto {sku} não encontrado.")
 
     current = int(row["stock"] or 0)
     new_stock = current + int(delta)
@@ -85,7 +104,7 @@ def _apply_movement(
 
 
 # ---------------------------------------------------------------------------
-# Entrada, saída e ajuste (API de alto nível do painel admin)
+# Entrada, saída e correção de inventário (API de alto nível do painel admin)
 # ---------------------------------------------------------------------------
 
 def register_stock_entry(
@@ -143,25 +162,30 @@ def register_stock_adjustment(
     reason: str,
     created_by: Optional[str] = None,
 ) -> Dict:
-    """Ajusta o estoque para um valor absoluto (conferência/inventário)."""
+    """Corrige o estoque para um valor absoluto (conferência/inventário).
+
+    Registra **entrada** ou **saída** conforme o delta necessário.
+    """
     target = int(new_stock)
     if target < 0:
         raise ValueError("O estoque final não pode ser negativo.")
     if not (reason or "").strip():
-        raise ValueError("Informe o motivo do ajuste.")
+        raise ValueError("Informe o motivo da correção.")
     with get_conn() as conn:
         row = conn.execute(
             "SELECT stock FROM products WHERE id = ?", (int(product_id),)
         ).fetchone()
         if row is None:
-            raise ValueError(f"Produto {product_id} não encontrado.")
+            sku = _product_sku_label(product_id, conn=conn)
+            raise ValueError(f"Produto {sku} não encontrado.")
         delta = target - int(row["stock"] or 0)
         if delta == 0:
             raise ValueError("O estoque informado é igual ao atual.")
+        movement_type = "entrada" if delta > 0 else "saida"
         return _apply_movement(
             conn,
             product_id=product_id,
-            movement_type="ajuste",
+            movement_type=movement_type,
             delta=delta,
             reason=reason.strip(),
             created_by=created_by,
@@ -180,25 +204,60 @@ def _normalize_order_reference(value: Optional[str]) -> str:
     return s
 
 
-def _stock_movements_product_search_sql(product_search: Optional[str]) -> Tuple[str, List]:
-    """Trecho ``AND (...)`` + parâmetros para filtrar por nome/descrição/SKU/ID do produto (JOIN ``p`` + ``m``)."""
-    ps = (product_search or "").strip()
-    if not ps:
+_ORDER_OR_CLIENT_COLUMNS = frozenset(
+    {"m.reference", "t.order_number", "t.client_name"}
+)
+
+
+def _order_or_client_search_sql(
+    value: Optional[str],
+    *,
+    order_column: str,
+    client_column: str = "t.client_name",
+) -> Tuple[str, List]:
+    """``AND (...)`` + parâmetros: código do pedido **ou** nome do cliente (subtexto).
+
+    Mesma semântica do filtro ``order_search`` das transações (admin/vendedor).
+    ``order_column`` / ``client_column`` são identificadores internos, nunca input.
+    """
+    ref = _normalize_order_reference(value)
+    if not ref:
         return "", []
-    like = f"%{ps.lower()}%"
-    or_parts = [
-        "LOWER(p.name) LIKE ?",
-        "LOWER(COALESCE(p.description, '')) LIKE ?",
-        "LOWER(COALESCE(p.sku, '')) LIKE ?",
-    ]
-    or_params: List = [like, like, like]
-    id_part = ps.lstrip("#").strip()
-    if id_part.isdigit():
-        or_parts.append("m.product_id = ?")
-        or_params.append(int(id_part))
-        or_parts.append("INSTR(CAST(m.product_id AS TEXT), ?) > 0")
-        or_params.append(id_part)
-    return " AND (" + " OR ".join(or_parts) + ")", or_params
+    if (
+        order_column not in _ORDER_OR_CLIENT_COLUMNS
+        or client_column not in _ORDER_OR_CLIENT_COLUMNS
+    ):
+        raise ValueError("coluna inválida para busca de pedido/cliente")
+    sql = (
+        " AND ("
+        f"({order_column} IS NOT NULL AND INSTR(LOWER({order_column}), LOWER(?)) > 0)"
+        " OR "
+        f"({client_column} IS NOT NULL AND INSTR(LOWER({client_column}), LOWER(?)) > 0)"
+        ")"
+    )
+    return sql, [ref, ref]
+
+
+def _stock_movements_product_search_sql(product_search: Optional[str]) -> Tuple[str, List]:
+    """Trecho ``AND (...)`` + parâmetros: mesma busca por tokens de ``_product_catalog_like_clause``."""
+    from .products import _product_catalog_like_clause
+
+    clause, extra = _product_catalog_like_clause(product_search, alias="p")
+    if not clause:
+        return "", []
+    return f" AND {clause}", extra
+
+
+def _normalize_iso_date(value: Optional[str]) -> Optional[str]:
+    """``YYYY-MM-DD`` válido ou ``None``."""
+    s = (value or "").strip()
+    if len(s) != 10:
+        return None
+    try:
+        datetime.strptime(s, "%Y-%m-%d")
+    except ValueError:
+        return None
+    return s
 
 
 def _stock_movements_filter_sql(
@@ -209,6 +268,8 @@ def _stock_movements_filter_sql(
     reference: Optional[str] = None,
     seller_id: Optional[int] = None,
     event_id: Optional[int] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
 ) -> Tuple[str, List]:
     """Trecho ``AND ...`` + parâmetros compartilhado por list/count/max das movimentações."""
     sql = ""
@@ -219,17 +280,17 @@ def _stock_movements_filter_sql(
     frag, extra = _stock_movements_product_search_sql(product_search)
     sql += frag
     params.extend(extra)
-    if movement_type and movement_type in _VALID_TYPES:
+    if movement_type:
+        movement_type = normalize_movement_type_filter(movement_type)
+    if movement_type and movement_type in ACTIVE_MOVEMENT_TYPES:
         sql += " AND m.movement_type = ?"
         params.append(movement_type)
-    ref_norm = _normalize_order_reference(reference)
-    if ref_norm:
-        sql += (
-            " AND m.reference IS NOT NULL "
-            "AND INSTR(LOWER(m.reference), LOWER(?)) > 0"
-        )
-        params.append(ref_norm)
-    if seller_id is not None:
+    frag_ref, extra_ref = _order_or_client_search_sql(
+        reference, order_column="m.reference"
+    )
+    sql += frag_ref
+    params.extend(extra_ref)
+    if seller_id is not None and int(seller_id) > 0:
         sql += (
             " AND m.movement_type = 'venda' "
             "AND COALESCE(t.seller_id, -1) = ?"
@@ -238,6 +299,14 @@ def _stock_movements_filter_sql(
     if event_id is not None and int(event_id) > 0:
         sql += " AND m.event_id = ?"
         params.append(int(event_id))
+    date_from_n = _normalize_iso_date(date_from)
+    date_to_n = _normalize_iso_date(date_to)
+    if date_from_n:
+        sql += " AND date(m.created_at) >= date(?)"
+        params.append(date_from_n)
+    if date_to_n:
+        sql += " AND date(m.created_at) <= date(?)"
+        params.append(date_to_n)
     return sql, params
 
 
@@ -249,6 +318,8 @@ def count_stock_movements(
     reference: Optional[str] = None,
     seller_id: Optional[int] = None,
     event_id: Optional[int] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
 ) -> int:
     filt_sql, filt_params = _stock_movements_filter_sql(
         product_id=product_id,
@@ -257,6 +328,8 @@ def count_stock_movements(
         reference=reference,
         seller_id=seller_id,
         event_id=event_id,
+        date_from=date_from,
+        date_to=date_to,
     )
     sql = (
         "SELECT COUNT(*) AS c FROM stock_movements m "
@@ -277,6 +350,8 @@ def max_stock_movement_id_filtered(
     reference: Optional[str] = None,
     seller_id: Optional[int] = None,
     event_id: Optional[int] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
 ) -> int:
     """Maior ``m.id`` entre movimentações que passam pelos mesmos filtros da listagem."""
     filt_sql, filt_params = _stock_movements_filter_sql(
@@ -286,6 +361,8 @@ def max_stock_movement_id_filtered(
         reference=reference,
         seller_id=seller_id,
         event_id=event_id,
+        date_from=date_from,
+        date_to=date_to,
     )
     sql = (
         "SELECT MAX(m.id) AS mx FROM stock_movements m "
@@ -306,19 +383,24 @@ def list_stock_movements(
     reference: Optional[str] = None,
     seller_id: Optional[int] = None,
     event_id: Optional[int] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
     limit: int = 200,
     offset: int = 0,
 ) -> List[Dict]:
-    """Lista movimentações. ``reference`` filtra pelo código do pedido (vendas no totem).
+    """Lista movimentações. ``reference`` filtra pelo código do pedido **ou**
+    nome do cliente (subtexto, case-insensitive; vendas ligadas a transação).
 
-    ``product_search`` restringe por nome, descrição, SKU ou ID numérico do produto
-    (subtexto em texto; para trechos só com dígitos também casa ``product_id``).
+    ``product_search`` restringe pela mesma busca de produtos do catálogo
+    (tokens no nome/variante/SKU; letras curtas só como palavra no título).
 
     ``seller_id`` (quando > 0): apenas linhas de **venda** (`movement_type = 'venda'`)
     cuja transação tem ``seller_id`` igual ao informado (via JOIN ``transactions``).
     Demais tipos de movimentação ficam de fora da lista enquanto o filtro estiver ativo.
 
     ``event_id`` (quando > 0): apenas linhas com ``stock_movements.event_id`` igual ao informado.
+
+    ``date_from`` / ``date_to`` (``YYYY-MM-DD``): restringe pelo dia de ``created_at``.
 
     ``offset``: deslocamento para paginação (ordenado por data decrescente).
     """
@@ -329,12 +411,16 @@ def list_stock_movements(
         reference=reference,
         seller_id=seller_id,
         event_id=event_id,
+        date_from=date_from,
+        date_to=date_to,
     )
     sql = (
         "SELECT m.*, p.name AS product_name, p.category AS product_category, "
         "p.sku AS product_sku, "
+        "p.variant_name AS product_variant, "
         "evt.name AS event_name, "
         "evt.badge_color AS event_badge_color, "
+        "t.seller_id, t.seller_name, t.order_number, "
         "t.client_name, t.client_cpf, t.client_zipcode, t.client_address, "
         "t.client_number, t.client_complement, t.client_city, t.client_state, "
         "t.payment_method, t.card_installments, t.aut, "

@@ -3,8 +3,8 @@
  *
  * Fluxo:
  *  1. Vendedor clica "Pagamento realizado" → cria transação PENDENTE via POST.
- *  2. Tela de AUT é exibida (waitingContent oculto, autSection visível).
- *  3. Vendedor digita o AUT e clica "Salvar AUT" → PATCH confirma, baixa estoque.
+ *  2. PIX/cartão: tela de AUT → PATCH confirma, baixa estoque.
+ *  3. Dinheiro: confirma direto (AUT interno "DINHEIRO"), sem maquininha.
  *  4. Tela de sucesso é exibida.
  */
 (() => {
@@ -18,17 +18,36 @@
 
     const Cart = window.Cart;
     const PromoPricing = window.PromoPricing;
+    const FLOW = window.__TOTEM_FLOW__ || {};
+    const CATALOG_URL = FLOW.catalog || '/vendedor/venda';
     if (!isResumeMode && !Cart) return;
     if (isResumeMode && (!Cart || typeof Cart.getItems !== 'function')) {
         window.location.assign(CATALOG_URL);
         return;
     }
 
-    const FLOW = window.__TOTEM_FLOW__ || {};
     const SUMMARY_URL = FLOW.payment || '/vendedor/pagamento';
-    const CATALOG_URL = FLOW.catalog || '/vendedor/venda';
     const HOME_URL = FLOW.home || '/';
     const SUCCESS_REDIRECT_MS = 30000;
+    const CASH_AUT = 'DINHEIRO';
+
+    function escapeHtml(value) {
+        const d = document.createElement('div');
+        d.textContent = value == null ? '' : String(value);
+        return d.innerHTML;
+    }
+
+    function safeMediaUrl(value) {
+        const s = String(value == null ? '' : value).trim();
+        if (!s) return '';
+        const lower = s.toLowerCase();
+        if (lower.startsWith('javascript:') || lower.startsWith('vbscript:')) return '';
+        if (lower.startsWith('data:') && !lower.startsWith('data:image/')) return '';
+        if (lower.startsWith('http://') || lower.startsWith('https://') || s.startsWith('/') || lower.startsWith('data:image/')) {
+            return s;
+        }
+        return '';
+    }
 
     const RESUME_PENDING_TX_KEY = 'totem_resume_pending_tx_id';
 
@@ -51,12 +70,15 @@
     const countEl    = document.getElementById('waitingCount');
     const totalEl    = document.getElementById('waitingTotal');
     const confirmBtn = document.getElementById('waitingConfirm');
+    const confirmLabel = document.getElementById('waitingConfirmLabel');
     const backBtn    = document.getElementById('waitingBack');
     const successOrder     = document.getElementById('successOrder');
     const successCountdown = document.getElementById('successCountdown');
     const successPrint     = document.getElementById('successPrint');
     const successFinish    = document.getElementById('successFinish');
     const waitingBackLabel = document.getElementById('waitingBackLabel');
+    const waitingTitle = document.getElementById('waitingTitle');
+    const waitingLead = document.getElementById('waitingLead');
 
     /** id da transação pendente criada no primeiro step. */
     let pendingTxId = null;
@@ -65,25 +87,67 @@
     /** Token assinado (``t``) para abrir a nota de retirada. */
     let confirmedReceiptToken = null;
 
+    function loadClientData() {
+        return window.PaymentForm && typeof window.PaymentForm.load === 'function'
+            ? window.PaymentForm.load()
+            : null;
+    }
+
+    function isCashPayment(clientData) {
+        const data = clientData || loadClientData();
+        return String(data && data.payment_method || '').toLowerCase() === 'dinheiro';
+    }
+
     function paymentMethodLabel(raw, installments) {
         const v = String(raw || '').toLowerCase();
         if (v === 'pix') return 'PIX';
+        if (v === 'dinheiro') return 'Dinheiro';
         const n = parseInt(String(installments ?? ''), 10);
         if (Number.isFinite(n) && n > 1) return `Cartão em ${n}x`;
         return 'Cartão';
     }
 
     function syncWaitingPaymentMethodUi() {
-        const clientData = window.PaymentForm ? window.PaymentForm.load() : null;
+        const clientData = loadClientData();
         const pm   = clientData && clientData.payment_method;
         const inst = clientData && clientData.installments;
+        const cash = isCashPayment(clientData);
+
         const methodEl = document.getElementById('waitingPaymentMethod');
         if (methodEl) methodEl.textContent = paymentMethodLabel(pm, inst);
+
         const heroIcon = document.querySelector('.payment-wait__pulse i');
         if (heroIcon) {
-            heroIcon.className = String(pm || '').toLowerCase() === 'pix'
-                ? 'fa-brands fa-pix'
-                : 'fa-solid fa-credit-card';
+            if (cash) {
+                heroIcon.className = 'fa-solid fa-money-bill-wave';
+            } else if (String(pm || '').toLowerCase() === 'pix') {
+                heroIcon.className = 'fa-brands fa-pix';
+            } else {
+                heroIcon.className = 'fa-solid fa-credit-card';
+            }
+        }
+
+        if (waitingTitle) {
+            waitingTitle.textContent = cash
+                ? 'Pagamento em dinheiro'
+                : 'Aguardando pagamento';
+        }
+
+        if (waitingLead) {
+            waitingLead.innerHTML = cash
+                ? 'Receba o valor em <strong>espécie</strong> do cliente conforme o total do pedido. '
+                    + 'Depois de conferir o recebimento, toque no botão abaixo para registrar a venda '
+                    + 'e liberar a nota de retirada.'
+                : 'Utilize a <strong>maquininha</strong> ao lado do Go Sell para concluir o pagamento '
+                    + '(<strong>PIX</strong> ou <strong>cartão</strong>, conforme selecionado no passo anterior). '
+                    + 'Quando a operação for aprovada na maquininha, toque no botão abaixo para registrar '
+                    + 'a venda e liberar a nota de retirada.';
+        }
+
+        if (confirmLabel) {
+            confirmLabel.textContent = cash
+                ? 'Confirmar recebimento em dinheiro'
+                : 'Pagamento realizado';
         }
     }
 
@@ -94,14 +158,15 @@
         const subtotal = Cart.formatBRL(item.subtotal != null ? item.subtotal : item.preco * item.quantidade);
         const unit     = Cart.formatBRL(item.preco);
         return `
-            <article class="payment-item" data-id="${item.id}">
+            <article class="payment-item" data-id="${escapeHtml(item.id)}">
                 <div class="payment-item__image">
-                    <img src="${item.imagem}" alt="${item.nome}" loading="lazy">
+                    <img src="${safeMediaUrl(item.imagem)}" alt="${escapeHtml(item.nome)}" loading="lazy">
                 </div>
                 <div class="payment-item__info">
-                    <span class="payment-item__category">${item.categoria || ''}</span>
-                    <h3 class="payment-item__name">${item.nome}</h3>
-                    ${item.sku ? `<p class="payment-item__sku">SKU ${item.sku}</p>` : ''}
+                    <span class="payment-item__category">${escapeHtml(item.categoria || '')}</span>
+                    <h3 class="payment-item__name">${escapeHtml(item.nome)}</h3>
+                    ${item.variante ? `<p class="payment-item__variant">${escapeHtml(item.variante)}</p>` : ''}
+                    ${item.sku ? `<p class="payment-item__sku">SKU ${escapeHtml(item.sku)}</p>` : ''}
                     <p class="payment-item__meta">${item.quantidade} × ${unit}</p>
                 </div>
                 <div class="payment-item__total">${subtotal}</div>
@@ -117,9 +182,16 @@
             return;
         }
         const totals = Cart.getTotals();
-        itemsEl.innerHTML = items.map(renderItem).join('');
+        const notice = window.StockConflict && typeof window.StockConflict.noticeHtml === 'function'
+            ? window.StockConflict.noticeHtml(items)
+            : '';
+        itemsEl.innerHTML = notice + items.map(renderItem).join('');
         countEl.textContent = totals.count;
-        totalEl.textContent = Cart.formatBRL(totals.total);
+        const clientData = loadClientData();
+        const payable = clientData && clientData.seller_total != null
+            ? Number(clientData.seller_total)
+            : totals.total;
+        totalEl.textContent = Cart.formatBRL(Number.isFinite(payable) ? payable : totals.total);
         syncWaitingPaymentMethodUi();
     }
 
@@ -129,21 +201,27 @@
         }
     }
 
-    /** Etapa 1: cria transação pendente. Retorna o id. */
-    async function createPendingTransaction() {
-        const clientData = window.PaymentForm ? window.PaymentForm.load() : null;
-        const payload = {
+    function buildTransactionPayload() {
+        const clientData = loadClientData();
+        return {
             items: Cart.getItems(),
             client: clientData || {},
             payment_method: (clientData && clientData.payment_method)
                 ? clientData.payment_method
                 : 'cartao',
+            seller_total: clientData && clientData.seller_total != null
+                ? clientData.seller_total
+                : undefined,
         };
+    }
+
+    /** Etapa 1: cria transação pendente. Retorna o id. */
+    async function createPendingTransaction() {
         const data = await window.TotemApiErrors.fetchJson('/api/transacoes', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             credentials: 'same-origin',
-            body: JSON.stringify(payload),
+            body: JSON.stringify(buildTransactionPayload()),
         });
         applyTxQuote(data);
         return data.id;
@@ -151,25 +229,17 @@
 
     /** Sincroniza pedido pendente com carrinho + formulário atuais (retomada de checkout). */
     async function patchPendingTransaction(txId) {
-        const clientData = window.PaymentForm ? window.PaymentForm.load() : null;
-        const payload = {
-            items: Cart.getItems(),
-            client: clientData || {},
-            payment_method: (clientData && clientData.payment_method)
-                ? clientData.payment_method
-                : 'cartao',
-        };
         const data = await window.TotemApiErrors.fetchJson(`/api/transacoes/${txId}`, {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
             credentials: 'same-origin',
-            body: JSON.stringify(payload),
+            body: JSON.stringify(buildTransactionPayload()),
         });
         applyTxQuote(data);
         return data;
     }
 
-    /** Etapa 2: confirma com AUT. Retorna order_number. */
+    /** Etapa 2: confirma com AUT. Retorna a resposta completa (order_number, pending_items…). */
     async function confirmWithAut(txId, aut) {
         const data = await window.TotemApiErrors.fetchJson(`/api/transacoes/${txId}/aut`, {
             method: 'PATCH',
@@ -179,7 +249,23 @@
         });
         confirmedReceiptToken =
             data.receipt_token != null ? String(data.receipt_token) : null;
-        return data.order_number;
+        return data;
+    }
+
+    async function finalizePendingTransaction(txId) {
+        const resumeKey = readResumePendingTxId();
+        if (
+            resumeKey != null
+            && Number(resumeKey) === Number(txId)
+        ) {
+            await patchPendingTransaction(txId);
+            renderWaiting();
+        }
+        const aut = isCashPayment() ? CASH_AUT : null;
+        if (!aut) {
+            throw new Error('Fluxo inválido: confirmação sem AUT.');
+        }
+        return confirmWithAut(txId, aut);
     }
 
     function showAutScreen() {
@@ -204,9 +290,42 @@
         autError.hidden = false;
     }
 
-    function showSuccess(orderNumber) {
+    function renderPendingDeliveryNotice(pendingItems) {
+        const box = document.getElementById('successPendingDelivery');
+        if (!box) return;
+        const pending = (Array.isArray(pendingItems) ? pendingItems : [])
+            .filter(p => Number(p.pending) > 0);
+        if (pending.length === 0) {
+            box.innerHTML = '';
+            box.hidden = true;
+            return;
+        }
+        const rows = pending
+            .map(p => {
+                const pendingQty = Number(p.pending) || 0;
+                const deliveredQty = Number(p.delivered) || 0;
+                const name = escapeHtml(p.product_name);
+                if (deliveredQty > 0) {
+                    return `<li><strong>${escapeHtml(String(deliveredQty))} agora</strong> · <strong>${escapeHtml(String(pendingQty))} pendente${pendingQty === 1 ? '' : 's'}</strong> — ${name}</li>`;
+                }
+                return `<li><strong>${escapeHtml(String(pendingQty))}×</strong> ${name}</li>`;
+            })
+            .join('');
+        box.innerHTML = `
+            <i class="fa-solid fa-box-open" aria-hidden="true"></i>
+            <span>
+                Itens pagos aguardando reposição de estoque (retirada posterior):
+                <ul>${rows}</ul>
+                Eles aparecem no pedido como <strong>retirada pendente</strong> e constam na nota.
+            </span>
+        `;
+        box.hidden = false;
+    }
+
+    function showSuccess(orderNumber, pendingItems) {
         confirmedOrderNumber = orderNumber != null ? String(orderNumber) : null;
         successOrder.textContent = `Pedido #${orderNumber}`;
+        renderPendingDeliveryNotice(pendingItems);
         document.querySelector('.payment')?.classList.add('payment--success-only');
 
         if (autSection) {
@@ -246,18 +365,36 @@
 
     confirmBtn?.addEventListener('click', async () => {
         if (!Cart || Cart.isEmpty()) return;
-        const originalLabel = confirmBtn.innerHTML;
+        const cash = isCashPayment();
+        const originalLabel = confirmLabel
+            ? confirmLabel.textContent
+            : confirmBtn.textContent;
         confirmBtn.disabled = true;
         confirmBtn.innerHTML =
             '<i class="fa-solid fa-spinner fa-spin" aria-hidden="true"></i> Aguarde...';
         try {
             pendingTxId = await createPendingTransaction();
             renderWaiting();
-            confirmBtn.innerHTML = originalLabel;
+            if (cash) {
+                const confirmData = await finalizePendingTransaction(pendingTxId);
+                showSuccess(confirmData.order_number, confirmData.pending_items);
+                return;
+            }
+            if (confirmLabel) {
+                confirmBtn.innerHTML =
+                    `<i class="fa-solid fa-check" aria-hidden="true"></i> <span id="waitingConfirmLabel">${originalLabel}</span>`;
+            } else {
+                confirmBtn.innerHTML = originalLabel;
+            }
             showAutScreen();
         } catch (err) {
             confirmBtn.disabled = false;
-            confirmBtn.innerHTML = originalLabel;
+            if (confirmLabel) {
+                confirmBtn.innerHTML =
+                    `<i class="fa-solid fa-check" aria-hidden="true"></i> <span id="waitingConfirmLabel">${originalLabel}</span>`;
+            } else {
+                confirmBtn.innerHTML = originalLabel;
+            }
             window.alert(err.message || 'Não foi possível registrar o pedido. Tente novamente.');
         }
     });
@@ -288,9 +425,9 @@
                     await patchPendingTransaction(pendingTxId);
                     renderWaiting();
                 }
-                const orderNumber = await confirmWithAut(pendingTxId, aut);
+                const confirmData = await confirmWithAut(pendingTxId, aut);
                 autSave.innerHTML = originalLabel;
-                showSuccess(orderNumber);
+                showSuccess(confirmData.order_number, confirmData.pending_items);
             } catch (err) {
                 autSave.disabled = false;
                 autSave.innerHTML = originalLabel;
@@ -334,11 +471,6 @@
             content.setAttribute('aria-hidden', 'true');
         }
         const hint = document.getElementById('autResumeOrderHint');
-        if (hint && RESUME.order_number != null && String(RESUME.order_number).trim()) {
-            hint.hidden = false;
-            hint.textContent =
-                `Pedido #${RESUME.order_number}. Informe o código AUT para confirmar a venda e baixar o estoque.`;
-        }
         (async () => {
             try {
                 await patchPendingTransaction(pendingTxId);
@@ -348,12 +480,36 @@
                 window.location.assign(SUMMARY_URL);
                 return;
             }
+            if (isCashPayment()) {
+                if (content) {
+                    content.hidden = false;
+                    content.removeAttribute('aria-hidden');
+                }
+                if (hint && RESUME.order_number != null && String(RESUME.order_number).trim()) {
+                    hint.hidden = false;
+                    hint.textContent =
+                        `Pedido #${RESUME.order_number}. Confirme o recebimento em dinheiro para concluir a venda.`;
+                }
+                syncWaitingPaymentMethodUi();
+                return;
+            }
+            if (hint && RESUME.order_number != null && String(RESUME.order_number).trim()) {
+                hint.hidden = false;
+                hint.textContent =
+                    `Pedido #${RESUME.order_number}. Informe o código AUT para confirmar a venda e baixar o estoque.`;
+            }
             showAutScreen();
             syncWaitingPaymentMethodUi();
         })();
     } else {
         Cart.subscribe(() => {
             if (!success.hidden) return;
+            renderWaiting();
+        });
+        window.addEventListener('checkout-hold:conflicts', () => {
+            if (success && !success.hidden) return;
+            if (!Cart || typeof Cart.getItems !== 'function') return;
+            if (!Cart.getItems().length) return;
             renderWaiting();
         });
         renderWaiting();

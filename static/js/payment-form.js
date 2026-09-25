@@ -53,6 +53,10 @@
     }
 
     function cartTotal() {
+        if (window.SellerPaymentAdjust && typeof window.SellerPaymentAdjust.getPayableTotal === 'function') {
+            const t = Number(window.SellerPaymentAdjust.getPayableTotal());
+            return Number.isFinite(t) ? t : 0;
+        }
         if (!window.Cart || typeof window.Cart.total !== 'function') return 0;
         const t = Number(window.Cart.total());
         return Number.isFinite(t) ? t : 0;
@@ -79,6 +83,30 @@
                 + '#paymentForm input[name="payment_method"]:checked',
         );
         return !!(r && r.value === 'cartao');
+    }
+
+    function selectedPaymentMethod() {
+        const r = document.querySelector(
+            'input[name="payment_method"][form="paymentForm"]:checked, '
+                + '#paymentForm input[name="payment_method"]:checked',
+        );
+        return r ? String(r.value || 'cartao').toLowerCase() : 'cartao';
+    }
+
+    function syncPaymentMethodHint() {
+        const hint = document.getElementById('paymentMethodHint');
+        if (!hint) return;
+        const pm = selectedPaymentMethod();
+        if (pm === 'dinheiro') {
+            hint.textContent =
+                'Pagamento em espécie: confirme o recebimento do valor na próxima etapa (sem maquininha).';
+        } else if (pm === 'pix') {
+            hint.textContent =
+                'PIX selecionado — o valor será processado na maquininha na próxima etapa.';
+        } else {
+            hint.textContent =
+                'Cartão selecionado — o valor será processado na maquininha na próxima etapa.';
+        }
     }
 
     function rebuildInstallmentsOptions(preferred) {
@@ -143,6 +171,13 @@
         load,
         clear,
         syncInstallmentsFromCart,
+        mergePartial(partial) {
+            if (!partial || typeof partial !== 'object') return;
+            const current = load() || {};
+            try {
+                sessionStorage.setItem(STORAGE_KEY, JSON.stringify({ ...current, ...partial }));
+            } catch (_) {}
+        },
         isValid() {
             return false;
         },
@@ -173,6 +208,16 @@
         const digits = value.replace(/\D/g, '');
         if (digits.length <= 5) return digits;
         return `${digits.slice(0, 5)}-${digits.slice(5, 8)}`;
+    }
+
+    function maskPhone(value) {
+        const digits = value.replace(/\D/g, '').slice(0, 11);
+        if (digits.length <= 2) return digits.length ? `(${digits}` : '';
+        if (digits.length <= 6) return `(${digits.slice(0, 2)}) ${digits.slice(2)}`;
+        if (digits.length <= 10) {
+            return `(${digits.slice(0, 2)}) ${digits.slice(2, 6)}-${digits.slice(6)}`;
+        }
+        return `(${digits.slice(0, 2)}) ${digits.slice(2, 7)}-${digits.slice(7)}`;
     }
 
     function maskCRO(value) {
@@ -242,6 +287,82 @@
     }
 
     /* -------------------------------------------------------------------- */
+    /* Disponibilidade da busca (ViaCEP exige internet)                     */
+    /* -------------------------------------------------------------------- */
+    let cepLookupOnline = false;
+    let cepConnectivityKnown = false;
+    let cepLookupBusy = false;
+
+    function zipDigits() {
+        return zipInput ? zipInput.value.replace(/\D/g, '') : '';
+    }
+
+    function browserReportsOffline() {
+        return typeof navigator !== 'undefined' && navigator.onLine === false;
+    }
+
+    function cepLookupAvailable() {
+        return cepLookupOnline && !browserReportsOffline();
+    }
+
+    function syncCepButton() {
+        if (!searchCepBtn) return;
+        const complete = zipDigits().length === 8;
+        const available = cepLookupAvailable();
+        const offlineLook = cepConnectivityKnown ? !available : browserReportsOffline();
+        searchCepBtn.disabled = cepLookupBusy || !available || !complete;
+        searchCepBtn.classList.toggle('payment-field__cep-btn--offline', offlineLook);
+        if (offlineLook) {
+            searchCepBtn.title = 'Consulta de CEP indisponível sem internet.';
+            searchCepBtn.setAttribute('aria-label', 'Buscar CEP indisponível sem internet');
+        } else if (!cepConnectivityKnown) {
+            searchCepBtn.title = 'Verificando se a consulta de CEP está disponível…';
+            searchCepBtn.setAttribute('aria-label', 'Buscar CEP');
+        } else if (!complete) {
+            searchCepBtn.title = 'Informe um CEP com 8 dígitos';
+            searchCepBtn.setAttribute('aria-label', 'Buscar CEP');
+        } else {
+            searchCepBtn.title = 'Buscar endereço pelo CEP';
+            searchCepBtn.setAttribute('aria-label', 'Buscar CEP');
+        }
+    }
+
+    async function refreshCepConnectivity() {
+        if (browserReportsOffline()) {
+            cepLookupOnline = false;
+            cepConnectivityKnown = true;
+            syncCepButton();
+            return;
+        }
+        try {
+            const ctrl = new AbortController();
+            const timer = setTimeout(() => ctrl.abort(), 3500);
+            const res = await fetch('https://viacep.com.br/ws/00000000/json/', {
+                method: 'GET',
+                cache: 'no-store',
+                signal: ctrl.signal,
+            });
+            clearTimeout(timer);
+            cepLookupOnline = Boolean(res);
+        } catch (_) {
+            cepLookupOnline = false;
+        }
+        cepConnectivityKnown = true;
+        syncCepButton();
+    }
+
+    window.addEventListener('offline', () => {
+        cepLookupOnline = false;
+        cepConnectivityKnown = true;
+        syncCepButton();
+    });
+    window.addEventListener('online', () => {
+        cepConnectivityKnown = false;
+        syncCepButton();
+        refreshCepConnectivity();
+    });
+
+    /* -------------------------------------------------------------------- */
     /* Listeners                                                            */
     /* -------------------------------------------------------------------- */
     form.addEventListener('input', event => {
@@ -252,16 +373,22 @@
             input.setCustomValidity(valid ? '' : 'CPF inválido');
         } else if (input.name === 'cro_numero') {
             input.value = maskCRO(input.value);
+        } else if (input.name === 'phone') {
+            input.value = maskPhone(input.value);
         } else if (input.name === 'zipcode') {
             input.value = maskCEP(input.value);
-            const digits = input.value.replace(/\D/g, '');
-            if (searchCepBtn) searchCepBtn.disabled = digits.length !== 8;
+            syncCepButton();
         }
     });
 
     if (searchCepBtn && zipInput && cepLoading) {
         searchCepBtn.addEventListener('click', async () => {
-            searchCepBtn.disabled = true;
+            if (!cepLookupAvailable()) {
+                syncCepButton();
+                return;
+            }
+            cepLookupBusy = true;
+            syncCepButton();
             cepLoading.hidden = false;
             try {
                 const data = await searchCEP(zipInput.value);
@@ -269,18 +396,18 @@
             } catch (err) {
                 console.warn('Erro ao buscar CEP:', err);
                 alert(`Não foi possível buscar o CEP: ${err.message || 'erro desconhecido'}`);
+                if (browserReportsOffline()) cepLookupOnline = false;
             } finally {
+                cepLookupBusy = false;
                 cepLoading.hidden = true;
-                const digits = zipInput.value.replace(/\D/g, '');
-                searchCepBtn.disabled = digits.length !== 8;
+                syncCepButton();
             }
         });
 
         zipInput.addEventListener('keydown', event => {
             if (event.key === 'Enter') {
                 event.preventDefault();
-                const digits = zipInput.value.replace(/\D/g, '');
-                if (digits.length === 8 && !searchCepBtn.disabled) {
+                if (zipDigits().length === 8 && !searchCepBtn.disabled) {
                     searchCepBtn.click();
                 }
             }
@@ -316,9 +443,21 @@
             if (installmentsSelect) installmentsSelect.setCustomValidity('');
         }
 
+        let sellerTotal = cartTotal();
+        let sellerDiscountReais = 0;
+        let sellerDiscountPct = 0;
+        if (window.SellerPaymentAdjust && typeof window.SellerPaymentAdjust.getState === 'function') {
+            const adj = window.SellerPaymentAdjust.getState();
+            sellerTotal = adj.payable;
+            sellerDiscountReais = adj.discountReais;
+            sellerDiscountPct = adj.discountPct;
+        }
+
         return {
             name: (data.get('name') || '').trim(),
             cpf: (data.get('cpf') || '').trim(),
+            email: (data.get('email') || '').trim(),
+            phone: (data.get('phone') || '').trim(),
             cro_uf: (data.get('cro_uf') || '').trim(),
             cro_numero: (data.get('cro_numero') || '').trim(),
             zipcode: (data.get('zipcode') || '').trim(),
@@ -329,6 +468,9 @@
             state: (data.get('state') || '').trim(),
             payment_method: pmNorm,
             installments,
+            seller_total: sellerTotal,
+            seller_discount_reais: sellerDiscountReais,
+            seller_discount_pct: sellerDiscountPct,
         };
     };
 
@@ -347,6 +489,10 @@
         if (stored.name && nameEl) nameEl.value = stored.name;
         const cpfEl = form.querySelector('[name="cpf"]');
         if (stored.cpf && cpfEl) cpfEl.value = stored.cpf;
+        const emailEl = form.querySelector('[name="email"]');
+        if (stored.email && emailEl) emailEl.value = stored.email;
+        const phoneEl = form.querySelector('[name="phone"]');
+        if (stored.phone && phoneEl) phoneEl.value = maskPhone(String(stored.phone));
         const croUfEl = form.querySelector('[name="cro_uf"]');
         if (stored.cro_uf && croUfEl) croUfEl.value = stored.cro_uf;
         const croNumEl = form.querySelector('[name="cro_numero"]');
@@ -366,19 +512,24 @@
         const stateEl = form.querySelector('[name="state"]');
         if (stored.state && stateEl) stateEl.value = stored.state;
         const pm = (stored.payment_method || 'cartao').toLowerCase();
-        const pmVal = pm === 'pix' ? 'pix' : 'cartao';
+        const pmVal = ['pix', 'cartao', 'dinheiro'].includes(pm) ? pm : 'cartao';
         const pmRadio = document.querySelector(
             `input[name="payment_method"][value="${pmVal}"][form="paymentForm"], #paymentForm input[name="payment_method"][value="${pmVal}"]`,
         );
         if (pmRadio) pmRadio.checked = true;
     }
 
+    syncCepButton();
+    refreshCepConnectivity();
+
     document.querySelector('.payment__section--method-flow')?.addEventListener('change', event => {
         const t = event.target;
         if (t && t.name === 'payment_method') {
+            syncPaymentMethodHint();
             syncInstallmentsFromCart();
         }
     });
 
+    syncPaymentMethodHint();
     syncInstallmentsFromCart();
 })();

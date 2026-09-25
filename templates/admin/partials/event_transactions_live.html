@@ -1,0 +1,201 @@
+{% from "macros/admin_tx_client.html" import admin_tx_client_section %}
+{% from "macros/admin_tx_order_cell.html" import admin_tx_order_cell %}
+{% from "macros/admin_tx_receipt_link.html" import admin_tx_receipt_link %}
+{% from "macros/admin_tx_status_badge.html" import admin_tx_status_badge %}
+{% from "macros/admin_tx_item_cells.html" import admin_tx_item_cells, admin_tx_discount_summary with context %}
+{% from "macros/admin_tx_delivery.html" import admin_tx_delivery_badge, admin_tx_delivery_section with context %}
+{% from "macros/admin_tx_handover.html" import admin_tx_handover_action %}
+{% from "macros/admin_tx_note.html" import admin_tx_note_form %}
+{% from "macros/admin_tx_pending_actions.html" import admin_tx_pending_actions %}
+
+<header class="admin-section__header admin-section__header--row" style="margin-top: 8px;">
+    <div>
+        <p class="admin-section__subtitle" style="margin: 0;" data-admin-event-tx-summary>
+            {% if pagination.total > 0 %}
+            Mostrando <strong>{{ pagination.showing_from }}–{{ pagination.showing_to }}</strong>
+            de <strong>{{ pagination.total }}</strong>
+            transação(ões) · página {{ pagination.page }} de {{ pagination.total_pages }}.
+            {% else %}
+            Nenhuma transação para os filtros aplicados.
+            {% endif %}
+        </p>
+    </div>
+</header>
+
+{% include 'partials/admin_tx_legend.html' %}
+
+<div class="admin-table admin-table--tx-wide" role="table" aria-label="Histórico de transações do {{ event|op_noun(lower=True) }}">
+    <div class="admin-table__head" role="row">
+        <span class="admin-table__col admin-table__col--toggle" aria-hidden="true"></span>
+        <span class="admin-table__col" role="columnheader">Pedido</span>
+        <span class="admin-table__col" role="columnheader">Data/Hora</span>
+        <span class="admin-table__col admin-table__col--num" role="columnheader">Itens</span>
+        <span class="admin-table__col" role="columnheader">Total</span>
+        <span class="admin-table__col" role="columnheader">Pagamento</span>
+        <span class="admin-table__col" role="columnheader">Vendedor</span>
+        <span class="admin-table__col" role="columnheader">Status</span>
+    </div>
+
+    {% if transactions %}
+        {% for tx in transactions %}
+        <div class="admin-tx" id="tx-{{ tx.id }}" data-tx-id="{{ tx.id }}">
+            <div
+                class="admin-tx__row"
+                role="button"
+                tabindex="0"
+                aria-expanded="false"
+                aria-controls="event-tx-details-{{ tx.id }}"
+            >
+                <span class="admin-table__col admin-table__col--toggle">
+                    <i class="fa-solid fa-chevron-right admin-tx__chevron" aria-hidden="true"></i>
+                </span>
+                {{ admin_tx_order_cell(tx.order_number, tx.client_name) }}
+                <span class="admin-table__col">{{ tx.created_at | datahora }}</span>
+                <span class="admin-table__col admin-table__col--num">{{ tx.items_count }}</span>
+                <span class="admin-table__col admin-table__col--num">
+                    <strong>{{ tx.total | brl }}</strong>
+                </span>
+                <span class="admin-table__col">
+                    {{ tx.payment_method | paymethod(tx.card_installments) }}
+                </span>
+                <span class="admin-table__col admin-table__col--seller">
+                    {{ tx.seller_name or '—' }}
+                </span>
+                <span class="admin-table__col admin-table__col--num admin-tx__status">
+                    <span class="admin-tx__status-stack">
+                        {{ admin_tx_status_badge(tx) }}
+                        {{ admin_tx_delivery_badge(tx) }}
+                        {{ admin_tx_handover_action(tx, 'admin_event_confirm_transaction_handover', event_id=event.id, writable=event_ops_open(event)) }}
+                        {{ admin_tx_receipt_link(tx) }}
+                        {{ admin_tx_pending_actions(tx, writable=True, cancel_endpoint='admin_event_cancel_pending_transaction', show_restore=False, event_id=event.id) }}
+                    </span>
+                </span>
+            </div>
+
+            <div
+                class="admin-tx__details"
+                id="event-tx-details-{{ tx.id }}"
+                hidden
+            >
+                <div class="admin-tx__details-inner">
+                    {% set tx_items = tx['items'] %}
+                    <h3 class="admin-tx__details-title">
+                        Itens do pedido
+                        <span class="admin-tx__details-count">
+                            {{ tx_items|length }} produto{% if tx_items|length != 1 %}s{% endif %}
+                        </span>
+                    </h3>
+                    <div class="admin-tx__items">
+                        <div class="admin-tx__items-head">
+                            <span>Produto</span>
+                            <span>SKU</span>
+                            <span class="admin-tx__category">Categoria</span>
+                            <span class="admin-table__col--num">Qtd.</span>
+                            <span class="admin-table__col--num">Unit.</span>
+                            <span class="admin-table__col--num">Subtotal</span>
+                        </div>
+                        {% for it in tx_items %}
+                        {% if tx.status == 'confirmado' and it.product_id and event_ops_open(event) %}
+                        <form
+                            class="admin-tx__items-row admin-tx__items-row--editable"
+                            method="post"
+                            action="{{ url_for('admin_transaction_replace_item', tx_id=tx.id, item_id=it.id) }}"
+                        >
+                            {% include 'partials/csrf_field.html' %}
+                            <input type="hidden" name="event_id" value="{{ event.id }}">
+                            {{ admin_tx_item_cells(it, event_id=event.id, editable=True, tx=tx) }}
+                        </form>
+                        {% else %}
+                        <div class="admin-tx__items-row">
+                            {{ admin_tx_item_cells(it, event_id=event.id) }}
+                        </div>
+                        {% endif %}
+                        {% endfor %}
+                    </div>
+                    {{ admin_tx_delivery_section(tx, 'admin_event_confirm_item_delivery', event_id=event.id, batch_endpoint='admin_event_confirm_items_delivery', writable=event_ops_open(event)) }}
+                    {{ admin_tx_client_section(tx) }}
+                    <div class="admin-tx__summary">
+                        <div class="admin-tx__summary-row">
+                            <span>Forma de pagamento</span>
+                            <strong>{{ tx.payment_method | paymethod(tx.card_installments) }}</strong>
+                        </div>
+                        {% set parcelas_txt = tx.total | parcelas_cartao(tx.payment_method, tx.card_installments) %}
+                        {% if parcelas_txt %}
+                        <div class="admin-tx__summary-row">
+                            <span>Valor das parcelas</span>
+                            <strong>{{ parcelas_txt }}</strong>
+                        </div>
+                        {% endif %}
+                        {% if tx.aut %}
+                        <div class="admin-tx__summary-row">
+                            <span>AUT</span>
+                            <strong><code class="admin-mov__aut">{{ tx.aut }}</code></strong>
+                        </div>
+                        {% endif %}
+                        {{ admin_tx_discount_summary(tx_items, tx.total) }}
+                        <div class="admin-tx__summary-row admin-tx__summary-row--total">
+                            <span>Total da transação</span>
+                            <strong>{{ tx.total | brl }}</strong>
+                        </div>
+                    </div>
+                    <div class="admin-tx__actions">
+                        {{ admin_tx_note_form(tx, 'admin_event_transaction_note', writable=event_ops_open(event), event_id=event.id) }}
+                        {{ admin_tx_pending_actions(tx, writable=True, cancel_endpoint='admin_event_cancel_pending_transaction', show_restore=False, event_id=event.id, variant='button') }}
+                        {% if tx.status == 'confirmado' and event_ops_open(event) %}
+                        <form
+                            method="post"
+                            action="{{ url_for('admin_event_transaction_refund', event_id=event.id, tx_id=tx.id) }}"
+                            onsubmit="return confirm('Estornar este pedido? O estoque será reposto e o valor sairá dos totais de vendas.');"
+                        >
+                            {% include 'partials/csrf_field.html' %}
+                            <button type="submit" class="admin-btn admin-btn--danger admin-btn--sm">
+                                <i class="fa-solid fa-rotate-left" aria-hidden="true"></i>
+                                Estornar venda
+                            </button>
+                        </form>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+        </div>
+        {% endfor %}
+    {% else %}
+        <div class="admin-empty">
+            <i class="fa-regular fa-folder-open" aria-hidden="true"></i>
+            <p>Nenhuma transação encontrada para os filtros aplicados.</p>
+        </div>
+    {% endif %}
+</div>
+
+{% if pagination.total > 0 %}
+<nav class="admin-pagination" aria-label="Paginação das transações">
+    <div class="admin-pagination__nav">
+        {% if pagination.has_prev %}
+        <a class="admin-btn admin-btn--ghost admin-btn--sm"
+           href="{{ url_for('admin_event_transactions', event_id=event.id, pedido=filters.pedido, status=filters.status, entrega=filters.entrega, vendedor=filters.vendedor, data=filters.data, per_page=filters.per_page, page=pagination.page - 1) }}"
+           rel="prev">
+            <i class="fa-solid fa-chevron-left" aria-hidden="true"></i>
+            Anterior
+        </a>
+        {% else %}
+        <span class="admin-pagination__disabled admin-btn admin-btn--ghost admin-btn--sm" aria-disabled="true">
+            <i class="fa-solid fa-chevron-left" aria-hidden="true"></i>
+            Anterior
+        </span>
+        {% endif %}
+        {% if pagination.has_next %}
+        <a class="admin-btn admin-btn--ghost admin-btn--sm"
+           href="{{ url_for('admin_event_transactions', event_id=event.id, pedido=filters.pedido, status=filters.status, entrega=filters.entrega, vendedor=filters.vendedor, data=filters.data, per_page=filters.per_page, page=pagination.page + 1) }}"
+           rel="next">
+            Próxima
+            <i class="fa-solid fa-chevron-right" aria-hidden="true"></i>
+        </a>
+        {% else %}
+        <span class="admin-pagination__disabled admin-btn admin-btn--ghost admin-btn--sm" aria-disabled="true">
+            Próxima
+            <i class="fa-solid fa-chevron-right" aria-hidden="true"></i>
+        </span>
+        {% endif %}
+    </div>
+</nav>
+{% endif %}
