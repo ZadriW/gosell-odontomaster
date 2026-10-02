@@ -287,6 +287,113 @@
     }
 
     /* -------------------------------------------------------------------- */
+    /* Consulta de cliente por CPF                                          */
+    /* -------------------------------------------------------------------- */
+    const lookupUrl = String(window.__CLIENT_LOOKUP_URL__ || '');
+    const lookupNote = document.getElementById('paymentCpfLookup');
+    const LOOKUP_FIELDS = [
+        'name', 'email', 'phone', 'cro_uf', 'cro_numero',
+        'zipcode', 'address', 'number', 'complement', 'city', 'state',
+    ];
+
+    // Campos preenchidos pela última consulta (usado só para saber o que limpar
+    // quando o CPF não tem cliente associado — nesse caso o que o vendedor
+    // digitou à mão não é apagado). Quando o CPF encontra um cliente, os dados
+    // retornados sempre sobrescrevem os campos, mesmo os já preenchidos à mão.
+    let autofilled = new Set();
+    let lookupSeq = 0;
+    let lookupTimer = null;
+    const lookupCache = new Map();
+
+    function formatLookupValue(field, value) {
+        if (field === 'phone') return maskPhone(value);
+        if (field === 'zipcode') return maskCEP(value);
+        if (field === 'cro_numero') return maskCRO(value);
+        if (field === 'cro_uf' || field === 'state') return value.toUpperCase();
+        return value;
+    }
+
+    function applyCustomer(customer) {
+        const filled = new Set();
+        LOOKUP_FIELDS.forEach(field => {
+            const el = form.querySelector(`[name="${field}"]`);
+            if (!el) return;
+            if (customer) {
+                // Cliente encontrado pelo CPF: os dados dele são a fonte da verdade
+                // e sobrescrevem qualquer valor já preenchido no campo.
+                const raw = customer[field] ? String(customer[field]).trim() : '';
+                el.value = raw ? formatLookupValue(field, raw) : '';
+                // UF fora da lista de opções deixa o <select> em '': não conta como preenchido.
+                if (el.value) filled.add(field);
+                return;
+            }
+            // CPF sem cliente associado: só limpa o que a última consulta tinha
+            // preenchido — o que o vendedor digitou à mão não é apagado.
+            if (el.value.trim() && !autofilled.has(field)) return;
+            el.value = '';
+        });
+        autofilled = filled;
+        syncCepButton();
+    }
+
+    function showLookupNote(text, found) {
+        if (!lookupNote) return;
+        lookupNote.textContent = text || '';
+        lookupNote.classList.toggle('payment-cpf-lookup--found', Boolean(found));
+        lookupNote.hidden = !text;
+    }
+
+    function customerNote(customer) {
+        const name = String(customer.name || '').trim() || 'cliente';
+        const orders = Number(customer.orders_count) || 0;
+        const events = Number(customer.events_count) || 0;
+        const parts = [];
+        if (orders > 0) {
+            parts.push(orders === 1 ? '1 compra anterior' : `${orders} compras anteriores`);
+        }
+        if (events > 1) parts.push(`${events} eventos`);
+        const history = parts.length ? ` — ${parts.join(' · ')}` : '';
+        return `Cliente já cadastrado: ${name}${history}. Dados preenchidos automaticamente.`;
+    }
+
+    async function lookupCustomer(cpf) {
+        const digits = cpf.replace(/\D/g, '');
+        if (!lookupUrl || digits.length !== 11 || !validateCPF(digits)) return;
+
+        const seq = ++lookupSeq;
+        let payload = lookupCache.get(digits);
+        if (payload === undefined) {
+            try {
+                const res = await fetch(
+                    `${lookupUrl}?cpf=${encodeURIComponent(digits)}`,
+                    { headers: { Accept: 'application/json' }, cache: 'no-store' },
+                );
+                if (!res.ok || res.redirected) throw new Error('consulta indisponível');
+                payload = await res.json();
+            } catch (_) {
+                // Consulta é conveniência: falhando, o vendedor preenche à mão.
+                return;
+            }
+            lookupCache.set(digits, payload);
+        }
+        // Resposta de um CPF que já não é o digitado no campo.
+        if (seq !== lookupSeq) return;
+
+        if (payload && payload.found && payload.customer) {
+            applyCustomer(payload.customer);
+            showLookupNote(customerNote(payload.customer), true);
+        } else {
+            applyCustomer(null);
+            showLookupNote('CPF sem compras registradas — preencha os dados do cliente.', false);
+        }
+    }
+
+    function scheduleLookup(cpf) {
+        clearTimeout(lookupTimer);
+        lookupTimer = setTimeout(() => lookupCustomer(cpf), 300);
+    }
+
+    /* -------------------------------------------------------------------- */
     /* Disponibilidade da busca (ViaCEP exige internet)                     */
     /* -------------------------------------------------------------------- */
     let cepLookupOnline = false;
@@ -367,10 +474,14 @@
     /* -------------------------------------------------------------------- */
     form.addEventListener('input', event => {
         const input = event.target;
+        // Campo editado à mão deixa de ser candidato a sobrescrita pela consulta.
+        if (input.name !== 'cpf') autofilled.delete(input.name);
         if (input.name === 'cpf') {
             input.value = maskCPF(input.value);
             const valid = validateCPF(input.value);
             input.setCustomValidity(valid ? '' : 'CPF inválido');
+            if (valid) scheduleLookup(input.value);
+            else showLookupNote('', false);
         } else if (input.name === 'cro_numero') {
             input.value = maskCRO(input.value);
         } else if (input.name === 'phone') {
@@ -517,6 +628,16 @@
             `input[name="payment_method"][value="${pmVal}"][form="paymentForm"], #paymentForm input[name="payment_method"][value="${pmVal}"]`,
         );
         if (pmRadio) pmRadio.checked = true;
+    }
+
+    const cpfField = form.querySelector('[name="cpf"]');
+    if (cpfField) {
+        cpfField.addEventListener('blur', () => {
+            clearTimeout(lookupTimer);
+            lookupCustomer(cpfField.value);
+        });
+        // Checkout retomado (dados em sessionStorage): completa o que ficou vazio.
+        if (cpfField.value.trim()) lookupCustomer(cpfField.value);
     }
 
     syncCepButton();

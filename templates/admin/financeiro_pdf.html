@@ -95,10 +95,10 @@
     </section>
     {% endif %}
 
-    {# ── Estoque ────────────────────────────────────────────────────────── #}
+    {# ── Estoque: movimentação, saúde e indicadores ───────────────────────── #}
     <section class="fin-pdf__section">
-        <div class="fin-pdf__section-title">Movimentação de Estoque</div>
-        <div class="fin-pdf__grid-2">
+        <div class="fin-pdf__section-title">Movimentação e Saúde do Estoque</div>
+        <div class="fin-pdf__grid-3">
             <table class="fin-pdf__table">
                 <thead>
                     <tr>
@@ -130,6 +130,55 @@
                 </tbody>
             </table>
 
+            {% set stock_total = report.stock_summary.products_count or 1 %}
+            <table class="fin-pdf__table">
+                <thead>
+                    <tr>
+                        <th>Saúde do estoque</th>
+                        <th class="num">Produtos</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>
+                            <span class="fin-pdf__bar-cell">
+                                <span class="fin-pdf__bar-track">
+                                    <span class="fin-pdf__bar-fill fin-pdf__bar-fill--good" style="width:{{ (report.stock_health.ok / stock_total * 100) | round(1) }}%"></span>
+                                </span>
+                            </span>
+                            Saudável
+                        </td>
+                        <td class="num">{{ report.stock_health.ok }}</td>
+                    </tr>
+                    <tr>
+                        <td>
+                            <span class="fin-pdf__bar-cell">
+                                <span class="fin-pdf__bar-track">
+                                    <span class="fin-pdf__bar-fill fin-pdf__bar-fill--warn" style="width:{{ (report.stock_health.below_min / stock_total * 100) | round(1) }}%"></span>
+                                </span>
+                            </span>
+                            Abaixo do mínimo
+                        </td>
+                        <td class="num {% if report.stock_health.below_min > 0 %}negative{% endif %}">
+                            {{ report.stock_health.below_min }}
+                        </td>
+                    </tr>
+                    <tr>
+                        <td>
+                            <span class="fin-pdf__bar-cell">
+                                <span class="fin-pdf__bar-track">
+                                    <span class="fin-pdf__bar-fill fin-pdf__bar-fill--danger" style="width:{{ (report.stock_health.out_of_stock / stock_total * 100) | round(1) }}%"></span>
+                                </span>
+                            </span>
+                            Sem estoque
+                        </td>
+                        <td class="num {% if report.stock_health.out_of_stock > 0 %}negative{% endif %}">
+                            {{ report.stock_health.out_of_stock }}
+                        </td>
+                    </tr>
+                </tbody>
+            </table>
+
             <table class="fin-pdf__table">
                 <thead>
                     <tr>
@@ -146,22 +195,169 @@
                         <td>Valor em estoque (atual)</td>
                         <td class="num"><strong>{{ report.stock_summary.stock_value | brl }}</strong></td>
                     </tr>
-                    <tr>
-                        <td>Produtos sem estoque</td>
-                        <td class="num {% if report.stock_summary.sem_estoque > 0 %}negative{% endif %}">
-                            {{ report.stock_summary.sem_estoque }}
-                        </td>
-                    </tr>
-                    <tr>
-                        <td>Abaixo do mínimo</td>
-                        <td class="num {% if report.stock_summary.below_min > 0 %}negative{% endif %}">
-                            {{ report.stock_summary.below_min }}
-                        </td>
-                    </tr>
                 </tbody>
             </table>
         </div>
     </section>
+
+    {# ── Receita por dia ───────────────────────────────────────────────── #}
+    {% if report.chart_by_day %}
+    <section class="fin-pdf__section">
+        <div class="fin-pdf__section-title">Receita por Dia</div>
+        <p class="fin-pdf__hint">Série contínua do período — dias sem pedido aparecem com receita zero.</p>
+        {% set max_day_revenue = (report.chart_by_day | map(attribute='revenue') | max) or 1 %}
+        <table class="fin-pdf__table">
+            <thead>
+                <tr>
+                    <th>Data</th>
+                    <th>Participação no período</th>
+                    <th class="num">Pedidos</th>
+                    <th class="num">Receita</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for d in report.chart_by_day %}
+                {% set parts = d.day.split('-') %}
+                <tr>
+                    <td>{{ parts[2] }}/{{ parts[1] }}/{{ parts[0] }}</td>
+                    <td>
+                        <span class="fin-pdf__bar-cell">
+                            <span class="fin-pdf__bar-track">
+                                <span class="fin-pdf__bar-fill" style="width:{{ (d.revenue / max_day_revenue * 100) | round(1) }}%"></span>
+                            </span>
+                        </span>
+                    </td>
+                    <td class="num">{{ d.orders }}</td>
+                    <td class="num"><strong>{{ d.revenue | brl }}</strong></td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </section>
+    {% endif %}
+
+    {# ── Grade: Pedidos por hora + Composição por forma de pagamento ──────── #}
+    <section class="fin-pdf__section">
+        <div class="fin-pdf__grid-2">
+
+            <div>
+                <div class="fin-pdf__section-title">Pedidos por Hora</div>
+                {% set peak_hours = report.chart_by_hour | selectattr('orders', 'gt', 0) | list %}
+                {% if peak_hours %}
+                {% set max_hour_orders = (peak_hours | map(attribute='orders') | max) or 1 %}
+                <p class="fin-pdf__hint">Horas sem pedido confirmado ficam fora da lista.</p>
+                <table class="fin-pdf__table">
+                    <thead>
+                        <tr>
+                            <th>Hora</th>
+                            <th>Pedidos</th>
+                            <th class="num">Receita</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for h in peak_hours %}
+                        <tr>
+                            <td>{{ h.label }}</td>
+                            <td>
+                                <span class="fin-pdf__bar-cell">
+                                    <span class="fin-pdf__bar-track">
+                                        <span class="fin-pdf__bar-fill" style="width:{{ (h.orders / max_hour_orders * 100) | round(1) }}%"></span>
+                                    </span>
+                                    <span class="fin-pdf__bar-pct">{{ h.orders }}</span>
+                                </span>
+                            </td>
+                            <td class="num"><strong>{{ h.revenue | brl }}</strong></td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+                {% else %}
+                <p style="color:#9ca3af;font-size:12px">Sem pedidos confirmados no período.</p>
+                {% endif %}
+            </div>
+
+            <div>
+                <div class="fin-pdf__section-title">Composição por Forma de Pagamento</div>
+                {% if report.payment_methods %}
+                {% set pm_total = (report.payment_methods | sum(attribute='revenue')) or 1 %}
+                <table class="fin-pdf__table">
+                    <thead>
+                        <tr>
+                            <th>Método</th>
+                            <th>% da receita</th>
+                            <th class="num">Pedidos</th>
+                            <th class="num">Receita</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for pm in report.payment_methods %}
+                        <tr>
+                            <td>{{ pm.method | paymethod(None) }}</td>
+                            <td>
+                                <span class="fin-pdf__bar-cell">
+                                    <span class="fin-pdf__bar-track">
+                                        <span class="fin-pdf__bar-fill" style="width:{{ (pm.revenue / pm_total * 100) | round(1) }}%"></span>
+                                    </span>
+                                    <span class="fin-pdf__bar-pct">{{ (pm.revenue / pm_total * 100) | round(1) }}%</span>
+                                </span>
+                            </td>
+                            <td class="num">{{ pm.orders }}</td>
+                            <td class="num"><strong>{{ pm.revenue | brl }}</strong></td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+                {% else %}
+                <p style="color:#9ca3af;font-size:12px">Sem dados de pagamento.</p>
+                {% endif %}
+            </div>
+
+        </div>
+    </section>
+
+    {# ── Receita por marca ─────────────────────────────────────────────── #}
+    {% if report.brands %}
+    <section class="fin-pdf__section">
+        <div class="fin-pdf__section-title">Receita por Marca</div>
+        <p class="fin-pdf__hint">
+            Marca lida a partir do fim do nome do produto (ex.: "Resina X - FGM"); itens sem esse padrão
+            entram em "Sem marca identificada".
+        </p>
+        {% set brand_total = (report.brands | sum(attribute='revenue')) or 1 %}
+        {% set max_brand_revenue = (report.brands | map(attribute='revenue') | max) or 1 %}
+        <table class="fin-pdf__table">
+            <thead>
+                <tr>
+                    <th style="width:30px">#</th>
+                    <th>Marca</th>
+                    <th>Participação</th>
+                    <th class="num">Unidades</th>
+                    <th class="num">Pedidos</th>
+                    <th class="num">Receita</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for b in report.brands %}
+                <tr>
+                    <td class="num" style="color:#9ca3af">{{ loop.index }}</td>
+                    <td><strong>{{ b.brand }}</strong></td>
+                    <td>
+                        <span class="fin-pdf__bar-cell">
+                            <span class="fin-pdf__bar-track">
+                                <span class="fin-pdf__bar-fill" style="width:{{ (b.revenue / max_brand_revenue * 100) | round(1) }}%"></span>
+                            </span>
+                            <span class="fin-pdf__bar-pct">{{ (b.revenue / brand_total * 100) | round(1) }}%</span>
+                        </span>
+                    </td>
+                    <td class="num">{{ b.units }}</td>
+                    <td class="num">{{ b.orders }}</td>
+                    <td class="num"><strong>{{ b.revenue | brl }}</strong></td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </section>
+    {% endif %}
 
     {# ── Top SKUs ───────────────────────────────────────────────────────── #}
     {% if report.top_skus %}
@@ -195,66 +391,6 @@
         </table>
     </section>
     {% endif %}
-
-    {# ── Grade: Pagamentos + Vendas por dia ──────────────────────────────── #}
-    <section class="fin-pdf__section">
-        <div class="fin-pdf__grid-2">
-
-            <div>
-                <div class="fin-pdf__section-title">Formas de Pagamento</div>
-                {% if report.payment_methods %}
-                <table class="fin-pdf__table">
-                    <thead>
-                        <tr>
-                            <th>Método</th>
-                            <th class="num">Pedidos</th>
-                            <th class="num">Receita</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {% for pm in report.payment_methods %}
-                        <tr>
-                            <td>{{ pm.method | paymethod(None) }}</td>
-                            <td class="num">{{ pm.orders }}</td>
-                            <td class="num"><strong>{{ pm.revenue | brl }}</strong></td>
-                        </tr>
-                        {% endfor %}
-                    </tbody>
-                </table>
-                {% else %}
-                <p style="color:#9ca3af;font-size:12px">Sem dados de pagamento.</p>
-                {% endif %}
-            </div>
-
-            <div>
-                <div class="fin-pdf__section-title">Vendas por Dia</div>
-                {% if report.sales_by_day %}
-                <table class="fin-pdf__table">
-                    <thead>
-                        <tr>
-                            <th>Data</th>
-                            <th class="num">Pedidos</th>
-                            <th class="num">Receita</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {% for d in report.sales_by_day | reverse %}
-                        {% set parts = d.day.split('-') %}
-                        <tr>
-                            <td>{{ parts[2] }}/{{ parts[1] }}/{{ parts[0] }}</td>
-                            <td class="num">{{ d.orders }}</td>
-                            <td class="num"><strong>{{ d.revenue | brl }}</strong></td>
-                        </tr>
-                        {% endfor %}
-                    </tbody>
-                </table>
-                {% else %}
-                <p style="color:#9ca3af;font-size:12px">Sem vendas no período.</p>
-                {% endif %}
-            </div>
-
-        </div>
-    </section>
 
     {# ── Desempenho por vendedor ─────────────────────────────────────────── #}
     {% if report.sellers %}

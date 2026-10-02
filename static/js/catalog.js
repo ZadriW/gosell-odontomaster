@@ -3,7 +3,7 @@
 
     const grid = document.getElementById('productGrid');
     if (!grid) return;
-    const cards = Array.from(grid.querySelectorAll('.product-card'));
+    let cards = Array.from(grid.querySelectorAll('.product-card'));
     const searchInput = document.getElementById('searchInput');
     const categoryChips = document.querySelectorAll('.category-chip[data-category]');
     const emptyState = document.getElementById('emptyState');
@@ -543,6 +543,51 @@
         if (priceRoot) priceRoot.innerHTML = renderPricingBlockMarkup(p);
     }
 
+    /**
+     * Acompanha produtos adicionados ou removidos do evento pelo administrador.
+     * Cards novos vêm renderizados pelo servidor (mesmo template da página), e
+     * os cliques continuam funcionando pela delegação de eventos no grid.
+     */
+    async function syncCatalogStructure(catalogIds) {
+        if (!Array.isArray(catalogIds)) return;
+        let wanted = catalogIds.map(String);
+        const onScreen = new Map(cards.map(card => [String(card.dataset.id), card]));
+        const missing = wanted.filter(id => !onScreen.has(id));
+        if (!missing.length && wanted.length === cards.length) return;
+
+        const added = [];
+        let extraProducts = null;
+        if (missing.length) {
+            const sep = PROMO_REFRESH_API.includes('?') ? '&' : '?';
+            const res = await fetch(
+                `${PROMO_REFRESH_API}${sep}cards=${encodeURIComponent(missing.join(','))}`,
+                { credentials: 'same-origin' },
+            );
+            if (!res.ok) return;
+            const data = await res.json();
+            const tpl = document.createElement('template');
+            Object.entries(data.cards || {}).forEach(([id, html]) => {
+                tpl.innerHTML = String(html).trim();
+                const card = tpl.content.querySelector('.product-card');
+                if (!card || onScreen.has(id)) return;
+                onScreen.set(id, card);
+                added.push(card);
+            });
+            // A lista pode ter mudado entre as duas consultas: vale a mais nova.
+            if (Array.isArray(data.catalog_ids)) wanted = data.catalog_ids.map(String);
+            extraProducts = data.products;
+        }
+
+        const keep = new Set(wanted);
+        cards.forEach(card => {
+            if (!keep.has(String(card.dataset.id))) card.remove();
+        });
+        cards = wanted.map(id => onScreen.get(id)).filter(Boolean);
+        added.forEach(card => syncBackorderBlockedUI(card, getBackorderLimitForCard(card)));
+        if (extraProducts) ingestCatalogProducts(extraProducts);
+        applyFilters();
+    }
+
     async function fetchCatalogPromoRefresh() {
         if (!PROMO_REFRESH_API) return;
         try {
@@ -555,6 +600,7 @@
                 );
             }
             ingestCatalogProducts(data.products);
+            await syncCatalogStructure(data.catalog_ids);
         } catch (err) {
             const T = window.TotemApiErrors;
             const msg = T ? T.formatCatchMessage(err) : String(err.message || err);

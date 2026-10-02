@@ -2459,6 +2459,14 @@ def count_transactions_for_event(
     return int(row["c"] if row else 0)
 
 
+#: Colunas ordenáveis da tabela de transações do evento (seta ▲/▼ no cabeçalho).
+_EVENT_TX_SORT_COLUMNS = {
+    "data": "datetime(t.created_at)",
+    "itens": "t.items_count",
+    "total": "t.total",
+}
+
+
 def list_transactions_for_event(
     event_id: int,
     *,
@@ -2469,8 +2477,14 @@ def list_transactions_for_event(
     delivery: Optional[str] = None,
     limit: int = 25,
     offset: int = 0,
+    sort: Optional[str] = None,
+    direction: str = "desc",
 ) -> List[Dict]:
-    """Lista transações do evento com itens (mesmo formato que ``list_transactions``)."""
+    """Lista transações do evento com itens (mesmo formato que ``list_transactions``).
+
+    ``sort`` escolhe a coluna (chave de ``_EVENT_TX_SORT_COLUMNS``); sem
+    correspondência, mantém a ordenação padrão por data (mais recente primeiro).
+    """
     wh, params = _transactions_event_filter_sql_params(
         event_id,
         seller_id=seller_id,
@@ -2481,6 +2495,12 @@ def list_transactions_for_event(
     )
     lim = max(1, int(limit))
     off = max(0, int(offset))
+    sort_col = _EVENT_TX_SORT_COLUMNS.get((sort or "").strip().lower())
+    if sort_col:
+        dir_sql = "ASC" if (direction or "").strip().lower() == "asc" else "DESC"
+        order_sql = f"{sort_col} {dir_sql}, t.id {dir_sql}"
+    else:
+        order_sql = "datetime(t.created_at) DESC, t.id DESC"
     sql = f"""
         SELECT id, order_number, created_at, total, items_count, status,
                seller_id, seller_name, payment_method, card_installments, aut,
@@ -2490,7 +2510,7 @@ def list_transactions_for_event(
                handover_status, handover_confirmed_at, receipt_note
           FROM transactions t
          WHERE {wh}
-         ORDER BY datetime(t.created_at) DESC, t.id DESC
+         ORDER BY {order_sql}
          LIMIT ? OFFSET ?
     """
     qparams = params + [lim, off]
@@ -2511,10 +2531,14 @@ def _transactions_seller_scope_filter_sql_params(
     status: Optional[str] = None,
     on_date: Optional[str] = None,
     delivery: Optional[str] = None,
+    event_id: Optional[int] = None,
 ) -> Tuple[str, List]:
-    """Trecho ``WHERE ...`` para transações de um único vendedor (qualquer ``event_id``)."""
+    """Trecho ``WHERE ...`` para transações de um único vendedor (``event_id`` opcional)."""
     parts = ["t.seller_id = ?"]
     params: List = [int(seller_id)]
+    if event_id:
+        parts.append("t.event_id = ?")
+        params.append(int(event_id))
     ref = _normalize_order_reference(order_search)
     if ref:
         parts.append(
@@ -2548,14 +2572,16 @@ def count_transactions_for_seller(
     status: Optional[str] = None,
     on_date: Optional[str] = None,
     delivery: Optional[str] = None,
+    event_id: Optional[int] = None,
 ) -> int:
-    """Conta transações em que ``seller_id`` coincide (catálogo global / sem filtro de evento)."""
+    """Conta transações em que ``seller_id`` coincide (``event_id`` restringe a um evento)."""
     wh, params = _transactions_seller_scope_filter_sql_params(
         int(seller_id),
         order_search=order_search,
         status=status,
         on_date=on_date,
         delivery=delivery,
+        event_id=event_id,
     )
     sql = f"SELECT COUNT(*) AS c FROM transactions t WHERE {wh}"
     with get_conn() as conn:
@@ -2570,6 +2596,7 @@ def list_transactions_for_seller(
     status: Optional[str] = None,
     on_date: Optional[str] = None,
     delivery: Optional[str] = None,
+    event_id: Optional[int] = None,
     limit: int = 25,
     offset: int = 0,
 ) -> List[Dict]:
@@ -2580,6 +2607,7 @@ def list_transactions_for_seller(
         status=status,
         on_date=on_date,
         delivery=delivery,
+        event_id=event_id,
     )
     lim = max(1, int(limit))
     off = max(0, int(offset))
@@ -2607,7 +2635,7 @@ def list_transactions_for_seller(
         return results
 
 
-def get_stats(seller_id: Optional[int] = None) -> Dict:
+def get_stats(seller_id: Optional[int] = None, event_id: Optional[int] = None) -> Dict:
     """Total de vendas e montante arrecadado (apenas transações confirmadas)."""
     with get_conn() as conn:
         seller_clause = ""
@@ -2617,6 +2645,10 @@ def get_stats(seller_id: Optional[int] = None) -> Dict:
             seller_clause = " AND seller_id = ?"
             params.append(int(seller_id))
             today_params.append(int(seller_id))
+        if event_id:
+            seller_clause += " AND event_id = ?"
+            params.append(int(event_id))
+            today_params.append(int(event_id))
         row = conn.execute(
             f"""
             SELECT

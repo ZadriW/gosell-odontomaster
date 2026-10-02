@@ -924,6 +924,570 @@ a.kpi:hover .kpi__link-arrow,
     color: var(--color-text-muted);
 }
 
+/* ---------- Gráficos analíticos (d3) ---------- */
+.admin-event-dash-sales__charts {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 340px), 1fr));
+    gap: 20px;
+    align-items: start;
+    margin-bottom: 20px;
+}
+
+/* Séries temporais pedem mais largura que os cards de composição. */
+.admin-event-dash-sales__charts--series {
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr));
+}
+
+/* Quatro cards em 2×2: nenhum fica órfão numa linha sozinho. */
+.admin-event-dash-sales__charts--pairs {
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 480px), 1fr));
+}
+
+.admin-chart--wide {
+    grid-column: 1 / -1;
+}
+
+/* ---------- Gráficos do Financeiro e de Clientes (mesmo motor d3) ---------- */
+.admin-fin__charts,
+.admin-cust__charts {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 340px), 1fr));
+    gap: 20px;
+    align-items: start;
+    margin-bottom: 20px;
+}
+
+.admin-fin__charts--series,
+.admin-cust__charts--series {
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr));
+}
+
+/* Quatro cards em 2×2: nenhum fica órfão numa linha sozinho. */
+.admin-cust__charts--pairs {
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 480px), 1fr));
+}
+
+/* Nota do bloco numérico (quando uma parte só não pede gráfico). */
+.admin-chart__note {
+    margin: 4px 0 2px;
+    padding: 12px 14px;
+    border-radius: var(--radius-sm);
+    background: color-mix(in srgb, var(--color-text) 4%, transparent);
+    font-size: 12.5px;
+    line-height: 1.5;
+    color: var(--color-text-muted);
+}
+
+/* Linhas de contexto do bloco numérico — dados de apoio quando só há 1 item para comparar. */
+.admin-chart__statrows {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+    gap: 10px 16px;
+    margin: 10px 0 0;
+}
+
+.admin-chart__statrows dt {
+    font-size: 10.5px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--color-text-muted);
+}
+
+.admin-chart__statrows dd {
+    margin: 2px 0 0;
+    font-size: 13.5px;
+    font-weight: 600;
+    color: var(--color-text);
+}
+
+.admin-chart__footnote {
+    margin: 10px 0 0;
+    padding-top: 10px;
+    border-top: 1px solid var(--color-border);
+    font-size: 12.5px;
+    color: var(--color-text-muted);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.admin-chart__footnote i {
+    color: var(--color-primary);
+    opacity: 0.9;
+}
+
+.admin-chart__footnote strong {
+    color: var(--color-text);
+}
+
+.admin-chart {
+    margin: 0;
+    background: var(--color-surface);
+    border-radius: var(--radius-md);
+    box-shadow: var(--shadow-sm);
+    padding: 18px 20px 16px;
+    min-width: 0;
+}
+
+.admin-chart__head {
+    margin: 0 0 12px;
+    padding: 0;
+}
+
+.admin-chart__title {
+    margin: 0 0 6px;
+    font-size: 15px;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    color: var(--color-text);
+}
+
+.admin-chart__title i {
+    color: var(--color-primary);
+    opacity: 0.9;
+}
+
+.admin-chart__hint {
+    margin: 0;
+    font-size: 12px;
+    color: var(--color-text-muted);
+    line-height: 1.45;
+}
+
+/* Legenda: identidade das séries sem depender de acertar a cor de cabeça. */
+.admin-chart__legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 16px;
+    margin: 0 0 12px;
+}
+
+.admin-chart__legend-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--color-text-muted);
+}
+
+.admin-chart__swatch {
+    width: 10px;
+    height: 10px;
+    border-radius: 3px;
+    flex: 0 0 auto;
+}
+
+/* Número de destaque: a leitura principal do gráfico em uma linha. */
+.admin-chart__headline {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 2px 10px;
+    margin: -2px 0 14px;
+}
+
+.admin-chart__headline-v {
+    font-size: 22px;
+    font-weight: 700;
+    line-height: 1.15;
+    letter-spacing: -0.015em;
+    color: var(--color-text);
+}
+
+.admin-chart__headline-k {
+    font-size: 12px;
+    line-height: 1.4;
+    color: var(--color-text-muted);
+}
+
+.admin-chart__canvas {
+    min-width: 0;
+    line-height: 0;
+}
+
+.admin-chart__canvas svg {
+    display: block;
+    max-width: 100%;
+    overflow: visible;
+    font-family: inherit;
+}
+
+/* D3 aplica font-family: sans-serif via atributo de apresentação nos eixos;
+   sobrescreve aqui para o texto dos gráficos usar a fonte do produto. */
+.admin-chart__canvas svg text {
+    font-family: var(--font-base, 'Inter', sans-serif);
+}
+
+/* Números de eixo alinham na vertical; rótulos avulsos mantêm dígitos proporcionais. */
+.admin-chart__canvas .tick text {
+    font-variant-numeric: tabular-nums;
+}
+
+.admin-chart__canvas--empty {
+    line-height: 1.5;
+    display: grid;
+    place-items: center;
+    min-height: 120px;
+    border: 1px dashed var(--color-border);
+    border-radius: var(--radius-sm);
+}
+
+.admin-chart__empty {
+    margin: 0;
+    padding: 16px;
+    text-align: center;
+    font-size: 13px;
+    color: var(--color-text-muted);
+    max-width: 38ch;
+}
+
+.admin-chart__grid line {
+    opacity: 0.85;
+}
+
+/* Alvo de foco visível sobre as marcas (teclado abre o mesmo tooltip). */
+.admin-chart__canvas :focus {
+    outline: none;
+}
+
+.admin-chart__canvas :focus-visible {
+    outline: 2px solid var(--color-primary);
+    outline-offset: 2px;
+}
+
+/* Marca ativa fica; as vizinhas recuam — o leitor vê o gráfico responder. */
+.admin-chart__mark {
+    transition: opacity 160ms ease;
+}
+
+.admin-chart__mark.is-dim {
+    opacity: 0.35;
+}
+
+.admin-chart__wash {
+    pointer-events: none;
+    transition: opacity 120ms ease;
+}
+
+.admin-chart__hits rect,
+.admin-chart__hits path {
+    cursor: pointer;
+}
+
+.admin-chart__canvas .admin-chart__hits rect:focus-visible {
+    outline-offset: -2px;
+    border-radius: 6px;
+}
+
+.admin-chart__canvas .admin-chart__hits path:focus-visible {
+    outline-offset: -1px;
+}
+
+/* Centro do anel: total em destaque, a mesma hierarquia do número de destaque. */
+.admin-chart__donut-center {
+    pointer-events: none;
+}
+
+.admin-chart__label {
+    pointer-events: none;
+}
+
+/* Detalhamento do anel: é a legenda, com valor e participação. */
+.admin-chart__breakdown {
+    list-style: none;
+    margin: 12px 0 0;
+    padding: 0;
+    display: grid;
+    gap: 2px;
+}
+
+.admin-chart__breakdown-item {
+    display: grid;
+    grid-template-columns: 10px minmax(0, 1fr) auto 52px;
+    align-items: center;
+    gap: 10px;
+    padding: 6px 8px;
+    border-radius: 6px;
+    font-size: 12.5px;
+    transition: background-color 120ms ease, opacity 160ms ease;
+}
+
+.admin-chart__breakdown-item.is-active {
+    background: color-mix(in srgb, var(--color-text) 6%, transparent);
+}
+
+.admin-chart__breakdown-item.is-dim {
+    opacity: 0.5;
+}
+
+.admin-chart__breakdown-label {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-weight: 600;
+    color: var(--color-text);
+}
+
+.admin-chart__breakdown-label i {
+    font-size: 11px;
+    color: var(--color-text-muted);
+}
+
+.admin-chart__breakdown-value,
+.admin-chart__breakdown-pct {
+    text-align: right;
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+}
+
+.admin-chart__breakdown-value {
+    font-weight: 700;
+    color: var(--color-text);
+}
+
+.admin-chart__breakdown-pct {
+    color: var(--color-text-muted);
+}
+
+/* Tabela equivalente: nenhum valor fica acessível só pelo tooltip. */
+.admin-chart__table {
+    margin-top: 14px;
+    border-top: 1px solid var(--color-border);
+    padding-top: 10px;
+}
+
+.admin-chart__table > summary {
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--color-primary);
+    list-style: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.admin-chart__table > summary::-webkit-details-marker {
+    display: none;
+}
+
+.admin-chart__table > summary::before {
+    content: "\f0ce";
+    font-family: "Font Awesome 6 Free";
+    font-weight: 900;
+    font-size: 11px;
+    opacity: 0.8;
+}
+
+.admin-chart__table > summary:focus-visible {
+    outline: 2px solid var(--color-primary);
+    outline-offset: 3px;
+    border-radius: 4px;
+}
+
+.admin-chart__table-scroll {
+    margin-top: 10px;
+    max-height: 260px;
+    overflow: auto;
+}
+
+.admin-chart__table table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+}
+
+.admin-chart__table th,
+.admin-chart__table td {
+    padding: 6px 10px;
+    text-align: left;
+    border-bottom: 1px solid var(--color-border);
+    font-weight: 500;
+    color: var(--color-text);
+}
+
+.admin-chart__table thead th {
+    position: sticky;
+    top: 0;
+    background: var(--color-bg);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--color-text-muted);
+}
+
+.admin-chart__table tbody th {
+    font-weight: 600;
+}
+
+.admin-chart__num {
+    text-align: right !important;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+
+/* Tooltip compartilhado — enriquece a leitura, nunca é o único caminho. */
+.admin-chart__tip {
+    position: fixed;
+    z-index: 4000;
+    pointer-events: none;
+    min-width: 170px;
+    max-width: 280px;
+    padding: 10px 12px 11px;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--color-border);
+    background: var(--color-surface);
+    box-shadow: var(--shadow-md);
+    font-size: 12px;
+    line-height: 1.35;
+    color: var(--color-text);
+}
+
+.admin-chart__tip-title {
+    margin: 0 0 4px;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--color-text-muted);
+    overflow-wrap: anywhere;
+}
+
+/* Valor na frente, nome da métrica atrás; a série é um traço, não uma caixa. */
+.admin-chart__tip-lead {
+    display: flex;
+    align-items: baseline;
+    gap: 7px;
+    margin: 0;
+}
+
+.admin-chart__tip-key {
+    align-self: center;
+    flex: 0 0 auto;
+    width: 12px;
+    height: 3px;
+    border-radius: 2px;
+    background: var(--key);
+}
+
+.admin-chart__tip-key[data-dashed] {
+    -webkit-mask-image: repeating-linear-gradient(90deg, #000 0 4px, transparent 4px 7px);
+    mask-image: repeating-linear-gradient(90deg, #000 0 4px, transparent 4px 7px);
+}
+
+.admin-chart__tip-lead-v {
+    font-size: 17px;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+    color: var(--color-text);
+}
+
+.admin-chart__tip-lead-k {
+    color: var(--color-text-muted);
+}
+
+.admin-chart__tip-grid {
+    display: grid;
+    grid-template-columns: auto auto;
+    gap: 3px 16px;
+    margin-top: 8px;
+    padding-top: 7px;
+    border-top: 1px solid var(--color-border);
+}
+
+.admin-chart__tip-k {
+    color: var(--color-text-muted);
+}
+
+.admin-chart__tip-v {
+    text-align: right;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+}
+
+html.admin-theme--dark .admin-chart__table thead th {
+    background: var(--color-surface);
+}
+
+/* Mobile: gráficos da versão anterior (admin-charts-legacy.js) com o CSS
+   original — swatch, hover por marca e tooltip sem destaque de valor. */
+@media (max-width: 767px) {
+    .admin-chart__swatch {
+        width: 12px;
+        height: 12px;
+        border-radius: 4px;
+    }
+
+    .admin-chart__canvas .tick text {
+        font-variant-numeric: normal;
+    }
+
+    .admin-chart__canvas path[role="graphics-symbol"],
+    .admin-chart__canvas rect[role="graphics-symbol"] {
+        cursor: pointer;
+        transition: opacity var(--transition);
+    }
+
+    .admin-chart__canvas g:hover > path[role="graphics-symbol"]:not(:hover),
+    .admin-chart__canvas g:hover > rect[role="graphics-symbol"]:not(:hover) {
+        opacity: 0.55;
+    }
+
+    .admin-chart__tip {
+        min-width: 0;
+        max-width: 260px;
+        padding: 10px 12px;
+        line-height: normal;
+    }
+
+    .admin-chart__tip-title {
+        margin: 0 0 6px;
+        font-size: 12px;
+        letter-spacing: normal;
+        text-transform: none;
+        color: var(--color-text);
+        overflow-wrap: normal;
+    }
+
+    .admin-chart__tip-grid {
+        gap: 3px 14px;
+        margin-top: 0;
+        padding-top: 0;
+        border-top: 0;
+    }
+
+    /* Carteira de clientes: filtros e tabela voltam a ficar colados aos KPIs
+       (antes eram a mesma seção — gap de 18px, não os 28px entre seções). */
+    .admin-customers-list {
+        margin-top: -10px;
+    }
+}
+
+@media print {
+    .admin-chart__tip {
+        display: none !important;
+    }
+}
+
+@media (max-width: 560px) {
+    .admin-chart {
+        padding: 16px 14px 14px;
+    }
+
+    .admin-chart__table-scroll {
+        max-height: 220px;
+    }
+}
+
 /* ---------- Tabela de transações ---------- */
 .admin-table {
     background: var(--color-surface);
@@ -1273,6 +1837,51 @@ a.kpi:hover .kpi__link-arrow,
 .admin-table__col--num {
     text-align: center;
     font-variant-numeric: tabular-nums;
+}
+
+/* Cabeçalho ordenável: rótulo + 1 seta alternadora (cinza → azul → vermelho).
+   Alinhamento acompanha o da coluna: centralizado quando numérica (--num),
+   à esquerda nas demais (ex.: Data/Hora), como o texto normal do cabeçalho. */
+.admin-table__col--sortable {
+    display: inline-flex;
+    align-items: center;
+    justify-content: flex-start;
+}
+
+.admin-table__col--num.admin-table__col--sortable {
+    justify-content: center;
+}
+
+.admin-table__sort-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    color: inherit;
+    text-decoration: none;
+}
+
+.admin-table__sort-toggle i {
+    font-size: 12px;
+    color: var(--color-text-muted);
+    opacity: 0.6;
+    transition: color 120ms ease, opacity 120ms ease;
+}
+
+.admin-table__sort-toggle:hover i,
+.admin-table__sort-toggle:focus-visible i {
+    opacity: 1;
+}
+
+/* Maior primeiro: azul, apontando para cima. */
+.admin-table__sort-toggle.is-desc i {
+    color: var(--color-primary);
+    opacity: 1;
+}
+
+/* Menor primeiro: vermelho, apontando para baixo. */
+.admin-table__sort-toggle.is-asc i {
+    color: var(--color-danger, #dc2626);
+    opacity: 1;
 }
 
 .admin-table__col--toggle {
@@ -2173,6 +2782,23 @@ html.admin-theme--dark .admin-tx__delivery-check-all {
     justify-content: center;
     flex: 1;
     min-width: 0;
+}
+
+/* ==========================================================================
+   Visibilidade por layout — mesmo corte da navegação inferior (767px).
+   Gráficos e ajustes novos são .admin-desktop-only; o layout anterior,
+   mantido para o mobile, é .admin-mobile-only.
+   ========================================================================== */
+@media (min-width: 768px) {
+    .admin-mobile-only {
+        display: none !important;
+    }
+}
+
+@media (max-width: 767px) {
+    .admin-desktop-only {
+        display: none !important;
+    }
 }
 
 /* ==========================================================================
@@ -5988,6 +6614,25 @@ html.admin-theme--dark .admin-mov__order-link:hover code {
     max-width: 320px;
 }
 
+/* Filtro de evento ao lado do nome, nas páginas do vendedor e do cliente. */
+.admin-seller__title-row,
+.admin-customer__title-row {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px 12px;
+}
+
+.admin-seller__event-filter,
+.admin-customer__event-filter {
+    max-width: 280px;
+}
+
+.admin-seller__event-filter .admin-event-nav__select,
+.admin-customer__event-filter .admin-event-nav__select {
+    max-width: 220px;
+}
+
 .admin-event-nav__badge-icon {
     font-size: 13px;
     flex-shrink: 0;
@@ -8132,152 +8777,8 @@ html.admin-theme--dark .seller-restore-msg {
     }
 }
 
-/* Grid: fluxo de estoque + mini-KPIs */
-.admin-fin__stock-grid {
-    display: grid;
-    grid-template-columns: 1fr minmax(200px, 240px);
-    gap: 20px;
-    align-items: start;
-}
-
-@media (max-width: 860px) {
-    .admin-fin__stock-grid {
-        grid-template-columns: 1fr;
-    }
-}
-
-/* Tabela de fluxo */
-.admin-fin__stock-row {
-    display: grid;
-    grid-template-columns: 1fr auto;
-    gap: 8px;
-    padding: 9px 14px;
-    font-size: 14px;
-    border-bottom: 1px solid var(--color-border);
-    align-items: center;
-}
-
-.admin-fin__stock-row:last-child {
-    border-bottom: none;
-}
-
-.admin-fin__stock-row--header {
-    font-size: 12px;
-    font-weight: 700;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    color: var(--color-text-muted);
-    padding: 6px 14px;
-    background: var(--color-bg);
-}
-
-.admin-fin__stock-row--positive {
-    color: #0c8a4d;
-}
-
-.admin-fin__stock-row--negative {
-    color: #c62828;
-}
-
-.admin-fin__stock-row--total {
-    font-weight: 800;
-    font-size: 15px;
-    background: var(--color-bg);
-    border-top: 2px solid var(--color-border);
-    border-bottom: none;
-    color: var(--color-text);
-}
-
-/* Mini-KPIs de estoque */
-.admin-fin__stock-kpis {
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-}
-
-.admin-fin__stock-kpi {
-    background: var(--color-surface);
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-md);
-    padding: 12px 16px;
-    display: flex;
-    flex-direction: column;
-    gap: 3px;
-}
-
-.admin-fin__stock-kpi--warn {
-    border-color: rgba(232, 148, 32, 0.45);
-    background: rgba(232, 148, 32, 0.06);
-}
-
-.admin-fin__stock-kpi-label {
-    font-size: 12px;
-    font-weight: 600;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
-    color: var(--color-text-muted);
-}
-
-.admin-fin__stock-kpi-value {
-    font-size: 22px;
-    font-weight: 800;
-    color: var(--color-text);
-    font-variant-numeric: tabular-nums;
-}
-
-.admin-fin__stock-kpi-value--hl {
-    color: var(--color-primary);
-}
-
-/* Top SKUs */
-.admin-fin__skus-row {
-    display: grid;
-    grid-template-columns: 32px 100px 1fr 100px 110px 100px;
-    gap: 8px;
-    padding: 10px 16px;
-    font-size: 14px;
-    align-items: center;
-    border-bottom: 1px solid var(--color-border);
-}
-
-.admin-fin__skus-row:last-child {
-    border-bottom: none;
-}
-
-.admin-fin__rank {
-    font-size: 13px;
-    font-weight: 800;
-    color: var(--color-text-muted);
-    text-align: center;
-}
-
-.admin-fin__sku-code {
-    font-size: 12px;
-    background: var(--color-bg);
-    border: 1px solid var(--color-border);
-    border-radius: 6px;
-    padding: 2px 7px;
-    font-weight: 600;
-    letter-spacing: 0.04em;
-}
-
-.admin-fin__prod-name a {
-    color: var(--color-primary);
-    font-weight: 600;
-}
-
-.admin-fin__refund {
-    color: #c62828;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 5px;
-}
-
-/* Linha de pagamento / dia */
-.admin-fin__pm-row,
-.admin-fin__day-row,
-.admin-fin__seller-row {
+/* Linha de pagamento (Formas de pagamento, só mobile) */
+.admin-fin__pm-row {
     display: grid;
     grid-template-columns: 1fr auto auto;
     gap: 8px;
@@ -8287,175 +8788,12 @@ html.admin-theme--dark .seller-restore-msg {
     align-items: center;
 }
 
-.admin-fin__pm-row:last-child,
-.admin-fin__day-row:last-child,
-.admin-fin__seller-row:last-child {
+.admin-fin__pm-row:last-child {
     border-bottom: none;
 }
 
-.admin-fin__pm-row .admin-table__col--num,
-.admin-fin__day-row .admin-table__col--num,
-.admin-fin__seller-row .admin-table__col--num {
+.admin-fin__pm-row .admin-table__col--num {
     min-width: 80px;
-}
-
-/* Grid inferior: 2 colunas */
-.admin-fin__bottom-grid {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 20px;
-    align-items: start;
-}
-
-.admin-fin__section-half {
-    margin: 0;
-}
-
-@media (max-width: 860px) {
-    .admin-fin__bottom-grid {
-        grid-template-columns: 1fr;
-    }
-}
-
-/* Top SKUs — mobile (≤900px): card vertical com rank em círculo */
-@media (max-width: 900px) {
-    .admin-fin__skus-table {
-        background: transparent;
-        box-shadow: none;
-    }
-
-    .admin-fin__skus-table > .admin-table__head {
-        display: none;
-    }
-
-    .admin-fin__skus-row:not(.admin-table__head) {
-        grid-template-columns: 40px 1fr 1fr;
-        grid-template-areas:
-            "rank product product"
-            ".    sku     units"
-            ".    revenue refund";
-        gap: 8px 12px;
-        padding: 14px 16px;
-        margin-bottom: 12px;
-        border: 1px solid var(--color-border);
-        border-radius: var(--radius-md);
-        background: var(--color-surface);
-        box-shadow: 0 10px 24px rgba(15, 23, 42, 0.05);
-        border-bottom: none;
-        align-items: start;
-    }
-
-    .admin-fin__skus-row:not(.admin-table__head):last-child {
-        margin-bottom: 0;
-    }
-
-    .admin-fin__skus-row:not(.admin-table__head) > :nth-child(1) {
-        grid-area: rank;
-        align-self: start;
-        margin-top: 2px;
-        width: 34px;
-        height: 34px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        border-radius: 50%;
-        background: rgba(14, 22, 122, 0.09);
-        font-size: 14px;
-        font-weight: 800;
-        color: var(--color-primary);
-    }
-
-    .admin-fin__skus-row:not(.admin-table__head) > :nth-child(2) {
-        grid-area: sku;
-        align-self: start;
-        min-width: 0;
-    }
-
-    .admin-fin__skus-row:not(.admin-table__head) > :nth-child(2)::before {
-        content: "SKU: ";
-        display: block;
-        font-weight: 700;
-        font-size: 10px;
-        letter-spacing: 0.06em;
-        text-transform: uppercase;
-        color: var(--color-text-muted);
-        margin-bottom: 2px;
-    }
-
-    .admin-fin__skus-row:not(.admin-table__head) > :nth-child(3) {
-        grid-area: product;
-        font-size: 15px;
-        font-weight: 600;
-        line-height: 1.3;
-        min-width: 0;
-    }
-
-    .admin-fin__skus-row:not(.admin-table__head) > .admin-table__col--num {
-        text-align: left;
-        min-width: 0;
-    }
-
-    .admin-fin__skus-row:not(.admin-table__head) > :nth-child(4) {
-        grid-area: units;
-        font-size: 13px;
-        align-self: start;
-    }
-
-    .admin-fin__skus-row:not(.admin-table__head) > :nth-child(4)::before {
-        content: "Unid. vendidas";
-        display: block;
-        font-weight: 700;
-        font-size: 10px;
-        letter-spacing: 0.06em;
-        text-transform: uppercase;
-        color: var(--color-text-muted);
-        margin-bottom: 2px;
-    }
-
-    .admin-fin__skus-row:not(.admin-table__head) > :nth-child(5) {
-        grid-area: revenue;
-        font-size: 13px;
-        align-self: start;
-    }
-
-    .admin-fin__skus-row:not(.admin-table__head) > :nth-child(5)::before {
-        content: "Receita";
-        display: block;
-        font-weight: 700;
-        font-size: 10px;
-        letter-spacing: 0.06em;
-        text-transform: uppercase;
-        color: var(--color-text-muted);
-        margin-bottom: 2px;
-    }
-
-    .admin-fin__skus-row:not(.admin-table__head) > :nth-child(6) {
-        grid-area: refund;
-        font-size: 13px;
-        align-self: start;
-        display: block;
-        text-align: left;
-    }
-
-    .admin-fin__skus-row:not(.admin-table__head) > :nth-child(6)::before {
-        content: "Estornos";
-        display: block;
-        font-weight: 700;
-        font-size: 10px;
-        letter-spacing: 0.06em;
-        text-transform: uppercase;
-        color: var(--color-text-muted);
-        margin-bottom: 2px;
-    }
-
-    .admin-fin__skus-row:not(.admin-table__head) > :nth-child(6).admin-fin__refund {
-        display: block;
-    }
-
-    .admin-fin__skus-row:not(.admin-table__head) > :nth-child(6).admin-fin__refund i {
-        margin-right: 4px;
-        font-size: 12px;
-    }
 }
 
 /* Dark mode */
@@ -8470,40 +8808,6 @@ html.admin-theme--dark .admin-goal-card__bar {
 
 html.admin-theme--dark .admin-goal-card--reached {
     border-color: rgba(52, 211, 153, 0.35);
-}
-
-html.admin-theme--dark .admin-fin__stock-row--header {
-    background: var(--color-bg);
-}
-
-html.admin-theme--dark .admin-fin__stock-row--total {
-    background: var(--color-bg);
-}
-
-html.admin-theme--dark .admin-fin__stock-row--positive {
-    color: var(--admin-success);
-}
-
-html.admin-theme--dark .admin-fin__stock-row--negative {
-    color: var(--admin-danger);
-}
-
-html.admin-theme--dark .admin-fin__stock-kpi--warn {
-    border-color: rgba(232, 148, 32, 0.35);
-    background: var(--admin-warn-bg);
-}
-
-html.admin-theme--dark .admin-fin__refund {
-    color: var(--admin-danger);
-}
-
-html.admin-theme--dark .admin-fin__stock-kpi-value--hl {
-    color: var(--color-primary);
-}
-
-html.admin-theme--dark .admin-fin__sku-code {
-    background: var(--color-bg);
-    border-color: var(--color-border);
 }
 
 /* ==========================================================================
@@ -8653,9 +8957,58 @@ html.admin-theme--dark .admin-fin__sku-code {
 .fin-pdf__table .positive { color: #0c8a4d; }
 .fin-pdf__table .negative { color: #c62828; }
 
+/* Barra de participação dentro da célula — a mesma leitura dos gráficos do
+   dashboard, em HTML/CSS puro, para funcionar de forma confiável na impressão. */
+.fin-pdf__bar-cell {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 140px;
+}
+
+.fin-pdf__bar-track {
+    flex: 1 1 auto;
+    height: 7px;
+    border-radius: 4px;
+    background: #eef0f7;
+    overflow: hidden;
+}
+
+.fin-pdf__bar-fill {
+    display: block;
+    height: 100%;
+    border-radius: 4px;
+    background: #0e167a;
+}
+
+.fin-pdf__bar-fill--good { background: #0c8a4d; }
+.fin-pdf__bar-fill--warn { background: #e89420; }
+.fin-pdf__bar-fill--danger { background: #c62828; }
+
+.fin-pdf__bar-pct {
+    flex: 0 0 auto;
+    min-width: 38px;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    font-size: 11px;
+    color: #6b7280;
+}
+
+.fin-pdf__hint {
+    margin: -6px 0 10px;
+    font-size: 11px;
+    color: #9ca3af;
+}
+
 .fin-pdf__grid-2 {
     display: grid;
     grid-template-columns: 1fr 1fr;
+    gap: 20px;
+}
+
+.fin-pdf__grid-3 {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
     gap: 20px;
 }
 
@@ -8745,10 +9098,7 @@ html.admin-theme--dark .admin-fin__sku-code {
     gap: 10px;
     min-width: 0;
     padding: 5px 12px 5px 6px;
-    background: var(--color-surface);
-    border: 1px solid var(--color-border);
     border-radius: var(--radius-pill, 999px);
-    box-shadow: var(--shadow-sm);
 }
 
 .admin-trail__back {
@@ -8972,11 +9322,24 @@ html.admin-theme--dark .admin-fin__sku-code {
     min-width: 0;
 }
 
-.admin-customers__person strong {
+.admin-customers__person strong,
+.admin-customers__name {
     color: var(--color-text);
+    font-weight: 700;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+}
+
+.admin-customers__name {
+    text-decoration: none;
+}
+
+.admin-customers__name:hover,
+.admin-customers__name:focus-visible {
+    color: var(--color-primary);
+    text-decoration: underline;
+    text-underline-offset: 3px;
 }
 
 .admin-customers__person small,
@@ -9027,6 +9390,22 @@ html.admin-theme--dark .admin-fin__sku-code {
 
 /* ── Perfil do cliente ── */
 
+.admin-customer__tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin: 6px 0 8px;
+}
+
+/* Frases, não rótulos de uma palavra: sem a capitalização padrão do badge. */
+.admin-customer__tags .admin-badge {
+    text-transform: none;
+}
+
+.admin-customer__tags .admin-badge i {
+    margin-right: 4px;
+}
+
 .admin-customer__chips {
     display: flex;
     flex-wrap: wrap;
@@ -9055,12 +9434,13 @@ html.admin-theme--dark .admin-fin__sku-code {
 
 .admin-customer__grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
     gap: 18px;
 }
 
-.admin-customer__grid--quad {
-    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+/* ── Layout anterior do perfil, mantido para o mobile (.admin-mobile-only) ── */
+.admin-customer__grid--tri {
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr));
 }
 
 .admin-customer__share-value {
@@ -9112,6 +9492,12 @@ html.admin-theme--dark .admin-fin__sku-code {
     color: var(--color-text);
 }
 
+.admin-customer__list--legacy .admin-customer__list-value small {
+    font-size: smaller;
+    font-weight: 700;
+    color: var(--color-primary);
+}
+
 .admin-customer__list {
     list-style: none;
     margin: 0;
@@ -9148,10 +9534,16 @@ html.admin-theme--dark .admin-fin__sku-code {
     color: var(--color-text-muted);
 }
 
+.admin-customer__list-value strong {
+    display: block;
+    color: var(--color-text);
+    font-variant-numeric: tabular-nums;
+}
+
 .admin-customer__list-value small {
     display: block;
-    font-weight: 700;
-    color: var(--color-primary);
+    font-size: 12px;
+    font-weight: 500;
 }
 
 .admin-customer__list-empty {

@@ -15,8 +15,33 @@
     'use strict';
 
     const STORAGE_KEY = 'totem_cart_v1';
+    const SCOPE_KEY = 'totem_cart_scope_v1';
+    // Estado de checkout que pertence ao carrinho e cai junto com ele.
+    const CHECKOUT_KEYS = [
+        STORAGE_KEY,
+        'totem_client_data_v1',
+        'totem_resume_pending_tx_id',
+        'totem_checkout_hold_armed_v1',
+    ];
     const EVENT_NAME = 'cart:changed';
     const PromoPricing = () => window.PromoPricing;
+
+    // Carrinho montado por outro vendedor ou em outro evento não é herdado.
+    // Sem escopo salvo (carrinho anterior a esta regra ou recém-restaurado),
+    // o carrinho é adotado pelo escopo atual em vez de descartado.
+    (function enforceScope() {
+        const scope = String(window.__CART_SCOPE__ || '');
+        if (!scope) return;
+        try {
+            const saved = sessionStorage.getItem(SCOPE_KEY);
+            if (saved && saved !== scope) {
+                CHECKOUT_KEYS.forEach(key => sessionStorage.removeItem(key));
+            }
+            sessionStorage.setItem(SCOPE_KEY, scope);
+        } catch (_) {
+            /* storage indisponível — nada a descartar */
+        }
+    })();
 
     function readRaw() {
         try {

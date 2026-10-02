@@ -1,0 +1,156 @@
+{% extends "seller/_layout.html" %}
+
+{% block title %}Movimentações{% if seller_event %} — {{ seller_event.name }}{% endif %} - Vendedor | Dental Odonto Master{% endblock %}
+
+{% block seller_body %}
+{% if seller_event %}
+<div class="seller-event-banner">
+    <i class="fa-solid fa-calendar-star" aria-hidden="true"></i>
+    <span>Suas vendas no evento <strong>{{ seller_event.name }}</strong>. Visualização somente leitura.</span>
+</div>
+{% endif %}
+
+<section class="admin-section">
+    <header class="admin-section__header admin-section__header--row">
+        <div>
+            <h1 class="admin-section__title">Minhas vendas{% if seller_event %} — {{ seller_event.name }}{% endif %}</h1>
+            <p class="admin-section__subtitle">
+                {% if seller_event %}
+                    Vendas confirmadas por você no evento <strong>{{ seller_event.name }}</strong>.
+                    Visualização somente leitura.
+                {% else %}
+                    Histórico das suas vendas registradas no sistema.
+                    Visualização somente leitura.
+                {% endif %}
+            </p>
+        </div>
+    </header>
+
+    <form class="admin-filters" method="get" action="{{ url_for('seller_movements') }}">
+        <label class="admin-filter">
+            <span class="admin-filter__label">Tipo</span>
+            <select name="tipo" class="admin-filter__input">
+                <option value="todos" {% if filters.tipo == 'todos' %}selected{% endif %}>Todos</option>
+                <option value="entrada" {% if filters.tipo == 'entrada' %}selected{% endif %}>Entradas</option>
+                <option value="saida" {% if filters.tipo == 'saida' %}selected{% endif %}>Saídas manuais</option>
+                <option value="venda" {% if filters.tipo == 'venda' %}selected{% endif %}>Vendas</option>
+                <option value="ajuste" {% if filters.tipo == 'ajuste' %}selected{% endif %}>Ajustes</option>
+                {% if not seller_event %}
+                <option value="inicial" {% if filters.tipo == 'inicial' %}selected{% endif %}>Estoque inicial</option>
+                {% endif %}
+            </select>
+        </label>
+
+        <label class="admin-filter admin-filter--search">
+            <span class="admin-filter__label">Buscar</span>
+            <span class="admin-filter__wrap">
+                <i class="fa-solid fa-magnifying-glass admin-filter__icon" aria-hidden="true"></i>
+                <input
+                    type="search"
+                    name="q"
+                    value="{{ filters.q }}"
+                    placeholder="Nome, descrição, SKU ou ID do produto..."
+                    class="admin-filter__input"
+                    autocomplete="off"
+                    inputmode="search"
+                >
+            </span>
+        </label>
+
+        <label class="admin-filter admin-filter--wide">
+            <span class="admin-filter__label">Código do pedido</span>
+            <span class="admin-filter__wrap">
+                <i class="fa-solid fa-receipt admin-filter__icon" aria-hidden="true"></i>
+                <input
+                    type="search"
+                    name="pedido"
+                    value="{{ filters.pedido }}"
+                    class="admin-filter__input"
+                    placeholder="Ex.: OM260422-1234 ou parte do número"
+                    autocomplete="off"
+                    inputmode="search"
+                >
+            </span>
+        </label>
+
+        <div class="admin-filters__actions">
+            <button type="submit" class="admin-btn admin-btn--primary">
+                <i class="fa-solid fa-filter" aria-hidden="true"></i>
+                Aplicar
+            </button>
+            <a href="{{ url_for('seller_movements') }}" class="admin-btn admin-btn--ghost">Limpar</a>
+            <button type="submit"
+                    formaction="{{ url_for('seller_movements_pdf') }}"
+                    formtarget="_blank"
+                    class="admin-btn admin-btn--ghost">
+                <i class="fa-solid fa-file-pdf" aria-hidden="true"></i>
+                Exportar PDF
+            </button>
+        </div>
+    </form>
+
+    <div class="admin-table" role="table" aria-label="Minhas vendas">
+        <div class="admin-table__head admin-mov__row admin-mov__row--wide {% if not seller_event %}admin-mov__row--wide-events{% endif %}" role="row">
+            <span role="columnheader">Data/Hora</span>
+            <span role="columnheader">Produto</span>
+            <span role="columnheader">Tipo</span>
+            {% if not seller_event %}
+            <span role="columnheader" class="admin-table__col--num">Evento</span>
+            {% endif %}
+            <span role="columnheader" class="admin-table__col--num">Delta</span>
+            <span role="columnheader" class="admin-table__col--num">Saldo após</span>
+            <span role="columnheader">Motivo / Ref.</span>
+            <span role="columnheader">Usuário</span>
+        </div>
+
+        {% if movements %}
+            {% for m in movements %}
+            <div class="admin-mov__wrapper" data-movement-id="{{ m.id }}">
+                <div class="admin-mov__row admin-mov__row--wide {% if not seller_event %}admin-mov__row--wide-events{% endif %}" role="row">
+                    <span>{{ m.created_at | datahora }}</span>
+                    <span class="admin-mov__product">
+                        <span>{{ m.product_name or '—' }}</span>
+                        <small>#{{ m.product_id }}{% if m.product_sku %} &middot; <code class="admin-mov__sku">{{ m.product_sku }}</code>{% endif %} &middot; {{ m.product_category or '-' }}</small>
+                    </span>
+                    <span class="admin-mov__type-cell">
+                        <span class="admin-badge admin-mov__badge admin-mov__badge--{{ m.movement_type }}">
+                            {{ m.movement_type | movlabel }}
+                        </span>
+                    </span>
+                    {% if not seller_event %}
+                    <span class="admin-mov__event-cell">
+                        {% if m.event_id and m.event_name %}
+                            {% set row_ev_style = m.event_badge_color | event_badge_style %}
+                            <span class="admin-nav__event-badge admin-mov__event-badge" title="Evento #{{ m.event_id }}"{% if row_ev_style %} style="{{ row_ev_style }}"{% endif %}>
+                                {{ m.event_name }}
+                            </span>
+                        {% elif m.event_id %}
+                            <span class="admin-mov__event-unknown" title="Evento #{{ m.event_id }} (cadastro indisponível)">#{{ m.event_id }}</span>
+                        {% else %}
+                            <span class="admin-mov__event-none" title="Movimentação no estoque global do catálogo (sem evento)">—</span>
+                        {% endif %}
+                    </span>
+                    {% endif %}
+                    <span class="admin-table__col--num admin-mov__delta admin-mov__delta--{% if m.delta > 0 %}positive{% else %}negative{% endif %}">
+                        {{ m.delta | signed }}
+                    </span>
+                    <span class="admin-table__col--num"><strong>{{ m.balance_after }}</strong></span>
+                    <span class="admin-mov__reason">
+                        {% if m.reference %}<code>{{ m.reference }}</code>{% endif %}
+                        {{ m.reason or '-' }}
+                    </span>
+                    <span class="admin-mov__user-cell">
+                        {{ m.created_by | display_created_by or '-' }}
+                    </span>
+                </div>
+            </div>
+            {% endfor %}
+        {% else %}
+            <div class="admin-empty">
+                <i class="fa-regular fa-folder-open" aria-hidden="true"></i>
+                <p>Nenhuma movimentação encontrada para os filtros aplicados.</p>
+            </div>
+        {% endif %}
+    </div>
+</section>
+{% endblock %}

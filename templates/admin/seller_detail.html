@@ -15,7 +15,43 @@
 <section class="admin-section">
     <header class="admin-section__header admin-section__header--row">
         <div>
-            <h1 class="admin-section__title">{{ seller.name }}</h1>
+            <div class="admin-seller__title-row">
+                <h1 class="admin-section__title">{{ seller.name }}</h1>
+                {% if seller_events | length > 1 %}
+                {# Filtro de evento: recorta KPIs, análise e vendas desta página. #}
+                {% set sel_ev = (seller_events | selectattr('id', 'equalto', seller_event_filter) | first) if seller_event_filter else none %}
+                {% set sel_label = sel_ev.name if sel_ev else 'Todos os eventos' %}
+                {% set sel_style = (sel_ev.badge_color | event_badge_style) if sel_ev else '' %}
+                <span class="admin-event-nav__badge admin-seller__event-filter"
+                      {% if sel_style %}style="{{ sel_style }}"{% endif %}>
+                    <i class="fa-solid fa-calendar-star admin-event-nav__badge-icon" aria-hidden="true"></i>
+                    <select
+                        class="admin-event-nav__select"
+                        aria-label="Filtrar os dados do vendedor por evento"
+                        title="Filtrar os dados do vendedor por evento"
+                        style="width: {{ [sel_label | length + 1, 8] | max }}ch"
+                        onchange="window.location.href = this.value"
+                    >
+                        <option value="{{ url_for('admin_seller_detail', seller_id=seller.id) }}"
+                                {% if not seller_event_filter %}selected{% endif %}>Todos os eventos</option>
+                        {% for ev in seller_events %}
+                        <option value="{{ url_for('admin_seller_detail', seller_id=seller.id, evento=ev.id) }}"
+                                {% if ev.id == seller_event_filter %}selected{% endif %}
+                        >{{ ev.name }}{% if not ev.active %} (arquivado){% elif ev.operations_closed %} (encerrado){% endif %}</option>
+                        {% endfor %}
+                    </select>
+                    <i
+                        class="fa-solid fa-chevron-down admin-event-nav__chevron"
+                        role="button"
+                        tabindex="0"
+                        title="Abrir lista de eventos do vendedor"
+                        aria-label="Abrir lista de eventos do vendedor"
+                        onclick="var s=this.previousElementSibling;if(s&&s.tagName==='SELECT'){if(typeof s.showPicker==='function'){s.showPicker();}else{s.focus();s.click();}}"
+                        onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();this.click();}"
+                    ></i>
+                </span>
+                {% endif %}
+            </div>
             <p class="admin-section__subtitle">
                 {{ seller.username or seller.email }} &middot;
                 {% if seller.active %}Conta ativa{% else %}Conta inativa{% endif %} &middot;
@@ -58,6 +94,112 @@
             </span>
             <span class="kpi__hint">Por venda vinculada</span>
         </article>
+
+        {% set iv = analytics.intervals %}
+        <article class="kpi">
+            <span class="kpi__icon"><i class="fa-regular fa-clock" aria-hidden="true"></i></span>
+            <span class="kpi__label">Periodicidade</span>
+            <span class="kpi__value">{{ iv.avg_days | periodicidade if iv.count else '—' }}</span>
+            <span class="kpi__hint">
+                {% if iv.count %}
+                    Média entre vendas &middot; mediana {{ iv.median_days | periodicidade }}
+                {% else %}
+                    Sem duas vendas no mesmo dia de evento
+                {% endif %}
+            </span>
+        </article>
+    </div>
+</section>
+
+{# ── Análise do vendedor (d3) ── #}
+<section class="admin-section">
+    <header class="admin-section__header admin-section__header--row admin-section__header--collapsible">
+        <div>
+            <h2 class="admin-section__title">
+                <i class="fa-solid fa-chart-column admin-desktop-only" aria-hidden="true"></i>
+                Análise do vendedor
+            </h2>
+            <p class="admin-section__subtitle">
+                Vendas pagas de {{ analytics.totals.days }} dia(s) de evento
+                {% if analytics.totals.events > 1 %}em {{ analytics.totals.events }} eventos{% endif %}.
+                Pendentes, estornos e cancelamentos não entram.
+            </p>
+        </div>
+        <button
+            type="button"
+            class="admin-section__collapse-toggle"
+            aria-expanded="false"
+            aria-controls="seller-analytics-panel"
+            aria-label="Exibir ou ocultar a análise do vendedor"
+        >
+            <i class="fa-solid fa-chevron-down" aria-hidden="true"></i>
+        </button>
+    </header>
+
+    <div id="seller-analytics-panel" class="admin-section__panel" hidden>
+    <div class="admin-cust__charts admin-cust__charts--series">
+        <figure class="admin-chart admin-chart--wide" data-admin-chart="seller-by-day">
+            <figcaption class="admin-chart__head">
+                <h3 class="admin-chart__title">
+                    <i class="fa-solid fa-calendar-day" aria-hidden="true"></i>
+                    Vendas por dia de evento
+                </h3>
+                <p class="admin-chart__hint">
+                    Quanto o vendedor faturou em cada dia. Passe o mouse para ver vendas, ticket e ritmo do dia.
+                </p>
+            </figcaption>
+        </figure>
+    </div>
+
+    <div class="admin-cust__charts admin-cust__charts--series">
+        <figure class="admin-chart admin-desktop-only" data-admin-chart="seller-intervals">
+            <figcaption class="admin-chart__head">
+                <h3 class="admin-chart__title">
+                    <i class="fa-regular fa-clock" aria-hidden="true"></i>
+                    Periodicidade entre vendas
+                </h3>
+                <p class="admin-chart__hint">
+                    Quanto tempo passou entre uma venda e a seguinte, por faixa.
+                </p>
+            </figcaption>
+        </figure>
+
+        {# Celular: sem gráfico de faixas — os números do ritmo em lista. #}
+        <article class="admin-card admin-mobile-only">
+            <header class="admin-card__header">
+                <i class="fa-regular fa-clock admin-card__icon" aria-hidden="true"></i>
+                <div>
+                    <h3 class="admin-card__title">Periodicidade entre vendas</h3>
+                    <p class="admin-card__subtitle">Entre vendas do mesmo evento, no mesmo dia.</p>
+                </div>
+            </header>
+            {% if iv.count %}
+            <dl class="admin-customer__dl admin-customer__dl--cols">
+                <div><dt>Intervalo médio</dt><dd>{{ iv.avg_days | periodicidade }}</dd></div>
+                <div><dt>Mediana</dt><dd>{{ iv.median_days | periodicidade }}</dd></div>
+                <div><dt>Menor intervalo</dt><dd>{{ iv.min_days | periodicidade }}</dd></div>
+                <div><dt>Maior intervalo</dt><dd>{{ iv.max_days | periodicidade }}</dd></div>
+            </dl>
+            {% else %}
+            <div class="admin-empty">
+                <i class="fa-regular fa-calendar" aria-hidden="true"></i>
+                <p>Ainda não há duas vendas no mesmo dia de evento para medir.</p>
+            </div>
+            {% endif %}
+        </article>
+
+        <figure class="admin-chart" data-admin-chart="seller-payment-mix">
+            <figcaption class="admin-chart__head">
+                <h3 class="admin-chart__title">
+                    <i class="fa-solid fa-credit-card" aria-hidden="true"></i>
+                    Formas de pagamento
+                </h3>
+                <p class="admin-chart__hint">
+                    Participação de cada meio de pagamento no faturamento do vendedor.
+                </p>
+            </figcaption>
+        </figure>
+    </div>
     </div>
 </section>
 
@@ -267,13 +409,14 @@
         </label>
 
         <input type="hidden" name="page" value="1" aria-hidden="true">
+        {% if filters.evento %}<input type="hidden" name="evento" value="{{ filters.evento }}" aria-hidden="true">{% endif %}
 
         <div class="admin-filters__actions">
             <button type="submit" class="admin-btn admin-btn--primary">
                 <i class="fa-solid fa-filter" aria-hidden="true"></i>
                 Aplicar
             </button>
-            <a href="{{ url_for('admin_seller_detail', seller_id=seller.id) }}" class="admin-btn admin-btn--ghost">Limpar</a>
+            <a href="{{ url_for('admin_seller_detail', seller_id=seller.id, evento=filters.evento) }}" class="admin-btn admin-btn--ghost">Limpar</a>
         </div>
     </form>
 
@@ -437,7 +580,7 @@
         <div class="admin-pagination__nav">
             {% if pagination.has_prev %}
             <a class="admin-btn admin-btn--ghost admin-btn--sm"
-               href="{{ url_for('admin_seller_detail', seller_id=seller.id, pedido=filters.pedido, status=filters.status, entrega=filters.entrega, data=filters.data, per_page=filters.per_page, page=pagination.page - 1) }}"
+               href="{{ url_for('admin_seller_detail', seller_id=seller.id, pedido=filters.pedido, status=filters.status, entrega=filters.entrega, data=filters.data, per_page=filters.per_page, evento=filters.evento, page=pagination.page - 1) }}"
                rel="prev">
                 <i class="fa-solid fa-chevron-left" aria-hidden="true"></i>
                 Anterior
@@ -450,7 +593,7 @@
             {% endif %}
             {% if pagination.has_next %}
             <a class="admin-btn admin-btn--ghost admin-btn--sm"
-               href="{{ url_for('admin_seller_detail', seller_id=seller.id, pedido=filters.pedido, status=filters.status, entrega=filters.entrega, data=filters.data, per_page=filters.per_page, page=pagination.page + 1) }}"
+               href="{{ url_for('admin_seller_detail', seller_id=seller.id, pedido=filters.pedido, status=filters.status, entrega=filters.entrega, data=filters.data, per_page=filters.per_page, evento=filters.evento, page=pagination.page + 1) }}"
                rel="next">
                 Próxima
                 <i class="fa-solid fa-chevron-right" aria-hidden="true"></i>
@@ -468,6 +611,11 @@
 {% endblock %}
 
 {% block admin_scripts %}
+{# Séries da análise do vendedor: JSON inerte lido por admin-charts.js. #}
+<script type="application/json" id="event-analytics-data">{{ charts | tojson }}</script>
+<script src="{{ url_for('static', filename='vendor/d3/d3.min.js') }}"></script>
+<script src="{{ url_for('static', filename='js/admin-charts-legacy.js') }}"></script>
+<script src="{{ url_for('static', filename='js/admin-charts.js') }}"></script>
 <script>
 (function () {
     function bindToggle(inputId, btnId, labelShow, labelHide) {

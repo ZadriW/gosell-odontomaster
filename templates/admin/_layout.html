@@ -89,6 +89,11 @@
                     <i class="fa-solid fa-tag" aria-hidden="true"></i>
                     <span>Promoções</span>
                 </a>
+                <a class="admin-nav__item {% if active_section == 'clientes' %}is-active{% endif %}"
+                   href="{{ url_for('admin_event_customers', event_id=event.id) }}" title="Clientes do {{ event|op_noun(lower=True) }}">
+                    <i class="fa-solid fa-address-book" aria-hidden="true"></i>
+                    <span>Clientes</span>
+                </a>
             </div>
         </nav>
         {% else %}
@@ -109,11 +114,6 @@
                    href="{{ url_for('admin_sellers') }}">
                     <i class="fa-solid fa-users" aria-hidden="true"></i>
                     Vendedores
-                </a>
-                <a class="admin-nav__item {% if active_section == 'clientes' %}is-active{% endif %}"
-                   href="{{ url_for('admin_customers') }}">
-                    <i class="fa-solid fa-address-book" aria-hidden="true"></i>
-                    Clientes
                 </a>
                 <a class="admin-nav__item {% if active_section == 'financeiro' %}is-active{% endif %}"
                    href="{{ url_for('admin_financeiro') }}">
@@ -207,6 +207,11 @@
             <i class="fa-solid fa-tag" aria-hidden="true"></i>
             <span class="admin-bottom-nav__badge">Promoções</span>
         </a>
+        <a class="admin-bottom-nav__item {% if active_section == 'clientes' %}is-active{% endif %}"
+           href="{{ url_for('admin_event_customers', event_id=event.id) }}" title="Clientes do {{ event|op_noun(lower=True) }}">
+            <i class="fa-solid fa-address-book" aria-hidden="true"></i>
+            <span class="admin-bottom-nav__badge">Clientes</span>
+        </a>
         {% else %}
         <a class="admin-bottom-nav__item {% if active_section == 'produtos' %}is-active{% endif %}"
            href="{{ url_for('admin_products') }}">
@@ -222,11 +227,6 @@
            href="{{ url_for('admin_sellers') }}">
             <i class="fa-solid fa-users" aria-hidden="true"></i>
             <span class="admin-bottom-nav__badge">Vendedores</span>
-        </a>
-        <a class="admin-bottom-nav__item {% if active_section == 'clientes' %}is-active{% endif %}"
-           href="{{ url_for('admin_customers') }}">
-            <i class="fa-solid fa-address-book" aria-hidden="true"></i>
-            <span class="admin-bottom-nav__badge">Clientes</span>
         </a>
         <a class="admin-bottom-nav__item {% if active_section == 'financeiro' %}is-active{% endif %}"
            href="{{ url_for('admin_financeiro') }}">

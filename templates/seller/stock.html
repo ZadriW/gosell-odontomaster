@@ -61,6 +61,8 @@
         </label>
 
         <input type="hidden" name="page" value="1" aria-hidden="true">
+        <input type="hidden" name="sort" value="{{ filters.sort }}" aria-hidden="true">
+        <input type="hidden" name="dir" value="{{ filters.dir }}" aria-hidden="true">
 
         <div class="admin-filters__actions">
             <button type="submit" class="admin-btn admin-btn--primary">
@@ -145,10 +147,18 @@
     >
         <div class="admin-table__head admin-stock__row" role="row">
             <span role="columnheader">Produto</span>
-            <span class="admin-table__col--num" role="columnheader"
-                  title="{% if seller_event %}Suas unidades vendidas deste produto neste evento (pedidos confirmados){% else %}Suas unidades vendidas deste produto (pedidos confirmados){% endif %}">Vendas</span>
-            <span class="admin-table__col--num" role="columnheader">Estoque</span>
-            <span class="admin-table__col--num" role="columnheader">Mínimo</span>
+            {% if seller_event %}
+                {% from "macros/admin_stock_sort.html" import stock_sort_header %}
+                {% set sort_args = {'q': filters.q, 'status': filters.status, 'per_page': filters.per_page} %}
+                {{ stock_sort_header('Vendas', 'vendas', 'seller_stock', sort_args, filters.sort, filters.dir, title='Suas unidades vendidas deste produto neste evento (pedidos confirmados)') }}
+                {{ stock_sort_header('Estoque', 'estoque', 'seller_stock', sort_args, filters.sort, filters.dir) }}
+                {{ stock_sort_header('Mínimo', 'minimo', 'seller_stock', sort_args, filters.sort, filters.dir) }}
+            {% else %}
+                <span class="admin-table__col--num" role="columnheader"
+                      title="Suas unidades vendidas deste produto (pedidos confirmados)">Vendas</span>
+                <span class="admin-table__col--num" role="columnheader">Estoque</span>
+                <span class="admin-table__col--num" role="columnheader">Mínimo</span>
+            {% endif %}
             <span role="columnheader">Situação</span>
             <span role="columnheader" class="admin-stock__actions-head">Ações</span>
         </div>
@@ -232,7 +242,7 @@
         <div class="admin-pagination__nav">
             {% if pagination.has_prev %}
             <a class="admin-btn admin-btn--ghost admin-btn--sm"
-               href="{{ url_for('seller_stock', q=filters.q, status=filters.status, per_page=filters.per_page, page=pagination.page - 1) }}"
+               href="{{ url_for('seller_stock', q=filters.q, status=filters.status, per_page=filters.per_page, sort=filters.sort, dir=filters.dir, page=pagination.page - 1) }}"
                rel="prev">
                 <i class="fa-solid fa-chevron-left" aria-hidden="true"></i>
                 Anterior
@@ -245,7 +255,7 @@
             {% endif %}
             {% if pagination.has_next %}
             <a class="admin-btn admin-btn--ghost admin-btn--sm"
-               href="{{ url_for('seller_stock', q=filters.q, status=filters.status, per_page=filters.per_page, page=pagination.page + 1) }}"
+               href="{{ url_for('seller_stock', q=filters.q, status=filters.status, per_page=filters.per_page, sort=filters.sort, dir=filters.dir, page=pagination.page + 1) }}"
                rel="next">
                 Próxima
                 <i class="fa-solid fa-chevron-right" aria-hidden="true"></i>

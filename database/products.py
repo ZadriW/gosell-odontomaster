@@ -898,12 +898,16 @@ def summarize_catalog_option_groups(products: List[Dict]) -> None:
         pending = sum(int(c.get("pending_delivery_units") or 0) for c in children)
         p["pending_delivery_units"] = max(int(p.get("pending_delivery_units") or 0), pending)
         if any(c.get("em_promocao") for c in children) and not p.get("em_promocao"):
+            # Só empresta o *aviso* (selo no card-pai) de uma variante promovida.
+            # Nunca copia `promo_tipo`/quantidades: o card-pai é ele mesmo uma opção
+            # selecionável (é o primeiro item de `opcoes`) e, sem promoção própria,
+            # herdar só o tipo faria o motor de preços tratá-lo como pacote real com
+            # min_qty/rule_value zerados — um "pacote de 2 por R$ 0,00" fantasma.
             p["em_promocao"] = True
             for c in children:
                 if c.get("promo_badge"):
                     p["promo_badge"] = c.get("promo_badge") or ""
                     p["promo_nome"] = c.get("promo_nome") or ""
-                    p["promo_tipo"] = c.get("promo_tipo") or ""
                     break
 
 

@@ -25,12 +25,14 @@
 {% include 'partials/admin_tx_legend.html' %}
 
 <div class="admin-table admin-table--tx-wide" role="table" aria-label="Histórico de transações do {{ event|op_noun(lower=True) }}">
+    {% from "macros/admin_stock_sort.html" import stock_sort_header %}
+    {% set tx_sort_args = {'event_id': event.id, 'pedido': filters.pedido, 'status': filters.status, 'entrega': filters.entrega, 'vendedor': filters.vendedor, 'data': filters.data, 'per_page': filters.per_page, 'sort': filters.sort, 'dir': filters.dir} %}
     <div class="admin-table__head" role="row">
         <span class="admin-table__col admin-table__col--toggle" aria-hidden="true"></span>
         <span class="admin-table__col" role="columnheader">Pedido</span>
-        <span class="admin-table__col" role="columnheader">Data/Hora</span>
-        <span class="admin-table__col admin-table__col--num" role="columnheader">Itens</span>
-        <span class="admin-table__col" role="columnheader">Total</span>
+        {{ stock_sort_header('Data/Hora', 'data', 'admin_event_transactions', tx_sort_args, filters.sort, filters.dir, col_class='admin-table__col') }}
+        {{ stock_sort_header('Itens', 'itens', 'admin_event_transactions', tx_sort_args, filters.sort, filters.dir, col_class='admin-table__col admin-table__col--num') }}
+        {{ stock_sort_header('Total', 'total', 'admin_event_transactions', tx_sort_args, filters.sort, filters.dir, col_class='admin-table__col admin-table__col--num') }}
         <span class="admin-table__col" role="columnheader">Pagamento</span>
         <span class="admin-table__col" role="columnheader">Vendedor</span>
         <span class="admin-table__col" role="columnheader">Status</span>
@@ -172,7 +174,7 @@
     <div class="admin-pagination__nav">
         {% if pagination.has_prev %}
         <a class="admin-btn admin-btn--ghost admin-btn--sm"
-           href="{{ url_for('admin_event_transactions', event_id=event.id, pedido=filters.pedido, status=filters.status, entrega=filters.entrega, vendedor=filters.vendedor, data=filters.data, per_page=filters.per_page, page=pagination.page - 1) }}"
+           href="{{ url_for('admin_event_transactions', **dict(tx_sort_args, page=pagination.page - 1)) }}"
            rel="prev">
             <i class="fa-solid fa-chevron-left" aria-hidden="true"></i>
             Anterior
@@ -185,7 +187,7 @@
         {% endif %}
         {% if pagination.has_next %}
         <a class="admin-btn admin-btn--ghost admin-btn--sm"
-           href="{{ url_for('admin_event_transactions', event_id=event.id, pedido=filters.pedido, status=filters.status, entrega=filters.entrega, vendedor=filters.vendedor, data=filters.data, per_page=filters.per_page, page=pagination.page + 1) }}"
+           href="{{ url_for('admin_event_transactions', **dict(tx_sort_args, page=pagination.page + 1)) }}"
            rel="next">
             Próxima
             <i class="fa-solid fa-chevron-right" aria-hidden="true"></i>

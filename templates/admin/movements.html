@@ -118,6 +118,24 @@
                 Aplicar
             </button>
             <a href="{{ url_for('admin_event_movements', event_id=event.id) }}" class="admin-btn admin-btn--ghost">Limpar</a>
+            <a
+                href="{{ url_for('admin_event_movements_export_xlsx', event_id=event.id, **qargs) }}"
+                class="admin-btn admin-btn--ghost"
+                title="Exporta as movimentações filtradas como planilha .xlsx"
+            >
+                <i class="fa-solid fa-file-excel" aria-hidden="true"></i>
+                Exportar Planilha
+            </a>
+            <a
+                href="{{ url_for('admin_event_movements_pdf', event_id=event.id, **qargs) }}"
+                class="admin-btn admin-btn--ghost"
+                target="_blank"
+                rel="noopener"
+                title="Gera um relatório para impressão/PDF com as movimentações filtradas"
+            >
+                <i class="fa-solid fa-print" aria-hidden="true"></i>
+                Imprimir / Gerar PDF
+            </a>
         </div>
     </form>
 

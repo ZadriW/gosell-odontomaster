@@ -1325,6 +1325,23 @@ button.payment__back {
     opacity: 0.28;
 }
 
+.payment-cpf-lookup {
+    grid-column: span 2;
+    margin-top: -6px;
+    padding: 8px 12px;
+    border-radius: var(--radius-sm);
+    background: var(--color-bg);
+    border-left: 3px solid var(--color-border);
+    font-size: 13px;
+    color: var(--color-text-muted);
+}
+
+.payment-cpf-lookup--found {
+    border-left-color: #16a34a;
+    color: #16a34a;
+    font-weight: 600;
+}
+
 .payment-field__loading {
     display: flex;
     gap: 8px;
@@ -1414,7 +1431,8 @@ button.payment__back {
     .payment-field--wide,
     .payment-field--half,
     .payment-field--quarter,
-    .payment-field--three-quarters {
+    .payment-field--three-quarters,
+    .payment-cpf-lookup {
         grid-column: span 1;
         max-width: none;
     }

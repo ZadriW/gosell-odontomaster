@@ -54,14 +54,18 @@
                     <input
                         type="text"
                         name="cpf"
+                        id="paymentCpf"
                         class="payment-field__input"
                         placeholder="000.000.000-00"
                         required
                         maxlength="14"
                         inputmode="numeric"
                         autocomplete="off"
+                        aria-describedby="paymentCpfLookup"
                     >
                 </label>
+
+                <p class="payment-cpf-lookup" id="paymentCpfLookup" role="status" aria-live="polite" hidden></p>
 
                 <label class="payment-field">
                     <span class="payment-field__label">E-mail</span>
@@ -426,7 +430,9 @@
 {% set boot_payload = {
     '__TOTEM_FLOW__': totem_flow or {},
     '__SELLER_BACKORDER__': seller_backorder or false,
-    '__CHECKOUT_HOLD_MODE__': 'publish'
+    '__CART_SCOPE__': totem_cart_scope(),
+    '__CHECKOUT_HOLD_MODE__': 'publish',
+    '__CLIENT_LOOKUP_URL__': client_lookup_url or ''
 } %}
 {% include 'partials/json_boot.html' %}
 <script src="{{ url_for('static', filename='js/promo-pricing.js') }}"></script>

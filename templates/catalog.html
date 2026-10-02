@@ -1,6 +1,6 @@
 {% extends "seller/_layout.html" %}
 
-{% block title %}Venda — catálogo | Vendedor | Dental Odonto Master{% endblock %}
+{% block title %}Venda - catálogo | Vendedor | Dental Odonto Master{% endblock %}
 
 {% block admin_main_class %}admin-main--catalog-embed{% endblock %}
 
@@ -19,6 +19,7 @@
 <script src="{{ url_for('static', filename='js/totem-api-errors.js') }}"></script>
 {% set boot_payload = {
     '__SELLER_BACKORDER__': true,
+    '__CART_SCOPE__': totem_cart_scope(),
     '__TOTEM_FLOW__': totem_flow,
     '__PRODUCTS__': products,
     '__CATALOG_STOCK_API__': catalog_stock_api_url,

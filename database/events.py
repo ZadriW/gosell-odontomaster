@@ -1,8 +1,10 @@
 """Events, event–product links, CSV export helpers and event sellers."""
 from __future__ import annotations
 
+import re
 import sqlite3
-from datetime import date as _date
+import unicodedata
+from datetime import date as _date, timedelta as _timedelta
 from typing import Dict, List, Optional, Tuple
 
 from .connection import DEFAULT_MIN_STOCK, _now_iso, get_conn
@@ -642,6 +644,28 @@ def count_event_products_filtered(
     return int(row["c"] if row else 0)
 
 
+#: Colunas ordenáveis da grade de estoque do evento (seta ▲/▼ no cabeçalho).
+_EVENT_STOCK_SORT_COLUMNS = {
+    "preco": "COALESCE(ep.price, p.price)",
+    "estoque": "ep.stock",
+    "minimo": "ep.min_stock",
+}
+
+#: "vendas" soma pelo mesmo critério de ``units_sold_by_product_for_event``
+#: (pedidos confirmados), via subconsulta correlacionada — necessário para
+#: ordenar e paginar no SQL, já que a métrica não é uma coluna de ``event_products``.
+#: Com ``sort_seller_id``, restringe à mesma seleção do vendedor (vendas dele, não do evento todo).
+_EVENT_STOCK_VENDAS_SORT_SQL = """(
+        SELECT COALESCE(SUM(ti.quantity), 0)
+          FROM transaction_items ti
+          JOIN transactions t ON t.id = ti.transaction_id
+         WHERE t.event_id = ep.event_id
+           AND LOWER(TRIM(COALESCE(t.status, ''))) = 'confirmado'
+           AND CAST(ti.product_id AS INTEGER) = ep.product_id
+           {seller_filter}
+    )"""
+
+
 def list_event_products_slice(
     event_id: int,
     q: Optional[str],
@@ -651,12 +675,37 @@ def list_event_products_slice(
     limit: int,
     offset: int,
     entrega: str = "todos",
+    sort: Optional[str] = None,
+    direction: str = "desc",
+    sort_seller_id: Optional[int] = None,
 ) -> List[Dict]:
-    """Página da grade de estoque do evento com os mesmos filtros da biblioteca geral."""
+    """Página da grade de estoque do evento com os mesmos filtros da biblioteca geral.
+
+    ``sort`` escolhe a coluna (chave de ``_EVENT_STOCK_SORT_COLUMNS``, ou
+    ``"vendas"``); sem correspondência, mantém a ordenação por relevância de
+    busca/nome. ``sort_seller_id`` restringe a métrica de vendas usada na
+    ordenação às vendas desse vendedor (painel do vendedor).
+    """
     extra, params = _event_products_admin_filter_clause(q, categoria, status, entrega)
-    order_sql, order_params = _product_search_order_clause(
-        q, alias="p", fallback="p.name COLLATE NOCASE"
-    )
+    sort_key = (sort or "").strip().lower()
+    order_params: List = []
+    if sort_key == "vendas":
+        if sort_seller_id is not None:
+            seller_filter = "AND t.seller_id = ?"
+            order_params.append(int(sort_seller_id))
+        else:
+            seller_filter = ""
+        sort_col = _EVENT_STOCK_VENDAS_SORT_SQL.format(seller_filter=seller_filter)
+    else:
+        sort_col = _EVENT_STOCK_SORT_COLUMNS.get(sort_key)
+
+    if sort_col:
+        dir_sql = "ASC" if (direction or "").strip().lower() == "asc" else "DESC"
+        order_sql = f"{sort_col} {dir_sql}, p.name COLLATE NOCASE ASC"
+    else:
+        order_sql, order_params = _product_search_order_clause(
+            q, alias="p", fallback="p.name COLLATE NOCASE"
+        )
     sql = f"""
             SELECT
                 ep.id            AS ep_id,
@@ -724,6 +773,9 @@ def list_event_products_filtered_for_client(
     *,
     limit: int,
     offset: int,
+    sort: Optional[str] = None,
+    direction: str = "desc",
+    sort_seller_id: Optional[int] = None,
 ) -> List[Dict]:
     """Página de produtos do evento no formato cliente (painel vendedor)."""
     rows = list_event_products_slice(
@@ -733,6 +785,9 @@ def list_event_products_filtered_for_client(
         status,
         limit=int(limit),
         offset=int(offset),
+        sort=sort,
+        direction=direction,
+        sort_seller_id=sort_seller_id,
     )
     return [_event_products_slice_row_to_client(r) for r in rows]
 
@@ -911,6 +966,246 @@ def get_event_sales_dashboard(
         "sales_days_limit": lim_days,
         "goals": get_event_goal_progress(eid),
     }
+# Limites das séries entregues aos gráficos do dashboard (d3).
+ANALYTICS_MAX_DAYS = 180
+ANALYTICS_TOP_PRODUCTS = 8
+ANALYTICS_TOP_SELLERS = 8
+
+
+def get_event_sales_analytics(
+    event_id: int,
+    *,
+    max_days: int = ANALYTICS_MAX_DAYS,
+    top_products: int = ANALYTICS_TOP_PRODUCTS,
+    top_sellers: int = ANALYTICS_TOP_SELLERS,
+) -> Dict:
+    """Séries prontas para os gráficos d3 do dashboard do evento.
+
+    Usa exatamente o mesmo recorte de :func:`get_event_sales_dashboard` — pedidos
+    ``confirmado`` com movimentação ``venda`` neste ``event_id`` — para que os
+    gráficos fechem com os KPIs exibidos logo acima deles.
+
+    Retorna um dict serializável em JSON:
+
+    - ``by_day``          : série diária contínua (dias sem venda entram zerados)
+                            {day, label, orders, revenue, items, avg_ticket,
+                            cumulative_revenue}
+    - ``by_hour``         : 24 posições fixas {hour, label, orders, revenue}
+    - ``top_products``    : {sku, product_name, product_id, units_sold, revenue}
+    - ``payment_methods`` : {method, orders, revenue}
+    - ``sellers``         : {name, orders, revenue}
+    - ``totals``          : {orders, revenue, items, avg_ticket}
+    - ``goals``           : {revenue_goal, volume_goal} do cadastro do evento
+    - ``truncated_days``  : True quando a série diária foi cortada em ``max_days``
+    """
+    eid = int(event_id)
+    lim_days = max(1, min(int(max_days), 366))
+    lim_products = max(1, min(int(top_products), 25))
+    lim_sellers = max(1, min(int(top_sellers), 25))
+
+    tx_filter = (
+        "FROM transactions t "
+        "WHERE t.status = 'confirmado' "
+        "AND EXISTS ("
+        " SELECT 1 FROM stock_movements m "
+        " WHERE m.transaction_id = t.id AND m.movement_type = 'venda' "
+        " AND m.event_id = ?)"
+    )
+
+    with get_conn() as conn:
+        totals_row = conn.execute(
+            f"SELECT COUNT(*) AS orders, COALESCE(SUM(t.total), 0) AS revenue, "
+            f"COALESCE(SUM(t.items_count), 0) AS items {tx_filter}",
+            (eid,),
+        ).fetchone()
+
+        day_rows = conn.execute(
+            f"""
+            SELECT date(t.created_at) AS day,
+                   COUNT(*) AS orders,
+                   COALESCE(SUM(t.total), 0) AS revenue,
+                   COALESCE(SUM(t.items_count), 0) AS items
+            {tx_filter}
+            GROUP BY date(t.created_at)
+            ORDER BY day DESC
+            LIMIT ?
+            """,
+            (eid, lim_days + 1),
+        ).fetchall()
+
+        hour_rows = conn.execute(
+            f"""
+            SELECT CAST(strftime('%H', t.created_at) AS INTEGER) AS hour,
+                   COUNT(*) AS orders,
+                   COALESCE(SUM(t.total), 0) AS revenue
+            {tx_filter}
+            GROUP BY hour
+            """,
+            (eid,),
+        ).fetchall()
+
+        pay_rows = conn.execute(
+            f"""
+            SELECT COALESCE(NULLIF(TRIM(t.payment_method), ''), '') AS method,
+                   COUNT(*) AS orders,
+                   COALESCE(SUM(t.total), 0) AS revenue
+            {tx_filter}
+            GROUP BY method
+            ORDER BY revenue DESC
+            """,
+            (eid,),
+        ).fetchall()
+
+        seller_rows = conn.execute(
+            f"""
+            SELECT COALESCE(NULLIF(TRIM(t.seller_name), ''), '(sem vendedor)') AS name,
+                   COUNT(*) AS orders,
+                   COALESCE(SUM(t.total), 0) AS revenue
+            {tx_filter}
+            GROUP BY name
+            ORDER BY revenue DESC
+            LIMIT ?
+            """,
+            (eid, lim_sellers),
+        ).fetchall()
+
+        product_rows = conn.execute(
+            """
+            SELECT ti.product_id AS product_id_raw,
+                   MAX(ti.product_name) AS product_name,
+                   SUM(ti.quantity) AS units_sold,
+                   SUM(ti.subtotal) AS revenue,
+                   COALESCE(MAX(NULLIF(TRIM(ti.product_sku), '')), MAX(p.sku), '') AS sku_display
+            FROM transaction_items ti
+            JOIN transactions t ON t.id = ti.transaction_id
+            LEFT JOIN products p ON p.id = CAST(ti.product_id AS INTEGER)
+            WHERE t.status = 'confirmado'
+              AND EXISTS (
+                SELECT 1 FROM stock_movements m
+                WHERE m.transaction_id = t.id AND m.movement_type = 'venda'
+                  AND m.event_id = ?
+              )
+            GROUP BY ti.product_id
+            ORDER BY units_sold DESC
+            LIMIT ?
+            """,
+            (eid, lim_products),
+        ).fetchall()
+
+        goal_row = conn.execute(
+            "SELECT revenue_goal, volume_goal FROM events WHERE id = ?", (eid,)
+        ).fetchone()
+
+    orders_total = int(totals_row["orders"] or 0) if totals_row else 0
+    revenue_total = float(totals_row["revenue"] or 0.0) if totals_row else 0.0
+    items_total = int(totals_row["items"] or 0) if totals_row else 0
+
+    # ---------- série diária contínua (lacunas viram zero) -------------------
+    truncated_days = len(day_rows) > lim_days
+    day_rows = list(reversed(day_rows[:lim_days]))  # ordem crescente, já limitada
+    by_day: List[Dict] = []
+    by_date = {}
+    for r in day_rows:
+        try:
+            by_date[_date.fromisoformat(str(r["day"])[:10])] = r
+        except ValueError:
+            continue
+    if by_date:
+        cursor = min(by_date)
+        last = max(by_date)
+        running = 0.0
+        # Série com lacunas mente sobre o ritmo de vendas: dias sem pedido
+        # entram zerados, até o teto de pontos.
+        while cursor <= last and len(by_day) < lim_days:
+            row = by_date.get(cursor)
+            orders = int(row["orders"] or 0) if row else 0
+            revenue = float(row["revenue"] or 0.0) if row else 0.0
+            items = int(row["items"] or 0) if row else 0
+            running += revenue
+            by_day.append(
+                {
+                    "day": cursor.isoformat(),
+                    "label": cursor.strftime("%d/%m"),
+                    "orders": orders,
+                    "revenue": revenue,
+                    "items": items,
+                    "avg_ticket": (revenue / orders) if orders else 0.0,
+                    "cumulative_revenue": running,
+                }
+            )
+            cursor += _timedelta(days=1)
+
+    # ---------- distribuição por hora (24 posições fixas) --------------------
+    hour_map = {int(r["hour"]): r for r in hour_rows if r["hour"] is not None}
+    by_hour = [
+        {
+            "hour": h,
+            "label": f"{h:02d}h",
+            "orders": int(hour_map[h]["orders"] or 0) if h in hour_map else 0,
+            "revenue": float(hour_map[h]["revenue"] or 0.0) if h in hour_map else 0.0,
+        }
+        for h in range(24)
+    ]
+
+    products: List[Dict] = []
+    for r in product_rows:
+        raw_pid = r["product_id_raw"]
+        pid_int: Optional[int] = None
+        if raw_pid is not None and str(raw_pid).strip().isdigit():
+            pid_int = int(str(raw_pid).strip())
+        products.append(
+            {
+                "product_id": pid_int,
+                "sku": (r["sku_display"] or "").strip() or "—",
+                "product_name": (r["product_name"] or "").strip() or "—",
+                "units_sold": int(r["units_sold"] or 0),
+                "revenue": float(r["revenue"] or 0.0),
+            }
+        )
+
+    return {
+        "totals": {
+            "orders": orders_total,
+            "revenue": revenue_total,
+            "items": items_total,
+            "avg_ticket": (revenue_total / orders_total) if orders_total else 0.0,
+        },
+        "by_day": by_day,
+        "by_hour": by_hour,
+        "top_products": products,
+        "payment_methods": [
+            {
+                "method": (r["method"] or "").strip(),
+                "orders": int(r["orders"] or 0),
+                "revenue": float(r["revenue"] or 0.0),
+            }
+            for r in pay_rows
+        ],
+        "sellers": [
+            {
+                "name": r["name"],
+                "orders": int(r["orders"] or 0),
+                "revenue": float(r["revenue"] or 0.0),
+            }
+            for r in seller_rows
+        ],
+        "goals": {
+            "revenue_goal": (
+                float(goal_row["revenue_goal"])
+                if goal_row and goal_row["revenue_goal"]
+                else None
+            ),
+            "volume_goal": (
+                int(goal_row["volume_goal"])
+                if goal_row and goal_row["volume_goal"]
+                else None
+            ),
+        },
+        "max_days": lim_days,
+        "truncated_days": truncated_days,
+    }
+
+
 # Limites para exportações CSV (painel admin).
 EXPORT_MOVEMENTS_CSV_CAP = 100_000
 EXPORT_SALES_SUMMARY_CSV_CAP = 50_000
@@ -1012,6 +1307,59 @@ def list_transaction_items_for_event_period(
 # Relatório Financeiro do Evento
 # ---------------------------------------------------------------------------
 
+#: O catálogo não tem campo de marca: ela vem no fim do nome ("Resina X - FGM").
+_BRAND_SEPARATOR = re.compile(r"\s[-–—]\s")
+UNKNOWN_BRAND_LABEL = "Sem marca identificada"
+
+
+def _brand_from_product_name(name: Optional[str]) -> Optional[str]:
+    """Marca = trecho após o último separador " - " do nome; ``None`` se não houver."""
+    parts = _BRAND_SEPARATOR.split((name or "").strip())
+    if len(parts) < 2:
+        return None
+    brand = " ".join(parts[-1].split()).upper()
+    if not brand or len(brand) > 40 or not any(ch.isalpha() for ch in brand):
+        return None
+    return brand
+
+
+def _brand_group_key(brand: str) -> str:
+    """Agrupa grafias do mesmo fabricante ("MK LIFE"/"MKLIFE", "SWANN-MORTON")."""
+    folded = unicodedata.normalize("NFKD", brand)
+    return "".join(ch for ch in folded if ch.isalnum())
+
+
+def _revenue_by_brand(rows) -> List[Dict]:
+    """Agrega itens vendidos por marca, do maior faturamento para o menor."""
+    groups: Dict[str, Dict] = {}
+    for r in rows:
+        brand = _brand_from_product_name(r["name"])
+        key = _brand_group_key(brand) if brand else ""
+        g = groups.setdefault(key, {
+            "spellings": {}, "revenue": 0.0, "units": 0, "orders": set(), "products": set(),
+            "known": brand is not None,
+        })
+        label = brand or UNKNOWN_BRAND_LABEL
+        g["spellings"][label] = g["spellings"].get(label, 0) + int(r["qty"] or 0)
+        g["revenue"] += float(r["subtotal"] or 0.0)
+        g["units"] += int(r["qty"] or 0)
+        g["orders"].add(int(r["tx_id"]))
+        g["products"].add(str(r["pid_raw"] or r["name"] or ""))
+    brands = [
+        {
+            "brand": max(g["spellings"], key=g["spellings"].get),
+            "revenue": g["revenue"],
+            "units": g["units"],
+            "orders": len(g["orders"]),
+            "products": len(g["products"]),
+            "known": g["known"],
+        }
+        for g in groups.values()
+    ]
+    brands.sort(key=lambda b: b["revenue"], reverse=True)
+    return brands
+
+
 def get_event_financial_report(
     event_id: int,
     *,
@@ -1034,8 +1382,16 @@ def get_event_financial_report(
                             products_count, sem_estoque, below_min, stock_value}
     - ``top_skus``       : lista (top 10) {rank, sku, product_name, product_id,
                             units_sold, revenue, refunded_units}
+    - ``top_products``   : alias de ``top_skus`` no formato lido pelos gráficos d3
     - ``sales_by_day``   : lista {day, orders, revenue}
+    - ``chart_by_day``   : série diária contínua p/ gráficos (lacunas viram zero)
+                            {day, label, orders, revenue, items, avg_ticket,
+                            cumulative_revenue}
+    - ``chart_by_hour``  : 24 posições fixas {hour, label, orders, revenue}
     - ``sellers``        : lista {name, orders, revenue}
+    - ``brands``         : lista {brand, revenue, units, orders, products, known}, maior receita
+                            primeiro; ``known=False`` agrupa itens sem marca no nome
+    - ``stock_health``   : {ok, below_min, out_of_stock} — composição atual do estoque
     """
     eid = int(event_id)
 
@@ -1199,7 +1555,8 @@ def get_event_financial_report(
         # ---------- Vendas por dia ------------------------------------
         day_rows = conn.execute(
             f"SELECT date(t.created_at) AS day, COUNT(*) AS orders, "
-            f"COALESCE(SUM(t.total),0) AS revenue "
+            f"COALESCE(SUM(t.total),0) AS revenue, "
+            f"COALESCE(SUM(t.items_count),0) AS items "
             f"{confirmed_filter}{date_clause} "
             f"GROUP BY date(t.created_at) ORDER BY day",
             [eid] + date_params,
@@ -1208,6 +1565,57 @@ def get_event_financial_report(
             {"day": str(r["day"]), "orders": int(r["orders"] or 0),
              "revenue": float(r["revenue"] or 0.0)}
             for r in day_rows
+        ]
+
+        # ---------- Série diária contínua p/ gráficos (lacunas viram zero) ---
+        chart_by_day: List[Dict] = []
+        by_date = {}
+        for r in day_rows:
+            try:
+                by_date[_date.fromisoformat(str(r["day"])[:10])] = r
+            except ValueError:
+                continue
+        if by_date:
+            cursor = min(by_date)
+            last_day = max(by_date)
+            running = 0.0
+            while cursor <= last_day:
+                if len(chart_by_day) >= ANALYTICS_MAX_DAYS:
+                    cursor += _timedelta(days=1)
+                    continue
+                row = by_date.get(cursor)
+                d_orders = int(row["orders"] or 0) if row else 0
+                d_revenue = float(row["revenue"] or 0.0) if row else 0.0
+                d_items = int(row["items"] or 0) if row else 0
+                running += d_revenue
+                chart_by_day.append({
+                    "day": cursor.isoformat(),
+                    "label": cursor.strftime("%d/%m"),
+                    "orders": d_orders,
+                    "revenue": d_revenue,
+                    "items": d_items,
+                    "avg_ticket": (d_revenue / d_orders) if d_orders else 0.0,
+                    "cumulative_revenue": running,
+                })
+                cursor += _timedelta(days=1)
+
+        # ---------- Distribuição por hora (24 posições fixas) ----------------
+        hour_rows = conn.execute(
+            f"SELECT CAST(strftime('%H', t.created_at) AS INTEGER) AS hour, "
+            f"COUNT(*) AS orders, COALESCE(SUM(t.total),0) AS revenue "
+            f"{confirmed_filter}{date_clause} "
+            f"GROUP BY hour",
+            [eid] + date_params,
+        ).fetchall()
+        hour_map = {int(r["hour"]): r for r in hour_rows if r["hour"] is not None}
+        chart_by_hour = [
+            {
+                "hour": h,
+                "label": f"{h:02d}h",
+                "orders": int(hour_map[h]["orders"] or 0) if h in hour_map else 0,
+                "revenue": float(hour_map[h]["revenue"] or 0.0) if h in hour_map else 0.0,
+            }
+            for h in range(24)
         ]
 
         # ---------- Por vendedor --------------------------------------
@@ -1223,6 +1631,24 @@ def get_event_financial_report(
              "revenue": float(r["revenue"] or 0.0)}
             for r in seller_rows
         ]
+
+        # ---------- Por marca (derivada do nome do produto) -----------
+        # O total do pedido (já com descontos de pedido) é rateado entre os
+        # itens pelo subtotal: a soma por marca bate com a receita dos KPIs.
+        brand_rows = conn.execute(
+            f"SELECT t.id AS tx_id, ti.product_id AS pid_raw, "
+            f"COALESCE(NULLIF(TRIM(ti.product_name),''), p.name) AS name, "
+            f"ti.quantity AS qty, "
+            f"ti.subtotal * t.total / NULLIF(("
+            f"  SELECT SUM(x.subtotal) FROM transaction_items x WHERE x.transaction_id = t.id"
+            f"), 0) AS subtotal "
+            f"FROM transaction_items ti "
+            f"JOIN transactions t ON t.id = ti.transaction_id "
+            f"LEFT JOIN products p ON p.id = CAST(ti.product_id AS INTEGER) "
+            f"WHERE t.status = 'confirmado' AND t.event_id = ?{date_clause}",
+            [eid] + date_params,
+        ).fetchall()
+        brands = _revenue_by_brand(brand_rows)
 
     # ---------- label do período ------------------------------------
     if date_from and date_to:
@@ -1252,9 +1678,23 @@ def get_event_financial_report(
         "goals": get_event_goal_progress(eid),
         "payment_methods": payment_methods,
         "stock_summary": stock_summary,
+        "stock_health": {
+            "ok": max(
+                0,
+                stock_summary["products_count"]
+                - stock_summary["below_min"]
+                - stock_summary["sem_estoque"],
+            ),
+            "below_min": stock_summary["below_min"],
+            "out_of_stock": stock_summary["sem_estoque"],
+        },
         "top_skus": top_skus,
+        "top_products": top_skus,
         "sales_by_day": sales_by_day,
+        "chart_by_day": chart_by_day,
+        "chart_by_hour": chart_by_hour,
         "sellers": sellers,
+        "brands": brands,
     }
 
 

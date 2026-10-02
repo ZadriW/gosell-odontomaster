@@ -197,225 +197,203 @@
             <span class="kpi__hint">{{ report.kpis.refunds_value | brl }} devolvido</span>
         </article>
 
+        <article class="kpi kpi--success admin-desktop-only">
+            <span class="kpi__icon"><i class="fa-solid fa-coins" aria-hidden="true"></i></span>
+            <span class="kpi__label">Receita líquida</span>
+            <span class="kpi__value">{{ (report.kpis.revenue - report.kpis.refunds_value) | brl }}</span>
+            <span class="kpi__hint">Receita bruta menos estornos</span>
+        </article>
+
+        <article class="kpi admin-desktop-only">
+            <span class="kpi__icon"><i class="fa-solid fa-cart-shopping" aria-hidden="true"></i></span>
+            <span class="kpi__label">Itens por pedido</span>
+            <span class="kpi__value">
+                {{ '%.1f' | format(report.kpis.items_sold / report.kpis.orders) if report.kpis.orders else '0,0' }}
+            </span>
+            <span class="kpi__hint">Média de unidades por pedido confirmado</span>
+        </article>
+
     </div>
 </section>
 
-{# ── Resumo de estoque ───────────────────────────────────────────────────── #}
-<section class="admin-section">
+{# ── Análise gráfica (d3) — só desktop; o mobile mantém o layout anterior ── #}
+<section class="admin-section admin-desktop-only">
     <header class="admin-section__header">
         <h2 class="admin-section__title">
-            <i class="fa-solid fa-warehouse" aria-hidden="true"></i>
-            Resumo de estoque
+            <i class="fa-solid fa-chart-column" aria-hidden="true"></i>
+            Análise gráfica
         </h2>
         <p class="admin-section__subtitle">
-            Movimentações e saldo do evento.
-            Saldo final reflete o estado atual do evento.
+            Mesmos dados do relatório acima, em formato visual — passe o cursor ou navegue por teclado
+            em cada marca para ver o detalhe. Cada gráfico também traz a tabela equivalente em
+            "Ver dados em tabela".
         </p>
     </header>
 
-    <div class="admin-fin__stock-grid">
+    <div class="admin-fin__charts admin-fin__charts--series">
+        <figure class="admin-chart admin-chart--wide" data-admin-chart="revenue-by-day">
+            <figcaption class="admin-chart__head">
+                <h3 class="admin-chart__title">
+                    <i class="fa-solid fa-chart-column" aria-hidden="true"></i>
+                    Receita por dia
+                </h3>
+                <p class="admin-chart__hint">
+                    Série contínua do primeiro ao último dia com vendas no período selecionado —
+                    dias sem pedido aparecem zerados, para não distorcer o ritmo.
+                </p>
+            </figcaption>
+        </figure>
 
-        <div class="admin-fin__stock-flow">
-            <div class="admin-fin__stock-row admin-fin__stock-row--header">
-                <span>Tipo</span>
-                <span class="admin-table__col--num">Unidades</span>
-            </div>
-            <div class="admin-fin__stock-row admin-fin__stock-row--positive">
-                <span><i class="fa-solid fa-plus" aria-hidden="true"></i> Entradas</span>
-                <span class="admin-table__col--num">+{{ report.stock_summary.entries }}</span>
-            </div>
-            <div class="admin-fin__stock-row admin-fin__stock-row--negative">
-                <span><i class="fa-solid fa-cart-shopping" aria-hidden="true"></i> Saídas por venda</span>
-                <span class="admin-table__col--num">-{{ report.stock_summary.sold_units }}</span>
-            </div>
-            <div class="admin-fin__stock-row admin-fin__stock-row--positive">
-                <span><i class="fa-solid fa-arrow-rotate-left" aria-hidden="true"></i> Devoluções (estorno)</span>
-                <span class="admin-table__col--num">+{{ report.stock_summary.refunded_units }}</span>
-            </div>
-            <div class="admin-fin__stock-row admin-fin__stock-row--negative">
-                <span><i class="fa-solid fa-hand-holding-box" aria-hidden="true"></i> Saídas manuais</span>
-                <span class="admin-table__col--num">-{{ report.stock_summary.exits_manual }}</span>
-            </div>
-            <div class="admin-fin__stock-row admin-fin__stock-row--total">
-                <span><i class="fa-solid fa-layer-group" aria-hidden="true"></i> Saldo atual (estoque final)</span>
-                <span class="admin-table__col--num">{{ report.stock_summary.final_units }}</span>
-            </div>
-        </div>
+        <figure class="admin-chart admin-chart--wide" data-admin-chart="brands">
+            <figcaption class="admin-chart__head">
+                <h3 class="admin-chart__title">
+                    <i class="fa-solid fa-tags" aria-hidden="true"></i>
+                    Receita por marca
+                </h3>
+                <p class="admin-chart__hint">
+                    Marcas que mais faturaram no período. A marca vem do fim do nome do produto
+                    (ex.: "Resina X - FGM") e descontos do pedido são rateados entre os itens.
+                </p>
+            </figcaption>
+        </figure>
+    </div>
 
-        <div class="admin-fin__stock-kpis">
-            <div class="admin-fin__stock-kpi">
-                <span class="admin-fin__stock-kpi-label">Produtos no evento</span>
-                <span class="admin-fin__stock-kpi-value">{{ report.stock_summary.products_count }}</span>
-            </div>
-            <div class="admin-fin__stock-kpi">
-                <span class="admin-fin__stock-kpi-label">Valor em estoque (atual)</span>
-                <span class="admin-fin__stock-kpi-value admin-fin__stock-kpi-value--hl">{{ report.stock_summary.stock_value | brl }}</span>
-            </div>
-            <div class="admin-fin__stock-kpi {% if report.stock_summary.sem_estoque > 0 %}admin-fin__stock-kpi--warn{% endif %}">
-                <span class="admin-fin__stock-kpi-label">Sem estoque</span>
-                <span class="admin-fin__stock-kpi-value">{{ report.stock_summary.sem_estoque }}</span>
-            </div>
-            <div class="admin-fin__stock-kpi {% if report.stock_summary.below_min > 0 %}admin-fin__stock-kpi--warn{% endif %}">
-                <span class="admin-fin__stock-kpi-label">Abaixo do mínimo</span>
-                <span class="admin-fin__stock-kpi-value">{{ report.stock_summary.below_min }}</span>
-            </div>
-        </div>
+    <div class="admin-fin__charts">
+        <figure class="admin-chart" data-admin-chart="orders-by-hour">
+            <figcaption class="admin-chart__head">
+                <h3 class="admin-chart__title">
+                    <i class="fa-solid fa-clock" aria-hidden="true"></i>
+                    Pedidos por hora
+                </h3>
+                <p class="admin-chart__hint">
+                    Distribuição dos pedidos ao longo do dia, no período selecionado.
+                </p>
+            </figcaption>
+        </figure>
 
+        <figure class="admin-chart" data-admin-chart="sellers">
+            <figcaption class="admin-chart__head">
+                <h3 class="admin-chart__title">
+                    <i class="fa-solid fa-user-tie" aria-hidden="true"></i>
+                    Receita por vendedor
+                </h3>
+                <p class="admin-chart__hint">
+                    Quanto cada vendedor fechou no período, do maior para o menor.
+                </p>
+            </figcaption>
+        </figure>
+
+        <figure class="admin-chart" data-admin-chart="top-products">
+            <figcaption class="admin-chart__head">
+                <h3 class="admin-chart__title">
+                    <i class="fa-solid fa-ranking-star" aria-hidden="true"></i>
+                    Produtos mais vendidos
+                </h3>
+                <p class="admin-chart__hint">
+                    Top {{ report.top_products | length }} por unidades vendidas no período.
+                </p>
+            </figcaption>
+        </figure>
+
+        <figure class="admin-chart" data-admin-chart="payment-mix">
+            <figcaption class="admin-chart__head">
+                <h3 class="admin-chart__title">
+                    <i class="fa-solid fa-credit-card" aria-hidden="true"></i>
+                    Composição por forma de pagamento
+                </h3>
+                <p class="admin-chart__hint">
+                    Participação de cada meio de pagamento na receita confirmada.
+                </p>
+            </figcaption>
+        </figure>
+
+        <figure class="admin-chart" data-admin-chart="stock-health">
+            <figcaption class="admin-chart__head">
+                <h3 class="admin-chart__title">
+                    <i class="fa-solid fa-boxes-stacked" aria-hidden="true"></i>
+                    Saúde do estoque
+                </h3>
+                <p class="admin-chart__hint">
+                    Situação atual dos {{ report.stock_summary.products_count }} produto(s) do evento:
+                    saudáveis, abaixo do mínimo e sem estoque.
+                </p>
+            </figcaption>
+        </figure>
+
+        <figure class="admin-chart" data-admin-chart="stock-flow">
+            <figcaption class="admin-chart__head">
+                <h3 class="admin-chart__title">
+                    <i class="fa-solid fa-right-left" aria-hidden="true"></i>
+                    Movimentação de estoque
+                </h3>
+                <p class="admin-chart__hint">
+                    Entradas, devoluções e saídas do período, com o saldo atual em destaque.
+                </p>
+            </figcaption>
+        </figure>
     </div>
 </section>
 
-{# ── Top 10 SKUs ─────────────────────────────────────────────────────────── #}
-<section class="admin-section">
+{# ── Formas de pagamento (só mobile, layout anterior) ──────────────────────── #}
+<section class="admin-section admin-mobile-only">
     <header class="admin-section__header">
         <h2 class="admin-section__title">
-            <i class="fa-solid fa-ranking-star" aria-hidden="true"></i>
-            Top SKUs por volume de vendas
+            <i class="fa-solid fa-credit-card" aria-hidden="true"></i>
+            Formas de pagamento
         </h2>
     </header>
-
-    {% if report.top_skus %}
-    <div class="admin-table admin-fin__skus-table" role="table" aria-label="Top SKUs">
-        <div class="admin-table__head admin-fin__skus-row" role="row">
-            <span role="columnheader">#</span>
-            <span role="columnheader">SKU</span>
-            <span role="columnheader">Produto</span>
-            <span class="admin-table__col--num" role="columnheader">Unid. vendidas</span>
+    {% if report.payment_methods %}
+    <div class="admin-table" role="table" aria-label="Formas de pagamento">
+        <div class="admin-table__head admin-fin__pm-row" role="row">
+            <span role="columnheader">Método</span>
+            <span class="admin-table__col--num" role="columnheader">Pedidos</span>
             <span class="admin-table__col--num" role="columnheader">Receita</span>
-            <span class="admin-table__col--num" role="columnheader">Estornos (unid.)</span>
         </div>
-        {% for sku in report.top_skus %}
-        <div class="admin-fin__skus-row" role="row">
-            <span class="admin-fin__rank">{{ sku.rank }}</span>
-            <span><code class="admin-fin__sku-code">{{ sku.sku }}</code></span>
-            <span class="admin-fin__prod-name">
-                {% if sku.product_id %}
-                <a href="{{ url_for('admin_product_detail', product_id=sku.product_id) }}">{{ sku.product_name }}</a>
-                {% else %}
-                {{ sku.product_name }}
+        {% for pm in report.payment_methods %}
+        <div class="admin-fin__pm-row" role="row">
+            <span>
+                {% if pm.method == 'pix' %}
+                <i class="fa-brands fa-pix" aria-hidden="true"></i>
+                {% elif pm.method == 'cartao' %}
+                <i class="fa-solid fa-credit-card" aria-hidden="true"></i>
+                {% elif pm.method == 'dinheiro' %}
+                <i class="fa-solid fa-money-bill-wave" aria-hidden="true"></i>
                 {% endif %}
+                {{ pm.method | paymethod(None) }}
             </span>
-            <span class="admin-table__col--num"><strong>{{ sku.units_sold }}</strong></span>
-            <span class="admin-table__col--num">{{ sku.revenue | brl }}</span>
-            <span class="admin-table__col--num {% if sku.refunded_units > 0 %}admin-fin__refund{% endif %}">
-                {% if sku.refunded_units > 0 %}
-                <i class="fa-solid fa-arrow-rotate-left" aria-hidden="true"></i>
-                {{ sku.refunded_units }}
-                {% else %}—{% endif %}
-            </span>
+            <span class="admin-table__col--num">{{ pm.orders }}</span>
+            <span class="admin-table__col--num"><strong>{{ pm.revenue | brl }}</strong></span>
         </div>
         {% endfor %}
     </div>
     {% else %}
     <div class="admin-empty">
-        <i class="fa-solid fa-ranking-star" aria-hidden="true"></i>
-        <p>Nenhuma venda registrada no período.</p>
+        <i class="fa-solid fa-credit-card" aria-hidden="true"></i>
+        <p>Sem dados de pagamento.</p>
     </div>
     {% endif %}
 </section>
 
-{# ── Formas de pagamento + Vendas por dia ─────────────────────────────────── #}
-<div class="admin-fin__bottom-grid">
-
-    <section class="admin-section admin-fin__section-half">
-        <header class="admin-section__header">
-            <h2 class="admin-section__title">
-                <i class="fa-solid fa-credit-card" aria-hidden="true"></i>
-                Formas de pagamento
-            </h2>
-        </header>
-        {% if report.payment_methods %}
-        <div class="admin-table" role="table" aria-label="Formas de pagamento">
-            <div class="admin-table__head admin-fin__pm-row" role="row">
-                <span role="columnheader">Método</span>
-                <span class="admin-table__col--num" role="columnheader">Pedidos</span>
-                <span class="admin-table__col--num" role="columnheader">Receita</span>
-            </div>
-            {% for pm in report.payment_methods %}
-            <div class="admin-fin__pm-row" role="row">
-                <span>
-                    {% if pm.method == 'pix' %}
-                    <i class="fa-brands fa-pix" aria-hidden="true"></i>
-                    {% elif pm.method == 'cartao' %}
-                    <i class="fa-solid fa-credit-card" aria-hidden="true"></i>
-                    {% elif pm.method == 'dinheiro' %}
-                    <i class="fa-solid fa-money-bill-wave" aria-hidden="true"></i>
-                    {% endif %}
-                    {{ pm.method | paymethod(None) }}
-                </span>
-                <span class="admin-table__col--num">{{ pm.orders }}</span>
-                <span class="admin-table__col--num"><strong>{{ pm.revenue | brl }}</strong></span>
-            </div>
-            {% endfor %}
-        </div>
-        {% else %}
-        <div class="admin-empty">
-            <i class="fa-solid fa-credit-card" aria-hidden="true"></i>
-            <p>Sem dados de pagamento.</p>
-        </div>
-        {% endif %}
-    </section>
-
-    <section class="admin-section admin-fin__section-half">
-        <header class="admin-section__header">
-            <h2 class="admin-section__title">
-                <i class="fa-solid fa-calendar-days" aria-hidden="true"></i>
-                Vendas por dia
-            </h2>
-        </header>
-        {% if report.sales_by_day %}
-        <div class="admin-table" role="table" aria-label="Vendas por dia">
-            <div class="admin-table__head admin-fin__day-row" role="row">
-                <span role="columnheader">Data</span>
-                <span class="admin-table__col--num" role="columnheader">Pedidos</span>
-                <span class="admin-table__col--num" role="columnheader">Receita</span>
-            </div>
-            {% for d in report.sales_by_day | reverse %}
-            {% set parts = d.day.split('-') %}
-            <div class="admin-fin__day-row" role="row">
-                <span>{{ parts[2] }}/{{ parts[1] }}/{{ parts[0] }}</span>
-                <span class="admin-table__col--num">{{ d.orders }}</span>
-                <span class="admin-table__col--num"><strong>{{ d.revenue | brl }}</strong></span>
-            </div>
-            {% endfor %}
-        </div>
-        {% else %}
-        <div class="admin-empty">
-            <i class="fa-solid fa-calendar-days" aria-hidden="true"></i>
-            <p>Sem vendas no período.</p>
-        </div>
-        {% endif %}
-    </section>
-
-</div>
-
-{# ── Por vendedor ─────────────────────────────────────────────────────────── #}
-{% if report.sellers %}
-<section class="admin-section">
-    <header class="admin-section__header">
-        <h2 class="admin-section__title">
-            <i class="fa-solid fa-user-tie" aria-hidden="true"></i>
-            Desempenho por vendedor
-        </h2>
-    </header>
-    <div class="admin-table" role="table" aria-label="Desempenho por vendedor">
-        <div class="admin-table__head admin-fin__seller-row" role="row">
-            <span role="columnheader">Vendedor</span>
-            <span class="admin-table__col--num" role="columnheader">Pedidos</span>
-            <span class="admin-table__col--num" role="columnheader">Receita</span>
-        </div>
-        {% for s in report.sellers %}
-        <div class="admin-fin__seller-row" role="row">
-            <span>
-                <i class="fa-solid fa-user-tie" aria-hidden="true"></i>
-                {{ s.name }}
-            </span>
-            <span class="admin-table__col--num">{{ s.orders }}</span>
-            <span class="admin-table__col--num"><strong>{{ s.revenue | brl }}</strong></span>
-        </div>
-        {% endfor %}
-    </div>
-</section>
-{% endif %}
-
 {% endif %}{# /report #}
+{% endblock %}
+
+{% block admin_scripts %}
+{% if report %}
+{# Séries do relatório: JSON inerte lido por admin-charts.js. #}
+<script type="application/json" id="event-analytics-data">{{
+    {
+        "by_day": report.chart_by_day,
+        "by_hour": report.chart_by_hour,
+        "top_products": report.top_products,
+        "payment_methods": report.payment_methods,
+        "sellers": report.sellers,
+        "brands": report.brands,
+        "stock_health": report.stock_health,
+        "stock_summary": report.stock_summary,
+        "goals": report.goals
+    } | tojson
+}}</script>
+<script src="{{ url_for('static', filename='vendor/d3/d3.min.js') }}"></script>
+<script src="{{ url_for('static', filename='js/admin-charts.js') }}"></script>
+{% endif %}
 {% endblock %}

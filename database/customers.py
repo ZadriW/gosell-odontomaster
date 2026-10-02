@@ -11,16 +11,17 @@ são o mesmo cliente) e CPFs-sentinela de dígito repetido (``000.000.000-00``)
 são ignorados como identidade — senão todas as vendas com CPF de teste virariam
 um único "cliente" fantasma.
 
-Receita considera apenas ``status = 'confirmado'`` (mesma convenção do
-Financeiro e de ``get_stats``); estornos, cancelamentos e pendências são
-contabilizados à parte para não inflar o faturamento.
+Só vendas pagas (``status = 'confirmado'``) definem clientes: pendentes,
+canceladas e estornadas ficam fora da carteira, dos perfis e do autopreenchimento
+do checkout. Uma venda cancelada por CPF digitado errado não pode associar esse
+CPF ao nome de outra pessoa.
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
-from .connection import get_conn
+from .connection import fold_search_text, get_conn
 
 # Ordem de precedência da identidade: do campo mais confiável para o menos.
 IDENTITY_KINDS = ("cpf", "email", "phone", "name")
@@ -47,6 +48,7 @@ WITH norm AS (
             '(', ''), ')', ''), '-', ''), ' ', ''), '+', ''), '.', '') AS phone_digits,
         LOWER(TRIM(COALESCE(t.client_name, ''))) AS name_norm
       FROM transactions t
+     WHERE LOWER(TRIM(COALESCE(t.status, ''))) = 'confirmado'
 ),
 ident AS (
     SELECT *,
@@ -105,18 +107,6 @@ latest AS (
            ) AS rn
       FROM ident
      WHERE ident_kind <> '' AND status_norm = 'confirmado'{event_clause}
-),
-other AS (
-    SELECT
-        ident_kind,
-        ident_value,
-        SUM(CASE WHEN status_norm = 'estornado' THEN 1 ELSE 0 END)     AS refunded_count,
-        SUM(CASE WHEN status_norm = 'estornado' THEN total ELSE 0 END)  AS refunded_value,
-        SUM(CASE WHEN status_norm = 'pendente'  THEN 1 ELSE 0 END)     AS pending_count,
-        SUM(CASE WHEN status_norm = 'cancelado' THEN 1 ELSE 0 END)     AS cancelled_count
-      FROM ident
-     WHERE ident_kind <> ''{event_clause}
-     GROUP BY ident_kind, ident_value
 )
 """
 
@@ -180,6 +170,75 @@ def get_customer_display_name(kind: str, ident: Any) -> str:
             (norm_kind, norm_ident),
         ).fetchone()
     return (row["client_name"] or "").strip() if row else ""
+
+
+# Campos copiados para o formulário de checkout quando o CPF é reconhecido.
+# A chave é o nome do campo no formulário; o valor, a coluna em ``transactions``.
+_AUTOFILL_FIELDS = {
+    "name": "client_name",
+    "email": "client_email",
+    "phone": "client_phone",
+    "cro_uf": "client_cro_uf",
+    "cro_numero": "client_cro_numero",
+    "zipcode": "client_zipcode",
+    "address": "client_address",
+    "number": "client_number",
+    "complement": "client_complement",
+    "city": "client_city",
+    "state": "client_state",
+}
+
+
+def find_customer_by_cpf(cpf: Any) -> Optional[Dict[str, Any]]:
+    """Dados já conhecidos do cliente com este CPF, ou ``None`` se for inédito.
+
+    Cada campo recebe o valor **mais recente não vazio** do histórico, em vez de
+    espelhar só a última venda: campos opcionais (e-mail, CEP) costumam ficar em
+    branco em parte das compras, e copiar a última apagaria o que o cliente já
+    tinha informado antes.
+
+    Só vendas pagas contam: venda pendente ou cancelada costuma ser justamente a
+    que teve o CPF digitado errado, e usá-la preencheria o nome de outra pessoa.
+    """
+    digits = _only_digits(cpf)
+    if len(digits) != 11 or digits in _PLACEHOLDER_CPFS:
+        return None
+
+    with get_conn() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT {", ".join(_AUTOFILL_FIELDS.values())},
+                   created_at, event_id
+              FROM transactions
+             WHERE REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(client_cpf, ''),
+                   '.', ''), '-', ''), '/', ''), ' ', '') = ?
+               AND LOWER(TRIM(COALESCE(status, ''))) = 'confirmado'
+             ORDER BY created_at DESC, id DESC
+            """,
+            (digits,),
+        ).fetchall()
+
+    known: Dict[str, Any] = {}
+    for row in rows:
+        for field, column in _AUTOFILL_FIELDS.items():
+            if field not in known:
+                value = (row[column] or "").strip()
+                if value:
+                    known[field] = value
+    if not known:
+        return None
+
+    known.update(
+        {
+            "cpf": digits,
+            "orders_count": len(rows),
+            "events_count": len(
+                {r["event_id"] for r in rows if r["event_id"] is not None}
+            ),
+            "last_purchase_at": rows[0]["created_at"],
+        }
+    )
+    return known
 
 
 def _parse_dt(value: Any) -> Optional[datetime]:
@@ -266,10 +325,6 @@ def _customer_row(row, total_revenue: float) -> Dict[str, Any]:
         "days_since_last": _days_since(row["last_purchase_at"]),
         "avg_interval_days": float(interval) if interval is not None else None,
         "revenue_share": _share(revenue, total_revenue),
-        "refunded_count": int(row["refunded_count"] or 0),
-        "refunded_value": float(row["refunded_value"] or 0),
-        "pending_count": int(row["pending_count"] or 0),
-        "cancelled_count": int(row["cancelled_count"] or 0),
         "is_recurring": orders > 1,
     }
 
@@ -295,15 +350,18 @@ def list_customers(
     ev_clause = _event_clause(event_id)
     agg_sql = _AGG_SQL.format(event_clause=ev_clause)
 
-    term = " ".join((query or "").lower().split())
+    term = fold_search_text(" ".join((query or "").split()))
     search_clause = ""
     search_params: List[Any] = []
     if term:
         like = f"%{term}%"
+        # search_fold() ignora caixa e acento dos dois lados — sem ele, "galvão"
+        # (digitado em minúsculo) não bate com "GALVÃO" salvo na venda, porque o
+        # LOWER() nativo do SQLite não normaliza o "Ã" para "ã".
         conditions = [
-            "LOWER(TRIM(COALESCE(l.client_name, ''))) LIKE ?",
-            "LOWER(TRIM(COALESCE(l.client_email, ''))) LIKE ?",
-            "LOWER(TRIM(COALESCE(l.client_cro_numero, ''))) LIKE ?",
+            "search_fold(l.client_name) LIKE ?",
+            "search_fold(l.client_email) LIKE ?",
+            "search_fold(l.client_cro_numero) LIKE ?",
         ]
         search_params = [like, like, like]
         # CPF/telefone só entram na busca quando o termo tem dígitos — senão
@@ -320,25 +378,18 @@ def list_customers(
             search_params += [digit_like, digit_like]
         search_clause = " AND (" + " OR ".join(conditions) + ")"
 
-    # ``event_clause`` aparece 3x no bloco de CTEs (agg, latest, other).
-    cte_params = _event_params(event_id, 3)
+    # ``event_clause`` aparece 2x no bloco de CTEs (agg, latest).
+    cte_params = _event_params(event_id, 2)
     base = f"""
         {_IDENT_CTE},
         {agg_sql}
         SELECT a.*, l.client_name, l.client_cpf, l.client_email, l.client_phone,
-               l.client_cro_uf, l.client_cro_numero, l.client_city, l.client_state,
-               COALESCE(o.refunded_count, 0)  AS refunded_count,
-               COALESCE(o.refunded_value, 0)  AS refunded_value,
-               COALESCE(o.pending_count, 0)   AS pending_count,
-               COALESCE(o.cancelled_count, 0) AS cancelled_count
+               l.client_cro_uf, l.client_cro_numero, l.client_city, l.client_state
           FROM agg a
           JOIN latest l
             ON l.ident_kind = a.ident_kind
            AND l.ident_value = a.ident_value
            AND l.rn = 1
-          LEFT JOIN other o
-            ON o.ident_kind = a.ident_kind
-           AND o.ident_value = a.ident_value
          WHERE 1 = 1{search_clause}
     """
 
@@ -405,8 +456,170 @@ def list_customers(
     return {"rows": rows, "total": total, "summary": summary, "sort": sort_key}
 
 
-def _profile_orders(conn, kind: str, ident: str) -> List[Dict[str, Any]]:
-    """Histórico completo do cliente (todos os status), do mais recente ao antigo."""
+# Faixas de faturamento por cliente: (limite superior exclusivo em R$,
+# rótulo completo, rótulo curto para o eixo do gráfico).
+_REVENUE_BANDS = (
+    (500, "Até R$ 500", "até 500"),
+    (1000, "R$ 500–1 mil", "500–1 mil"),
+    (2000, "R$ 1–2 mil", "1–2 mil"),
+    (5000, "R$ 2–5 mil", "2–5 mil"),
+    (10000, "R$ 5–10 mil", "5–10 mil"),
+    (None, "Acima de R$ 10 mil", "10 mil+"),
+)
+PORTFOLIO_MAX_DAYS = 180
+PORTFOLIO_TOP = 10
+
+
+def get_portfolio_analytics(event_id: Optional[int] = None) -> Dict[str, Any]:
+    """Séries da carteira inteira para os gráficos d3 da tela de Clientes.
+
+    Mesmo recorte de :func:`list_customers` — vendas confirmadas com identidade,
+    no escopo do evento — mas sem busca nem paginação: o gráfico descreve a
+    carteira, não a página da tabela.
+
+    - ``acquisition`` : série diária contínua {day, label, new, returning,
+                        orders, revenue, cumulative_customers}
+    - ``frequency``   : clientes por número de pedidos (1, 2, 3, 4, 5+)
+    - ``bands``       : clientes por faixa de faturamento
+    - ``top``         : maiores clientes {kind, ident, name, revenue, orders}
+    - ``totals``      : {customers, revenue, orders, recurring, median_revenue}
+    """
+    with get_conn() as conn:
+        rows = conn.execute(
+            f"""
+            {_IDENT_CTE}
+            SELECT ident_kind, ident_value, created_at, total, client_name
+              FROM ident
+             WHERE ident_kind <> '' AND status_norm = 'confirmado'{_event_clause(event_id)}
+             ORDER BY created_at ASC, id ASC
+            """,
+            _event_params(event_id, 1),
+        ).fetchall()
+
+    people: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    days: Dict[str, Dict[str, Any]] = {}
+    for r in rows:
+        key = (r["ident_kind"], r["ident_value"])
+        total = float(r["total"] or 0)
+        person = people.get(key)
+        first_time = person is None
+        if first_time:
+            person = people[key] = {
+                "kind": key[0], "ident": key[1], "name": "", "revenue": 0.0, "orders": 0,
+            }
+        person["revenue"] += total
+        person["orders"] += 1
+        name = (r["client_name"] or "").strip()
+        if name:
+            person["name"] = name  # linhas em ordem crescente: fica o nome mais recente
+
+        day = str(r["created_at"] or "")[:10]
+        slot = days.setdefault(day, {"new": set(), "returning": set(), "orders": 0, "revenue": 0.0})
+        slot["orders"] += 1
+        slot["revenue"] += total
+        # Recorrente no dia = já tinha comprado em um dia anterior do escopo.
+        if first_time:
+            slot["new"].add(key)
+        elif key not in slot["new"]:
+            slot["returning"].add(key)
+
+    # ---------- aquisição: série diária contínua (lacunas viram zero) ----------
+    acquisition: List[Dict[str, Any]] = []
+    parsed = {}
+    for day, slot in days.items():
+        try:
+            parsed[datetime.fromisoformat(day).date()] = slot
+        except ValueError:
+            continue
+    if parsed:
+        cursor, last = min(parsed), max(parsed)
+        running = 0
+        while cursor <= last and len(acquisition) < PORTFOLIO_MAX_DAYS:
+            slot = parsed.get(cursor)
+            new = len(slot["new"]) if slot else 0
+            running += new
+            acquisition.append({
+                "day": cursor.isoformat(),
+                "label": cursor.strftime("%d/%m"),
+                "new": new,
+                "returning": len(slot["returning"]) if slot else 0,
+                "orders": slot["orders"] if slot else 0,
+                "revenue": round(slot["revenue"], 2) if slot else 0.0,
+                "cumulative_customers": running,
+            })
+            cursor += timedelta(days=1)
+
+    ranked = sorted(people.values(), key=lambda p: (-p["revenue"], -p["orders"]))
+    n = len(ranked)
+    revenue_total = sum(p["revenue"] for p in ranked)
+
+    # ---------- frequência de compra ----------
+    freq_labels = ("1 pedido", "2 pedidos", "3 pedidos", "4 pedidos", "5+ pedidos")
+    frequency = [
+        {"label": label, "orders_min": i + 1, "customers": 0, "revenue": 0.0}
+        for i, label in enumerate(freq_labels)
+    ]
+    for p in ranked:
+        bucket = frequency[min(p["orders"], 5) - 1]
+        bucket["customers"] += 1
+        bucket["revenue"] += p["revenue"]
+    while len(frequency) > 2 and frequency[-1]["customers"] == 0:
+        frequency.pop()
+
+    # ---------- faixas de faturamento ----------
+    bands = [
+        {"label": label, "short": short, "customers": 0, "revenue": 0.0}
+        for _, label, short in _REVENUE_BANDS
+    ]
+    for p in ranked:
+        for i, (upper, _, _) in enumerate(_REVENUE_BANDS):
+            if upper is None or p["revenue"] < upper:
+                bands[i]["customers"] += 1
+                bands[i]["revenue"] += p["revenue"]
+                break
+    while len(bands) > 2 and bands[-1]["customers"] == 0:
+        bands.pop()
+
+    revenues = sorted(p["revenue"] for p in ranked)
+    median = 0.0
+    if revenues:
+        mid = n // 2
+        median = revenues[mid] if n % 2 else (revenues[mid - 1] + revenues[mid]) / 2
+
+    return {
+        "acquisition": acquisition,
+        "frequency": [
+            {**b, "revenue": round(b["revenue"], 2)} for b in frequency
+        ],
+        "bands": [{**b, "revenue": round(b["revenue"], 2)} for b in bands],
+        "top": [
+            {
+                "kind": p["kind"],
+                "ident": p["ident"],
+                "name": p["name"] or "(sem nome)",
+                "revenue": round(p["revenue"], 2),
+                "orders": p["orders"],
+            }
+            for p in ranked[:PORTFOLIO_TOP]
+        ],
+        "totals": {
+            "customers": n,
+            "revenue": round(revenue_total, 2),
+            "orders": len(rows),
+            "recurring": sum(1 for p in ranked if p["orders"] > 1),
+            "median_revenue": round(median, 2),
+        },
+    }
+
+
+def _scope_clause(event_id: Optional[int], alias: str = "") -> str:
+    return f" AND {alias}event_id = ?" if event_id else ""
+
+
+def _profile_orders(
+    conn, kind: str, ident: str, event_id: Optional[int] = None
+) -> List[Dict[str, Any]]:
+    """Compras pagas do cliente, da mais recente à mais antiga."""
     rows = conn.execute(
         f"""
         {_IDENT_CTE}
@@ -416,10 +629,10 @@ def _profile_orders(conn, kind: str, ident: str) -> List[Dict[str, Any]]:
                i.seller_name, e.name AS event_name, e.badge_color AS event_badge_color
           FROM ident i
           LEFT JOIN events e ON e.id = i.event_id
-         WHERE i.ident_kind = ? AND i.ident_value = ?
+         WHERE i.ident_kind = ? AND i.ident_value = ?{_scope_clause(event_id, "i.")}
          ORDER BY i.created_at DESC, i.id DESC
         """,
-        (kind, ident),
+        (kind, ident, *_event_params(event_id, 1)),
     ).fetchall()
 
     orders = [dict(r) for r in rows]
@@ -433,9 +646,18 @@ def _profile_orders(conn, kind: str, ident: str) -> List[Dict[str, Any]]:
     return orders
 
 
-def _profile_breakdowns(conn, kind: str, ident: str) -> Dict[str, List[Dict[str, Any]]]:
-    """Top produtos, categorias, formas de pagamento, eventos e vendedores."""
+def _profile_breakdowns(
+    conn, kind: str, ident: str, event_id: Optional[int] = None
+) -> Dict[str, List[Dict[str, Any]]]:
+    """Top produtos, categorias, formas de pagamento, eventos e vendedores.
+
+    ``event_id`` restringe tudo a um evento, menos ``events`` — a lista de
+    eventos do cliente é o que alimenta o próprio filtro.
+    """
     ident_args = (kind, ident)
+    scoped_args = (kind, ident, *_event_params(event_id, 1))
+    scope_i = _scope_clause(event_id, "i.")
+    scope = _scope_clause(event_id)
 
     products = conn.execute(
         f"""
@@ -450,11 +672,11 @@ def _profile_breakdowns(conn, kind: str, ident: str) -> Dict[str, List[Dict[str,
           FROM ident i
           JOIN transaction_items ti ON ti.transaction_id = i.id
          WHERE i.ident_kind = ? AND i.ident_value = ?
-           AND i.status_norm = 'confirmado'
+           AND i.status_norm = 'confirmado'{scope_i}
          GROUP BY LOWER(TRIM(ti.product_name))
          ORDER BY units DESC, revenue DESC
         """,
-        ident_args,
+        scoped_args,
     ).fetchall()
 
     categories = conn.execute(
@@ -466,11 +688,11 @@ def _profile_breakdowns(conn, kind: str, ident: str) -> Dict[str, List[Dict[str,
           FROM ident i
           JOIN transaction_items ti ON ti.transaction_id = i.id
          WHERE i.ident_kind = ? AND i.ident_value = ?
-           AND i.status_norm = 'confirmado'
+           AND i.status_norm = 'confirmado'{scope_i}
          GROUP BY LOWER(TRIM(COALESCE(ti.category, '')))
          ORDER BY revenue DESC
         """,
-        ident_args,
+        scoped_args,
     ).fetchall()
 
     payments = conn.execute(
@@ -480,11 +702,11 @@ def _profile_breakdowns(conn, kind: str, ident: str) -> Dict[str, List[Dict[str,
                COUNT(*)              AS orders,
                COALESCE(SUM(total), 0) AS revenue
           FROM ident
-         WHERE ident_kind = ? AND ident_value = ? AND status_norm = 'confirmado'
+         WHERE ident_kind = ? AND ident_value = ? AND status_norm = 'confirmado'{scope}
          GROUP BY LOWER(TRIM(COALESCE(payment_method, '')))
          ORDER BY revenue DESC
         """,
-        ident_args,
+        scoped_args,
     ).fetchall()
 
     events = conn.execute(
@@ -511,11 +733,11 @@ def _profile_breakdowns(conn, kind: str, ident: str) -> Dict[str, List[Dict[str,
                COUNT(*)                AS orders,
                COALESCE(SUM(total), 0) AS revenue
           FROM ident
-         WHERE ident_kind = ? AND ident_value = ? AND status_norm = 'confirmado'
+         WHERE ident_kind = ? AND ident_value = ? AND status_norm = 'confirmado'{scope}
          GROUP BY seller_id
          ORDER BY revenue DESC
         """,
-        ident_args,
+        scoped_args,
     ).fetchall()
 
     monthly = conn.execute(
@@ -526,11 +748,11 @@ def _profile_breakdowns(conn, kind: str, ident: str) -> Dict[str, List[Dict[str,
                COALESCE(SUM(total), 0)       AS revenue,
                COALESCE(SUM(items_count), 0) AS units
           FROM ident
-         WHERE ident_kind = ? AND ident_value = ? AND status_norm = 'confirmado'
+         WHERE ident_kind = ? AND ident_value = ? AND status_norm = 'confirmado'{scope}
          GROUP BY month
          ORDER BY month ASC
         """,
-        ident_args,
+        scoped_args,
     ).fetchall()
 
     return {
@@ -544,7 +766,11 @@ def _profile_breakdowns(conn, kind: str, ident: str) -> Dict[str, List[Dict[str,
 
 
 def _interval_stats(confirmed_dates: List[datetime]) -> Dict[str, Any]:
-    """Estatísticas de periodicidade a partir das datas de compra confirmadas."""
+    """Estatísticas de periodicidade a partir das datas de compra confirmadas.
+
+    ``series`` traz cada intervalo na ordem em que aconteceu — é o que o
+    gráfico de ritmo de compra desenha.
+    """
     ordered = sorted(d for d in confirmed_dates if d is not None)
     gaps = [
         (b - a).total_seconds() / 86400.0
@@ -557,6 +783,7 @@ def _interval_stats(confirmed_dates: List[datetime]) -> Dict[str, Any]:
             "min_days": None,
             "max_days": None,
             "median_days": None,
+            "series": [],
         }
     ranked = sorted(gaps)
     mid = len(ranked) // 2
@@ -567,15 +794,31 @@ def _interval_stats(confirmed_dates: List[datetime]) -> Dict[str, Any]:
         "min_days": round(min(gaps), 2),
         "max_days": round(max(gaps), 2),
         "median_days": round(median, 2),
+        "series": [
+            {
+                "index": i + 1,
+                "from": a.isoformat(timespec="seconds"),
+                "to": b.isoformat(timespec="seconds"),
+                "days": round(gap, 4),
+            }
+            for i, (a, b, gap) in enumerate(zip(ordered, ordered[1:], gaps))
+        ],
     }
 
 
-def get_customer_profile(kind: str, ident: Any) -> Optional[Dict[str, Any]]:
+def get_customer_profile(
+    kind: str, ident: Any, event_id: Optional[int] = None
+) -> Optional[Dict[str, Any]]:
     """Perfil analítico completo de um cliente, ou ``None`` se não existir.
 
     Inclui KPIs (receita, ticket médio, participação no faturamento total),
     periodicidade de compra, top produtos/categorias, formas de pagamento,
     eventos, vendedores que o atenderam e o histórico de pedidos.
+
+    ``event_id`` recorta histórico e análise (produtos, categorias, pagamentos,
+    vendedores, ritmo de compra) a um dos eventos em que o cliente comprou;
+    os KPIs do cabeçalho e a lista de eventos continuam cobrindo tudo. Um
+    evento em que o cliente não comprou é ignorado (``event_filter`` = None).
     """
     norm_kind, norm_ident = normalize_customer_ident(kind, ident)
     if not norm_kind or not norm_ident:
@@ -590,19 +833,12 @@ def get_customer_profile(kind: str, ident: Any) -> Optional[Dict[str, Any]]:
             {_IDENT_CTE},
             {_AGG_SQL.format(event_clause="")}
             SELECT a.*, l.client_name, l.client_cpf, l.client_email, l.client_phone,
-                   l.client_cro_uf, l.client_cro_numero, l.client_city, l.client_state,
-                   COALESCE(o.refunded_count, 0)  AS refunded_count,
-                   COALESCE(o.refunded_value, 0)  AS refunded_value,
-                   COALESCE(o.pending_count, 0)   AS pending_count,
-                   COALESCE(o.cancelled_count, 0) AS cancelled_count
+                   l.client_cro_uf, l.client_cro_numero, l.client_city, l.client_state
               FROM agg a
               JOIN latest l
                 ON l.ident_kind = a.ident_kind
                AND l.ident_value = a.ident_value
                AND l.rn = 1
-              LEFT JOIN other o
-                ON o.ident_kind = a.ident_kind
-               AND o.ident_value = a.ident_value
              WHERE a.ident_kind = ? AND a.ident_value = ?
             """,
             (norm_kind, norm_ident),
@@ -611,18 +847,44 @@ def get_customer_profile(kind: str, ident: Any) -> Optional[Dict[str, Any]]:
             return None
 
         customer = _customer_row(head, total_revenue)
-        orders = _profile_orders(conn, norm_kind, norm_ident)
-        parts = _profile_breakdowns(conn, norm_kind, norm_ident)
+        all_parts = _profile_breakdowns(conn, norm_kind, norm_ident)
+        bought_in = {e["event_id"] for e in all_parts["events"] if e["event_id"]}
+        if event_id not in bought_in:
+            event_id = None
+        parts = (
+            _profile_breakdowns(conn, norm_kind, norm_ident, event_id)
+            if event_id
+            else all_parts
+        )
+        orders = _profile_orders(conn, norm_kind, norm_ident, event_id)
+
+        # Posição no ranking de faturamento da carteira inteira (mesmo escopo
+        # global do percentual de participação).
+        standing = conn.execute(
+            f"""
+            {_IDENT_CTE},
+            {_AGG_SQL.format(event_clause="")}
+            SELECT COUNT(*) AS customers,
+                   COALESCE(SUM(CASE WHEN revenue > ? THEN 1 ELSE 0 END), 0) AS above
+              FROM agg
+            """,
+            (customer["revenue"],),
+        ).fetchone()
 
     revenue = customer["revenue"]
+    # Participações relativas ao recorte exibido (evento filtrado ou tudo).
+    scope_revenue = sum(float(o["total"] or 0) for o in orders)
     for item in parts["products"]:
-        item["share"] = _share(item["revenue"], revenue)
+        item["share"] = _share(item["revenue"], scope_revenue)
     for item in parts["categories"]:
-        item["share"] = _share(item["revenue"], revenue)
+        item["share"] = _share(item["revenue"], scope_revenue)
     for item in parts["payments"]:
+        item["share"] = _share(item["revenue"], scope_revenue)
+    for item in all_parts["events"]:
         item["share"] = _share(item["revenue"], revenue)
-    for item in parts["events"]:
-        item["share"] = _share(item["revenue"], revenue)
+    scope_event = next(
+        (e for e in all_parts["events"] if event_id and e["event_id"] == event_id), None
+    )
 
     confirmed_dates = [
         _parse_dt(o["created_at"]) for o in orders if o["status"] == "confirmado"
@@ -633,24 +895,37 @@ def get_customer_profile(kind: str, ident: Any) -> Optional[Dict[str, Any]]:
     next_expected = None
     if intervals["avg_days"] and confirmed_dates:
         last = max(d for d in confirmed_dates if d)
-        from datetime import timedelta
-
         next_expected = (last + timedelta(days=intervals["avg_days"])).isoformat(
             timespec="seconds"
         )
 
+    customers_total = int(standing["customers"] or 0)
+    rank = int(standing["above"] or 0) + 1
     customer.update(
         {
             "identity": {"kind": norm_kind, "ident": norm_ident},
+            "rank": rank,
+            "customers_total": customers_total,
+            "rank_top_pct": round(rank / customers_total * 100.0, 1) if customers_total else None,
             "intervals": intervals,
             "next_purchase_expected_at": next_expected,
-            "distinct_products": len(parts["products"]),
-            "distinct_categories": len(parts["categories"]),
+            "distinct_products": len(all_parts["products"]),
+            "distinct_categories": len(all_parts["categories"]),
+            "event_filter": event_id,
+            "scope": {
+                "event_id": event_id,
+                "event_name": (scope_event or {}).get("event_name") or "",
+                "orders_count": len(orders),
+                "revenue": round(scope_revenue, 2),
+                "units": sum(int(o["items_count"] or 0) for o in orders),
+                "distinct_products": len(parts["products"]),
+                "distinct_categories": len(parts["categories"]),
+            },
             "top_products": parts["products"][:10],
             "all_products": parts["products"],
             "categories": parts["categories"],
             "payments": parts["payments"],
-            "events": parts["events"],
+            "events": all_parts["events"],
             "sellers": parts["sellers"],
             "monthly": parts["monthly"],
             "orders": orders,

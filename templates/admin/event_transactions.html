@@ -38,10 +38,10 @@
         </label>
         <label class="admin-filter">
             <span class="admin-filter__label">Detalhe</span>
-            <select name="nivel" class="admin-filter__input" title="Resumo por pedido, uma linha por item, ou pedido com cliente e produtos">
+            <select name="nivel" class="admin-filter__input" title="Resumo por pedido, uma linha por item, ou planilha completa em duas abas (Pedidos + Itens)">
                 <option value="pedidos">Resumo por pedido</option>
                 <option value="itens">Uma linha por item</option>
-                <option value="completo">Pedido + itens</option>
+                <option value="completo">Completo (Pedidos + Itens em abas)</option>
             </select>
         </label>
         <div class="admin-filters__actions">
@@ -146,6 +146,8 @@
         </label>
 
         <input type="hidden" name="page" value="1" aria-hidden="true">
+        <input type="hidden" name="sort" value="{{ filters.sort }}" aria-hidden="true">
+        <input type="hidden" name="dir" value="{{ filters.dir }}" aria-hidden="true">
 
         <div class="admin-filters__actions">
             <button type="submit" class="admin-btn admin-btn--primary">

@@ -43,12 +43,6 @@
                     Salvar imagens (offline)
                 </button>
             </form>
-            <a class="admin-btn admin-btn--ghost"
-               href="{{ url_for('admin_event_stock_export_csv', event_id=event.id, q=filters.q, categoria=filters.categoria, status=filters.status, entrega=filters.entrega) }}"
-               title="Exportar a lista de estoque filtrada em CSV">
-                <i class="fa-solid fa-file-csv" aria-hidden="true"></i>
-                Exportar CSV
-            </a>
         </div>
     </header>
 
@@ -192,6 +186,8 @@
         </label>
 
         <input type="hidden" name="page" value="1" aria-hidden="true">
+        <input type="hidden" name="sort" value="{{ filters.sort }}" aria-hidden="true">
+        <input type="hidden" name="dir" value="{{ filters.dir }}" aria-hidden="true">
 
         <div class="admin-filters__actions">
             <button type="submit" class="admin-btn admin-btn--primary">
@@ -199,6 +195,12 @@
                 Aplicar
             </button>
             <a href="{{ url_for('admin_event_stock', event_id=event.id) }}" class="admin-btn admin-btn--ghost">Limpar</a>
+            <a class="admin-btn admin-btn--ghost"
+               href="{{ url_for('admin_event_stock_export_xlsx', event_id=event.id, q=filters.q, categoria=filters.categoria, status=filters.status, entrega=filters.entrega, sort=filters.sort, dir=filters.dir) }}"
+               title="Exportar a lista de estoque filtrada como planilha .xlsx">
+                <i class="fa-solid fa-file-excel" aria-hidden="true"></i>
+                Exportar Planilha
+            </a>
         </div>
     </form>
 
@@ -227,8 +229,10 @@
         aria-label="Produtos do {{ op_noun_l }} {{ event.name }}"
         data-admin-event-stock
         data-op-noun-l="{{ op_noun_l }}"
-        data-api-url="{{ url_for('admin_api_event_stock', event_id=event.id, q=filters.q, categoria=filters.categoria, status=filters.status, entrega=filters.entrega, per_page=filters.per_page, page=pagination.page) }}"
+        data-api-url="{{ url_for('admin_api_event_stock', event_id=event.id, q=filters.q, categoria=filters.categoria, status=filters.status, entrega=filters.entrega, per_page=filters.per_page, page=pagination.page, sort=filters.sort, dir=filters.dir) }}"
     >
+        {% from "macros/admin_stock_sort.html" import stock_sort_header %}
+        {% set sort_args = {'event_id': event.id, 'q': filters.q, 'categoria': filters.categoria, 'status': filters.status, 'entrega': filters.entrega, 'per_page': filters.per_page} %}
         <div class="admin-table__head admin-stock__row admin-event__row" role="row">
             <span role="columnheader" class="admin-stock__product-head">
                 {% if event_ops_open(event) %}
@@ -237,10 +241,10 @@
                 {% endif %}
                 Produto
             </span>
-            <span class="admin-table__col--num" role="columnheader" title="Preço de venda neste {{ op_noun_l }}">Preço</span>
-            <span class="admin-table__col--num" role="columnheader" title="Unidades vendidas neste {{ op_noun_l }} (pedidos confirmados)">Vendas</span>
-            <span class="admin-table__col--num" role="columnheader" data-stock-qty>Estoque</span>
-            <span class="admin-table__col--num" role="columnheader">Mínimo</span>
+            {{ stock_sort_header('Preço', 'preco', 'admin_event_stock', sort_args, filters.sort, filters.dir, title='Preço de venda neste ' ~ op_noun_l) }}
+            {{ stock_sort_header('Vendas', 'vendas', 'admin_event_stock', sort_args, filters.sort, filters.dir, title='Unidades vendidas neste ' ~ op_noun_l ~ ' (pedidos confirmados)') }}
+            {{ stock_sort_header('Estoque', 'estoque', 'admin_event_stock', sort_args, filters.sort, filters.dir) }}
+            {{ stock_sort_header('Mínimo', 'minimo', 'admin_event_stock', sort_args, filters.sort, filters.dir) }}
             <span role="columnheader">Situação</span>
             <span role="columnheader" class="admin-stock__actions-head">Ações</span>
         </div>
@@ -392,7 +396,7 @@
         <div class="admin-pagination__nav">
             {% if pagination.has_prev %}
             <a class="admin-btn admin-btn--ghost admin-btn--sm"
-               href="{{ url_for('admin_event_stock', event_id=event.id, q=filters.q, categoria=filters.categoria, status=filters.status, entrega=filters.entrega, per_page=filters.per_page, page=pagination.page - 1) }}"
+               href="{{ url_for('admin_event_stock', event_id=event.id, q=filters.q, categoria=filters.categoria, status=filters.status, entrega=filters.entrega, per_page=filters.per_page, sort=filters.sort, dir=filters.dir, page=pagination.page - 1) }}"
                rel="prev">
                 <i class="fa-solid fa-chevron-left" aria-hidden="true"></i>
                 Anterior
@@ -405,7 +409,7 @@
             {% endif %}
             {% if pagination.has_next %}
             <a class="admin-btn admin-btn--ghost admin-btn--sm"
-               href="{{ url_for('admin_event_stock', event_id=event.id, q=filters.q, categoria=filters.categoria, status=filters.status, entrega=filters.entrega, per_page=filters.per_page, page=pagination.page + 1) }}"
+               href="{{ url_for('admin_event_stock', event_id=event.id, q=filters.q, categoria=filters.categoria, status=filters.status, entrega=filters.entrega, per_page=filters.per_page, sort=filters.sort, dir=filters.dir, page=pagination.page + 1) }}"
                rel="next">
                 Próxima
                 <i class="fa-solid fa-chevron-right" aria-hidden="true"></i>

@@ -9,7 +9,6 @@
 
 from __future__ import annotations
 
-import csv
 import io
 import os
 import re
@@ -112,6 +111,7 @@ from database import (
     get_active_event_for_seller,
     get_event,
     get_event_financial_report,
+    get_event_sales_analytics,
     get_event_sales_dashboard,
     get_event_stats,
     get_event_stock_stats,
@@ -127,8 +127,12 @@ from database import (
     get_seller_by_email,
     get_seller_by_username,
     get_stats,
+    find_customer_by_cpf,
     get_customer_display_name,
     get_customer_profile,
+    get_seller_analytics,
+    list_seller_events,
+    get_portfolio_analytics,
     list_customers,
     CUSTOMER_SORTS,
     DEFAULT_CUSTOMER_SORT,
@@ -195,6 +199,9 @@ from database import (
     get_transaction,
     normalize_event_operation_type,
     set_event_operations_closed,
+    list_checkout_stock_conflicts,
+    release_seller_checkout_holds,
+    sync_seller_checkout_holds,
 )
 import breadcrumbs
 import product_images
@@ -283,6 +290,17 @@ def _redirect_back(fallback: str, *, fragment: str | None = None):
     if fragment:
         target = _with_url_fragment(target, fragment)
     return redirect(target)
+
+
+@app.after_request
+def _security_headers(response):
+    """Cabeçalhos defensivos (CVE-2026-27205: páginas autenticadas não devem ir para cache compartilhado)."""
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
+    response.headers.setdefault("Referrer-Policy", "same-origin")
+    if not request.path.startswith("/static/"):
+        response.headers.setdefault("Cache-Control", "private, no-store")
+    return response
 
 
 @app.errorhandler(CSRFError)
@@ -579,6 +597,24 @@ def _inject_totem_theme_scope():
     return {"totem_theme_scope": _totem_theme_scope()}
 
 
+def _cart_scope() -> str:
+    """Dono do carrinho no navegador (vendedor + evento ativo); ``""`` fora do painel.
+
+    O cart.js descarta o carrinho salvo quando este valor muda, para que uma
+    troca de vendedor ou de evento não herde os itens montados no anterior.
+    """
+    seller_id = (_seller_auth() or {}).get("seller_id")
+    if not seller_id:
+        return ""
+    ev = get_active_event_for_seller(int(seller_id))
+    return f"s{int(seller_id)}:e{ev['id'] if ev else 0}"
+
+
+@app.context_processor
+def _inject_cart_scope():
+    return {"totem_cart_scope": _cart_scope}
+
+
 # ---------------------------------------------------------------------------
 # Trilha de navegação (breadcrumb) — admin e vendedor
 # ---------------------------------------------------------------------------
@@ -589,12 +625,12 @@ _TRAIL_LABELS = {
     "admin_events": "Eventos",
     "admin_products": "Produtos",
     "admin_sellers": "Vendedores",
-    "admin_customers": "Clientes",
     "admin_financeiro": "Financeiro",
     "admin_event_stock": "Estoque",
     "admin_event_transactions": "Transações",
     "admin_event_movements": "Movimentações",
     "admin_event_promotions": "Promoções",
+    "admin_event_customers": "Clientes",
     "seller_sale": "Catálogo",
     "seller_dashboard": "Minhas vendas",
     "seller_stock": "Estoque",
@@ -670,11 +706,37 @@ def _trail_entry_for(endpoint: str, view_args: dict | None) -> dict | None:
         ancestors = ancestors[:-1]
     elif endpoint in (
         "admin_event_stock",
-        "admin_event_transactions",
         "admin_event_movements",
         "admin_event_promotions",
+        "admin_event_customers",
     ):
         ancestors = _trail_event_ancestors(event_id)
+    elif endpoint == "admin_event_transactions":
+        ancestors = _trail_event_ancestors(event_id)
+        # Chegando pelo pedido na página do Cliente (``admin-customer__sku``):
+        # a trilha mostra o Cliente de origem em vez do contexto genérico do evento.
+        cli_kind = (request.args.get("cliente_kind") or "").strip()
+        cli_ident = (request.args.get("cliente_ident") or "").strip()
+        if cli_kind and cli_ident:
+            customers_url = (
+                _trail_url("admin_event_customers", event_id=event_id) if event_id else ""
+            )
+            customer_name = _trail_customer_name(cli_kind, cli_ident)
+            customer_url = (
+                _trail_url(
+                    "admin_event_customer_detail",
+                    event_id=event_id,
+                    kind=cli_kind,
+                    ident=cli_ident,
+                )
+                if event_id
+                else ""
+            )
+            if customers_url and customer_name and customer_url:
+                ancestors = ancestors + [
+                    {"u": customers_url, "l": "Clientes"},
+                    {"u": customer_url, "l": customer_name},
+                ]
     elif endpoint == "admin_event_stock_product":
         ancestors = _trail_event_ancestors(event_id)
         stock_url = _trail_url("admin_event_stock", event_id=event_id) if event_id else ""
@@ -693,8 +755,13 @@ def _trail_entry_for(endpoint: str, view_args: dict | None) -> dict | None:
     elif endpoint == "admin_seller_detail":
         ancestors = [{"u": _trail_url("admin_sellers"), "l": "Vendedores"}]
         label = _trail_entity_name("seller", args.get("seller_id")) or "Vendedor"
-    elif endpoint == "admin_customer_detail":
-        ancestors = [{"u": _trail_url("admin_customers"), "l": "Clientes"}]
+    elif endpoint == "admin_event_customer_detail":
+        ancestors = _trail_event_ancestors(event_id)
+        customers_url = (
+            _trail_url("admin_event_customers", event_id=event_id) if event_id else ""
+        )
+        if customers_url:
+            ancestors.append({"u": customers_url, "l": "Clientes"})
         label = _trail_customer_name(args.get("kind"), args.get("ident")) or "Cliente"
     elif endpoint == "seller_stock_product":
         ancestors = [{"u": _trail_url("seller_stock"), "l": "Estoque"}]
@@ -869,6 +936,20 @@ def _current_admin_user() -> str:
 def _current_seller_id() -> int:
     auth = _seller_auth() or {}
     return int(auth["seller_id"])
+
+
+def _current_seller_display_name() -> str:
+    auth = _seller_auth() or {}
+    name = str(auth.get("seller_name") or "").strip()
+    if name:
+        return name
+    try:
+        seller = get_seller(_current_seller_id())
+    except (KeyError, TypeError, ValueError):
+        seller = None
+    if seller:
+        return str(seller.get("name") or "Vendedor").strip() or "Vendedor"
+    return "Vendedor"
 
 
 EVENT_OPS_CLOSED_MSG = (
@@ -1050,6 +1131,8 @@ def api_create_transaction():
         # Busca o evento ativo do vendedor (se houver)
         active_event = get_active_event_for_seller(int(seller["id"]))
         event_id = int(active_event["id"]) if active_event else None
+        if active_event is not None and not event_ops_open(active_event):
+            return jsonify({"error": EVENT_OPS_CLOSED_MSG}), 403
 
         result = create_transaction(
             items,
@@ -1116,6 +1199,10 @@ def api_update_pending_transaction(tx_id: int):
         row = get_seller(int(auth["seller_id"]))
         if row is None or not row.get("active"):
             raise ValueError("Sessão de vendedor inválida ou inativa.")
+
+        seller_ev = get_active_event_for_seller(int(row["id"]))
+        if seller_ev is not None and not event_ops_open(seller_ev):
+            return jsonify({"error": EVENT_OPS_CLOSED_MSG}), 403
 
         result = update_pending_transaction(
             int(tx_id),
@@ -1326,6 +1413,14 @@ def _get_seller_event():
     return get_active_event_for_seller(seller_id)
 
 
+def _reject_if_seller_event_ops_closed():
+    """Bloqueia ações de venda se o evento do vendedor estiver encerrado."""
+    ev = _get_seller_event()
+    if ev is None or event_ops_open(ev):
+        return None
+    return _response_event_ops_closed(int(ev["id"]), seller=True)
+
+
 def _seller_pending_sales_count(seller_id: int, seller_ev) -> int:
     """Conta vendas pendentes do vendedor (escopo do evento quando houver)."""
     if seller_ev:
@@ -1348,6 +1443,22 @@ def _seller_totem_flow() -> dict:
         ),
         "catalog": _seller_home_url(),
         "home": _seller_home_url(),
+        "checkoutUnlock": _url_if_registered(
+            "seller_checkout_unlock",
+            fallback="/vendedor/api/checkout/desbloquear",
+        ),
+        "checkoutHold": _url_if_registered(
+            "seller_api_checkout_hold",
+            fallback="/vendedor/api/checkout/reserva",
+        ),
+        "checkoutHoldRelease": _url_if_registered(
+            "seller_api_checkout_hold_release",
+            fallback="/vendedor/api/checkout/liberar",
+        ),
+        "checkoutHoldConflicts": _url_if_registered(
+            "seller_api_checkout_hold_conflicts",
+            fallback="/vendedor/api/checkout/conflitos",
+        ),
     }
 
 
@@ -1358,6 +1469,8 @@ def _seller_payment_page_context() -> dict:
         "payment_catalog_url": _url_if_registered(
             "seller_sale", fallback="/vendedor/venda"),
         "payment_home_url": _seller_home_url(),
+        "client_lookup_url": _url_if_registered(
+            "seller_api_customer_lookup", fallback="/vendedor/api/clientes/consulta"),
         "resume_pending_aut": None,
         "seller_backorder": True,
     }
@@ -1413,6 +1526,7 @@ def seller_sale():
         totem_flow=_seller_totem_flow(),
         catalog_stock_api_url=catalog_stock_api_url,
         catalog_promo_refresh_api_url=catalog_promo_refresh_api_url,
+        catalog_readonly=bool(seller_ev) and not event_ops_open(seller_ev),
         # Catálogo é tela cheia (sem coluna de conteúdo): a trilha fica oculta,
         # mas a página continua sendo registrada para servir de «voltar».
         totem_trail_enabled=False,
@@ -1420,9 +1534,116 @@ def seller_sale():
     )
 
 
+@app.route(
+    "/vendedor/api/checkout/desbloquear",
+    methods=["POST"],
+    endpoint="seller_checkout_unlock",
+)
+def seller_checkout_unlock():
+    """Valida a senha do vendedor logado para desbloquear o checkout inativo."""
+    auth = _seller_auth()
+    if not auth:
+        return jsonify({"error": "Sessão expirada. Faça login novamente."}), 401
+    seller = get_seller(int(auth["seller_id"]))
+    if seller is None or not seller.get("active"):
+        return jsonify({"error": "Sessão expirada. Faça login novamente."}), 401
+    payload = request.get_json(silent=True) or {}
+    password = payload.get("password")
+    if password is None:
+        password = request.form.get("password") or ""
+    if not isinstance(password, str) or not password:
+        return jsonify({"error": "Informe a senha de login."}), 400
+    if not check_password_hash(seller["password_hash"], password):
+        return jsonify({"error": "Senha inválida."}), 403
+    return jsonify({"ok": True})
+
+
+def _seller_checkout_hold_items():
+    payload = request.get_json(silent=True) or {}
+    items = payload.get("items")
+    if items is None:
+        items = payload.get("itens")
+    return items if isinstance(items, list) else []
+
+
+def _seller_checkout_hold_seq() -> int:
+    payload = request.get_json(silent=True) or {}
+    raw = payload.get("seq")
+    try:
+        seq = int(raw)
+    except (TypeError, ValueError):
+        seq = 0
+    return max(0, seq)
+
+
+@app.route(
+    "/vendedor/api/checkout/reserva",
+    methods=["POST"],
+    endpoint="seller_api_checkout_hold",
+)
+@seller_required
+def seller_api_checkout_hold():
+    """Publica o carrinho da tela de pagamento e devolve conflitos visíveis."""
+    blocked = _reject_if_seller_event_ops_closed()
+    if blocked is not None:
+        return blocked
+    seller_ev = _get_seller_event()
+    if seller_ev is None:
+        return jsonify({"ok": True, "conflicts": []})
+    conflicts = sync_seller_checkout_holds(
+        int(seller_ev["id"]),
+        _current_seller_id(),
+        _current_seller_display_name(),
+        _seller_checkout_hold_items(),
+        seq=_seller_checkout_hold_seq(),
+    )
+    return jsonify({"ok": True, "conflicts": conflicts})
+
+
+@app.route(
+    "/vendedor/api/checkout/liberar",
+    methods=["POST"],
+    endpoint="seller_api_checkout_hold_release",
+)
+@seller_required
+def seller_api_checkout_hold_release():
+    """Remove as reservas do vendedor (volta ao catálogo ou carrinho vazio)."""
+    seller_ev = _get_seller_event()
+    if seller_ev is None:
+        return jsonify({"ok": True, "conflicts": []})
+    release_seller_checkout_holds(
+        int(seller_ev["id"]),
+        _current_seller_id(),
+        seq=_seller_checkout_hold_seq(),
+    )
+    return jsonify({"ok": True, "conflicts": []})
+
+
+@app.route(
+    "/vendedor/api/checkout/conflitos",
+    methods=["POST"],
+    endpoint="seller_api_checkout_hold_conflicts",
+)
+@seller_required
+def seller_api_checkout_hold_conflicts():
+    """Consulta conflitos no catálogo sem publicar reserva deste caixa."""
+    seller_ev = _get_seller_event()
+    if seller_ev is None:
+        return jsonify({"ok": True, "conflicts": []})
+    conflicts = list_checkout_stock_conflicts(
+        int(seller_ev["id"]),
+        _current_seller_id(),
+        _seller_checkout_hold_items(),
+    )
+    return jsonify({"ok": True, "conflicts": conflicts})
+
+
 @app.route("/vendedor/pagamento", endpoint="seller_payment")
 @seller_required
 def seller_payment():
+    blocked = _reject_if_seller_event_ops_closed()
+    if blocked is not None:
+        return blocked
     return render_template("payment.html", **_seller_payment_page_context())
 
 
@@ -1448,6 +1669,9 @@ def seller_payment_waiting():
 @seller_required
 def seller_restore_pending_checkout(tx_id: int):
     """Restaura carrinho + formulário do cliente e envia à tela de pagamento (pedido pendente de AUT)."""
+    blocked = _reject_if_seller_event_ops_closed()
+    if blocked is not None:
+        return blocked
     sid = _current_seller_id()
     payload = get_pending_transaction_restore_payload(tx_id, sid)
     if not payload or not payload.get("cart_items"):
@@ -1471,9 +1695,12 @@ def seller_restore_pending_checkout(tx_id: int):
 @seller_required
 def seller_cancel_pending_transaction(tx_id: int):
     """Descarta pedido pendente (marca como cancelado); não altera estoque nem faturamento."""
+    blocked = _reject_if_tx_event_ops_closed(tx_id)
+    if blocked is not None:
+        return blocked
     try:
         cancel_pending_transaction_for_seller(tx_id, _current_seller_id())
-        flash("Pedido pendente descartado.", "success")
+        flash("Pedido pendente descartado.", "error")
     except ValueError as exc:
         flash(str(exc), "error")
     return redirect(url_for("seller_dashboard"))
@@ -1486,6 +1713,9 @@ def seller_cancel_pending_transaction(tx_id: int):
 @seller_required
 def seller_transaction_note(tx_id: int):
     """Vendedor grava observação impressa na nota do próprio pedido."""
+    blocked = _reject_if_tx_event_ops_closed(tx_id)
+    if blocked is not None:
+        return blocked
     note = request.form.get("receipt_note") or ""
     try:
         result = update_transaction_receipt_note(
@@ -1497,10 +1727,13 @@ def seller_transaction_note(tx_id: int):
         if result.get("receipt_note"):
             flash(f"Observação da nota do pedido {order_label} salva.", "success")
         else:
-            flash(f"Observação da nota do pedido {order_label} removida.", "success")
+            flash(f"Observação da nota do pedido {order_label} removida.", "warning")
     except ValueError as exc:
         flash(str(exc), "error")
-    return redirect(request.referrer or url_for("seller_dashboard"))
+    return _redirect_back(
+        url_for("seller_dashboard"),
+        fragment=f"tx-{tx_id}",
+    )
 
 
 def _seller_dashboard_transactions_view() -> tuple:
@@ -1597,7 +1830,10 @@ def _seller_dashboard_transactions_view() -> tuple:
 def seller_dashboard():
     seller_id = _current_seller_id()
     seller_ev = _get_seller_event()
-    stats = get_stats(seller_id=seller_id)
+    # KPIs no mesmo recorte da lista: só o evento em que o vendedor está operando.
+    stats = get_stats(
+        seller_id=seller_id, event_id=int(seller_ev["id"]) if seller_ev else None,
+    )
     transactions, filters, pagination = _seller_dashboard_transactions_view()
     pending_sales_count = _seller_pending_sales_count(seller_id, seller_ev)
     pending_delivery_count = count_pending_delivery_transactions(
@@ -1640,6 +1876,8 @@ def seller_stock():
             status=filters["status"],
             per_page=filters["per_page"],
             page=pagination["page"],
+            sort=filters["sort"],
+            dir=filters["dir"],
         )
         promo_product_ids = product_ids_with_active_promotions_for_event(ev_id)
         promo_tooltips = active_promotion_tooltip_by_product_id(ev_id)
@@ -1946,6 +2184,11 @@ def seller_api_event_catalog_promos_refresh():
 
     Retorna o mesmo formato que ``list_event_products_for_client``, já enriquecido
     com ``em_promocao``, ``preco_original``, ``promo_badge``, etc.
+
+    ``catalog_ids`` traz, em ordem, os cards que o catálogo deve exibir — o front
+    compara com os da tela para notar produtos adicionados ou removidos pelo
+    administrador. Com ``?cards=1,2`` a resposta inclui também o HTML desses
+    cards (``cards``), renderizado com o mesmo template da página.
     """
     seller_ev = _get_seller_event()
     if seller_ev is None:
@@ -1960,7 +2203,35 @@ def seller_api_event_catalog_promos_refresh():
         products, seller_ev["id"], seller_id=_current_seller_id(),
     )
     summarize_catalog_option_groups(products)
-    return jsonify({"products": products})
+    visible = [p for p in products if not p.get("catalog_oculto")]
+    payload = {
+        "products": products,
+        "catalog_ids": [str(p["id"]) for p in visible],
+    }
+    wanted = {
+        s.strip() for s in request.args.get("cards", "").split(",") if s.strip()
+    }
+    if wanted:
+        payload["cards"] = {
+            str(p["id"]): render_template("partials/catalog_card.html", product=p)
+            for p in visible
+            if str(p["id"]) in wanted
+        }
+    return jsonify(payload)
+
+
+@app.route("/vendedor/api/clientes/consulta", endpoint="seller_api_customer_lookup")
+@seller_required
+def seller_api_customer_lookup():
+    """Dados já conhecidos de um CPF, para o checkout preencher o resto do formulário.
+
+    Consulta o histórico inteiro (todos os eventos), que é o mesmo critério de
+    identidade usado na carteira de clientes — assim a venda cai no perfil certo.
+    """
+    customer = find_customer_by_cpf(request.args.get("cpf", ""))
+    if customer is None:
+        return jsonify({"found": False})
+    return jsonify({"found": True, "customer": customer})
 
 
 @app.route("/api/carrinho/cotacao", methods=["POST"])
@@ -1970,6 +2241,8 @@ def api_cart_promo_quote():
     seller_ev = _get_seller_event()
     if seller_ev is None:
         return jsonify({"error": "Cotação disponível apenas para vendas em evento."}), 404
+    if not event_ops_open(seller_ev):
+        return jsonify({"error": EVENT_OPS_CLOSED_MSG}), 403
     payload = request.get_json(silent=True) or {}
     items = payload.get("items") or payload.get("itens") or []
     try:
@@ -1985,7 +2258,11 @@ def seller_api_dashboard():
     """JSON com os mesmos dados do dashboard."""
     seller_id = _current_seller_id()
     seller_ev = _get_seller_event()
-    transactions = list_transactions(limit=100, seller_id=seller_id)
+    event_id = int(seller_ev["id"]) if seller_ev else None
+    if event_id:
+        transactions = list_transactions_for_event(event_id, seller_id=seller_id, limit=100)
+    else:
+        transactions = list_transactions(limit=100, seller_id=seller_id)
     latest_tx_id = max((int(t["id"]) for t in transactions), default=0)
     pending_sales_count = _seller_pending_sales_count(seller_id, seller_ev)
     pending_delivery_count = count_pending_delivery_transactions(
@@ -1993,7 +2270,7 @@ def seller_api_dashboard():
         event_id=int(seller_ev["id"]) if seller_ev else None,
     )
     return jsonify({
-        "stats": get_stats(seller_id=seller_id),
+        "stats": get_stats(seller_id=seller_id, event_id=event_id),
         "pending_sales_count": pending_sales_count,
         "pending_delivery_count": pending_delivery_count,
         "latest_tx_id": latest_tx_id,
@@ -2036,8 +2313,14 @@ def _parse_new_seller_post(form) -> tuple[dict[str, str], dict[str, str]]:
 
     if event_id <= 0:
         errors["event_id"] = "Selecione o evento ao qual este vendedor será associado."
-    elif get_event(event_id) is None:
-        errors["event_id"] = "Evento não encontrado."
+    else:
+        ev = get_event(event_id)
+        if ev is None:
+            errors["event_id"] = "Evento não encontrado."
+        elif not event_ops_open(ev):
+            errors["event_id"] = (
+                "Não é possível associar o vendedor a um evento com operações encerradas."
+            )
 
     if "username" not in errors and username and get_seller_by_username(username):
         errors["username"] = "Já existe um vendedor com este usuário."
@@ -2079,8 +2362,16 @@ def _parse_edit_seller_post(form, _seller_id: int) -> tuple[dict[str, str], dict
         eid = _parse_int(event_id_raw, 0)
         if eid <= 0:
             errors["event_id"] = "Selecione um evento válido ou «Sem evento»."
-        elif get_event(eid) is None:
-            errors["event_id"] = "Evento não encontrado."
+        else:
+            ev = get_event(eid)
+            if ev is None:
+                errors["event_id"] = "Evento não encontrado."
+            else:
+                current = get_seller_admin_event_selection_id(_seller_id)
+                if int(current or 0) != eid and not event_ops_open(ev):
+                    errors["event_id"] = (
+                        "Não é possível associar o vendedor a um evento com operações encerradas."
+                    )
 
     repop = {
         "name": "" if "name" in errors else name,
@@ -2141,7 +2432,7 @@ def admin_sellers():
     )
 
 
-def _admin_seller_transactions_view(seller_id: int):
+def _admin_seller_transactions_view(seller_id: int, event_id: int | None = None):
     """Lista paginada de vendas do vendedor (admin) com filtros de status/entrega."""
     pedido = (request.args.get("pedido") or "").strip()
     status_raw = (request.args.get("status") or "").strip().lower()
@@ -2168,6 +2459,7 @@ def _admin_seller_transactions_view(seller_id: int):
         status=status_api,
         on_date=on_date,
         delivery=delivery_api,
+        event_id=event_id,
     )
     total_pages = max(1, (total + per_page - 1) // per_page) if total > 0 else 1
     page = min(page, total_pages)
@@ -2179,6 +2471,7 @@ def _admin_seller_transactions_view(seller_id: int):
         status=status_api,
         on_date=on_date,
         delivery=delivery_api,
+        event_id=event_id,
         limit=per_page,
         offset=offset,
     )
@@ -2192,6 +2485,7 @@ def _admin_seller_transactions_view(seller_id: int):
         "entrega": entrega_norm,
         "data": filter_date_display,
         "per_page": per_page,
+        "evento": event_id,
     }
     pagination = {
         "page": page,
@@ -2206,6 +2500,41 @@ def _admin_seller_transactions_view(seller_id: int):
     return transactions, filters, pagination
 
 
+def _seller_scoped_context(seller_id: int) -> dict:
+    """Dados da página do vendedor que respeitam o filtro de evento (``?evento=``).
+
+    KPIs, análise e lista de vendas seguem o mesmo recorte. O filtro só vale
+    para eventos em que o vendedor tem vendas; qualquer outro valor = todos.
+    """
+    seller_events = list_seller_events(seller_id)
+    raw = (request.args.get("evento") or "").strip()
+    event_id = int(raw) if raw.isdigit() else None
+    if event_id not in {e["id"] for e in seller_events}:
+        event_id = None
+
+    analytics = get_seller_analytics(seller_id, event_id)
+    # Rótulos de pagamento vivem na apresentação, como no perfil do cliente.
+    charts = {
+        "seller_by_day": analytics["by_day"],
+        "intervals": analytics["intervals"],
+        "payment_methods": [
+            {**p, "label": _payment_method_label(p["method"])}
+            for p in analytics["payment_methods"]
+        ],
+    }
+    transactions, filters, pagination = _admin_seller_transactions_view(seller_id, event_id)
+    return {
+        "stats": get_stats(seller_id=seller_id, event_id=event_id),
+        "analytics": analytics,
+        "charts": charts,
+        "transactions": transactions,
+        "filters": filters,
+        "pagination": pagination,
+        "seller_events": seller_events,
+        "seller_event_filter": event_id,
+    }
+
+
 @app.route("/admin/vendedores/<int:seller_id>")
 @admin_required
 def admin_seller_detail(seller_id: int):
@@ -2213,17 +2542,12 @@ def admin_seller_detail(seller_id: int):
     if seller is None:
         flash("Vendedor não encontrado.", "error")
         return redirect(url_for("admin_sellers"))
-    stats = get_stats(seller_id=seller_id)
-    transactions, filters, pagination = _admin_seller_transactions_view(seller_id)
     events_for_seller_form = list_events(include_archived=True)
     seller_primary_event_id = get_seller_admin_event_selection_id(seller_id)
     return render_template(
         "admin/seller_detail.html",
         seller=seller,
-        stats=stats,
-        transactions=transactions,
-        filters=filters,
-        pagination=pagination,
+        **_seller_scoped_context(seller_id),
         allowed_per_page=ALLOWED_ADMIN_STOCK_PER_PAGE,
         seller_form=None,
         seller_form_errors={},
@@ -2244,17 +2568,12 @@ def admin_seller_update(seller_id: int):
     seller_form_errors, seller_form = _parse_edit_seller_post(request.form, seller_id)
     if seller_form_errors:
         flash(_first_seller_form_error_message(seller_form_errors), "error")
-        stats = get_stats(seller_id=seller_id)
-        transactions, filters, pagination = _admin_seller_transactions_view(seller_id)
         events_for_seller_form = list_events(include_archived=True)
         seller_primary_event_id = get_seller_admin_event_selection_id(seller_id)
         return render_template(
             "admin/seller_detail.html",
             seller=seller,
-            stats=stats,
-            transactions=transactions,
-            filters=filters,
-            pagination=pagination,
+            **_seller_scoped_context(seller_id),
             allowed_per_page=ALLOWED_ADMIN_STOCK_PER_PAGE,
             seller_form=seller_form,
             seller_form_errors=seller_form_errors,
@@ -2292,17 +2611,12 @@ def admin_seller_update(seller_id: int):
         seller_form = _parse_edit_seller_post(request.form, seller_id)[1]
         seller_form["username"] = ""
         flash(_first_seller_form_error_message(seller_form_errors), "error")
-        stats = get_stats(seller_id=seller_id)
-        transactions, filters, pagination = _admin_seller_transactions_view(seller_id)
         events_for_seller_form = list_events(include_archived=True)
         seller_primary_event_id = get_seller_admin_event_selection_id(seller_id)
         return render_template(
             "admin/seller_detail.html",
             seller=seller,
-            stats=stats,
-            transactions=transactions,
-            filters=filters,
-            pagination=pagination,
+            **_seller_scoped_context(seller_id),
             allowed_per_page=ALLOWED_ADMIN_STOCK_PER_PAGE,
             seller_form=seller_form,
             seller_form_errors=seller_form_errors,
@@ -2334,6 +2648,9 @@ def admin_seller_confirm_item_delivery(seller_id: int, tx_id: int, item_id: int)
     if seller is None:
         flash("Vendedor não encontrado.", "error")
         return redirect(url_for("admin_sellers"))
+    blocked = _reject_if_tx_event_ops_closed(tx_id)
+    if blocked is not None:
+        return blocked
     try:
         result = confirm_item_delivery(
             tx_id,
@@ -2350,9 +2667,7 @@ def admin_seller_confirm_item_delivery(seller_id: int, tx_id: int, item_id: int)
         flash(msg, "success")
     except ValueError as exc:
         flash(str(exc), "error")
-    return redirect(
-        request.referrer or url_for("admin_seller_detail", seller_id=seller_id)
-    )
+    return _redirect_back(url_for("admin_seller_detail", seller_id=seller_id))
 
 
 @app.route(
@@ -2366,6 +2681,9 @@ def admin_seller_confirm_items_delivery(seller_id: int, tx_id: int):
     if seller is None:
         flash("Vendedor não encontrado.", "error")
         return redirect(url_for("admin_sellers"))
+    blocked = _reject_if_tx_event_ops_closed(tx_id)
+    if blocked is not None:
+        return blocked
     item_ids = request.form.getlist("item_ids")
     try:
         result = confirm_items_delivery(
@@ -2387,9 +2705,7 @@ def admin_seller_confirm_items_delivery(seller_id: int, tx_id: int):
             flash(msg, "success")
     except ValueError as exc:
         flash(str(exc), "error")
-    return redirect(
-        request.referrer or url_for("admin_seller_detail", seller_id=seller_id)
-    )
+    return _redirect_back(url_for("admin_seller_detail", seller_id=seller_id))
 
 
 @app.route(
@@ -2403,14 +2719,15 @@ def admin_seller_confirm_transaction_handover(seller_id: int, tx_id: int):
     if seller is None:
         flash("Vendedor não encontrado.", "error")
         return redirect(url_for("admin_sellers"))
+    blocked = _reject_if_tx_event_ops_closed(tx_id)
+    if blocked is not None:
+        return blocked
     try:
         confirm_transaction_handover(tx_id, seller_id=seller_id)
         flash("Pedido marcado como entregue.", "success")
     except ValueError as exc:
         flash(str(exc), "error")
-    return redirect(
-        request.referrer or url_for("admin_seller_detail", seller_id=seller_id)
-    )
+    return _redirect_back(url_for("admin_seller_detail", seller_id=seller_id))
 
 
 @app.route(
@@ -2423,6 +2740,9 @@ def admin_seller_transaction_note(seller_id: int, tx_id: int):
     if seller is None:
         flash("Vendedor não encontrado.", "error")
         return redirect(url_for("admin_sellers"))
+    blocked = _reject_if_tx_event_ops_closed(tx_id)
+    if blocked is not None:
+        return blocked
     note = request.form.get("receipt_note") or ""
     try:
         result = update_transaction_receipt_note(
@@ -2434,11 +2754,12 @@ def admin_seller_transaction_note(seller_id: int, tx_id: int):
         if result.get("receipt_note"):
             flash(f"Observação da nota do pedido {order_label} salva.", "success")
         else:
-            flash(f"Observação da nota do pedido {order_label} removida.", "success")
+            flash(f"Observação da nota do pedido {order_label} removida.", "warning")
     except ValueError as exc:
         flash(str(exc), "error")
-    return redirect(
-        request.referrer or url_for("admin_seller_detail", seller_id=seller_id)
+    return _redirect_back(
+        url_for("admin_seller_detail", seller_id=seller_id),
+        fragment=f"tx-{tx_id}",
     )
 
 
@@ -2499,6 +2820,9 @@ def admin_financeiro():
             report = get_event_financial_report(
                 ev_id, date_from=date_from, date_to=date_to
             )
+            # Rótulo de pagamento vive na camada de apresentação, não na consulta.
+            for row in report["payment_methods"]:
+                row["label"] = _payment_method_label(row["method"])
     return render_template(
         "admin/financeiro.html",
         selected_event_id=ev_id,
@@ -2596,6 +2920,24 @@ def _admin_stock_list_query_params():
     return q, category, status, per_page, page
 
 
+#: Colunas ordenáveis da grade de estoque do evento — espelha ``_EVENT_STOCK_SORT_COLUMNS``.
+EVENT_STOCK_SORT_FIELDS = {"preco", "vendas", "estoque", "minimo"}
+
+#: Colunas ordenáveis da tabela de transações do evento — espelha ``_EVENT_TX_SORT_COLUMNS``.
+EVENT_TX_SORT_FIELDS = {"data", "itens", "total"}
+
+
+def _sortable_table_params(allowed_fields):
+    """Lê ``sort``/``dir`` da querystring para a seta ▲/▼ alternadora do cabeçalho de uma tabela."""
+    sort = (request.args.get("sort") or "").strip().lower()
+    if sort not in allowed_fields:
+        sort = ""
+    direction = (request.args.get("dir") or "desc").strip().lower()
+    if direction not in {"asc", "desc"}:
+        direction = "desc"
+    return sort, direction
+
+
 def _admin_stock_page_view(*, ignore_status_filter: bool = False):
     q_display, category, status, per_page, page = _admin_stock_list_query_params()
     q_lower = q_display.lower() if q_display else ""
@@ -2637,6 +2979,10 @@ def _admin_stock_page_view(*, ignore_status_filter: bool = False):
     return products, filters, pagination
 
 
+#: Vendedor não vê preço nesta grade — só pode ordenar pelas colunas que enxerga.
+SELLER_STOCK_SORT_FIELDS = {"vendas", "estoque", "minimo"}
+
+
 def _seller_event_stock_page_view(event_id: int, seller_id: int):
     """Lista paginada do estoque do evento no painel do vendedor (busca + situação, sem categoria)."""
     q_display, _category, status, per_page, page = _admin_stock_list_query_params()
@@ -2645,6 +2991,7 @@ def _seller_event_stock_page_view(event_id: int, seller_id: int):
     stat_norm = (status or "todos").strip().lower()
     if stat_norm not in {"todos", "ok", "baixo", "sem_estoque", "inativo"}:
         stat_norm = "todos"
+    sort, sort_dir = _sortable_table_params(SELLER_STOCK_SORT_FIELDS)
 
     total = count_event_products_filtered(event_id, q_filter, "todos", stat_norm)
     total_pages = max(1, (total + per_page - 1) // per_page) if total > 0 else 1
@@ -2656,6 +3003,9 @@ def _seller_event_stock_page_view(event_id: int, seller_id: int):
         stat_norm,
         limit=per_page,
         offset=offset,
+        sort=sort,
+        direction=sort_dir,
+        sort_seller_id=seller_id,
     )
     product_ids = [int(p["id"]) for p in products]
     sold_map = units_sold_by_product_for_event(
@@ -2673,6 +3023,8 @@ def _seller_event_stock_page_view(event_id: int, seller_id: int):
         "q": q_display,
         "status": stat_norm,
         "per_page": per_page,
+        "sort": sort,
+        "dir": sort_dir,
     }
     pagination = {
         "page": page,
@@ -2696,6 +3048,7 @@ def _admin_event_stock_page_view(event_id: int):
     q_filter = q_lower or None
     cat_norm = category or "todos"
     stat_norm = status or "todos"
+    sort, sort_dir = _sortable_table_params(EVENT_STOCK_SORT_FIELDS)
 
     total = count_event_products_filtered(
         event_id, q_filter, cat_norm, stat_norm, entrega=entrega_norm,
@@ -2711,6 +3064,8 @@ def _admin_event_stock_page_view(event_id: int):
         limit=per_page,
         offset=offset,
         entrega=entrega_norm,
+        sort=sort,
+        direction=sort_dir,
     )
     product_ids = [int(p["product_id"]) for p in products]
     pending_map = pending_delivery_units_by_product_for_event(
@@ -2735,6 +3090,8 @@ def _admin_event_stock_page_view(event_id: int):
         "status": stat_norm,
         "entrega": entrega_norm,
         "per_page": per_page,
+        "sort": sort,
+        "dir": sort_dir,
     }
     pagination = {
         "page": page,
@@ -2822,7 +3179,7 @@ def admin_products():
         filters=filters,
         pagination=pagination,
         allowed_per_page=ALLOWED_ADMIN_STOCK_PER_PAGE,
-        events_for_modal=list_events(include_archived=False),
+        events_for_modal=[e for e in list_events(include_archived=False) if event_ops_open(e)],
         **_admin_shell_context(active_section="produtos"),
     )
 
@@ -2839,6 +3196,9 @@ def admin_product_add_to_event(product_id: int):
     event = get_event(event_id)
     if event is None:
         return jsonify({"error": "Evento não encontrado."}), 400
+    blocked = _reject_if_event_ops_closed(event)
+    if blocked is not None:
+        return blocked
     initial_stock = max(0, _parse_int(request.form.get("initial_stock") or "", 0))
     min_stock = max(0, _parse_int(request.form.get("min_stock") or "", DEFAULT_MIN_STOCK))
     link_note = (request.form.get("link_note") or "").strip()
@@ -2971,16 +3331,40 @@ def _movement_payload(movement: dict) -> dict:
         delta_kind = "negative"
     else:
         delta_kind = "neutral"
+    created_by_display = _display_created_by(movement.get("created_by"))
+    if not created_by_display:
+        created_by_display = str(movement.get("seller_name") or "").strip()
+    try:
+        pid_int = int(movement.get("product_id") or 0)
+    except (TypeError, ValueError):
+        pid_int = 0
+    product_url = url_for("admin_product_detail", product_id=pid_int) if pid_int > 0 else ""
+    tx_url = ""
+    ref = str(movement.get("reference") or "").strip()
+    try:
+        eid_int = int(movement.get("event_id") or 0)
+    except (TypeError, ValueError):
+        eid_int = 0
+    try:
+        tid_int = int(movement.get("transaction_id") or 0)
+    except (TypeError, ValueError):
+        tid_int = 0
+    if eid_int > 0 and ref and tid_int > 0:
+        tx_url = (
+            url_for("admin_event_transactions", event_id=eid_int, pedido=ref)
+            + f"#tx-{tid_int}"
+        )
     return {
         **movement,
         "event_badge_bg": ev_bg,
         "event_badge_fg": ev_fg,
-        "created_by_display": _display_created_by(movement.get("created_by")),
+        "created_by_display": created_by_display,
         "created_at_display": datahora_filter(movement.get("created_at")),
         "movement_label": mov_label_filter(movement_type),
         "delta_display": signed_filter(movement.get("delta")),
         "delta_kind": delta_kind,
-        "product_url": url_for("admin_product_detail", product_id=movement["product_id"]),
+        "product_url": product_url,
+        "tx_url": tx_url,
     }
 
 
@@ -3182,31 +3566,7 @@ def _csv_fmt_status(value) -> str:
     return s.capitalize() if s else ""
 
 
-def _csv_attachment_response(filename: str, header: list[str], rows: list[list]) -> Response:
-    buf = io.StringIO()
-    writer = csv.writer(buf, lineterminator="\r\n")
-    writer.writerow(header)
-    for row in rows:
-        writer.writerow(row)
-    body = buf.getvalue().encode("utf-8-sig")
-    return Response(
-        body,
-        mimetype="text/csv; charset=utf-8",
-        headers={
-            "Content-Disposition": f'attachment; filename="{filename}"',
-            "Cache-Control": "no-store",
-        },
-    )
-
-
-def _xlsx_attachment_response(
-    filename: str,
-    header: list[str],
-    rows: list[list],
-    *,
-    sheet_title: str = "Vendas",
-) -> Response:
-    """Planilha .xlsx com cabeçalho, filtro automático e valores numéricos nas colunas de R$/qtd."""
+def _xlsx_import_openpyxl():
     try:
         from openpyxl import Workbook
         from openpyxl.styles import Alignment, Font, PatternFill
@@ -3216,10 +3576,12 @@ def _xlsx_attachment_response(
         from openpyxl import Workbook
         from openpyxl.styles import Alignment, Font, PatternFill
         from openpyxl.utils import get_column_letter
+    return Workbook, Alignment, Font, PatternFill, get_column_letter
 
-    wb = Workbook()
-    ws = wb.active
-    ws.title = (sheet_title or "Vendas")[:31]
+
+def _xlsx_write_sheet(ws, header: list[str], rows: list[list]) -> None:
+    """Escreve cabeçalho + linhas numa aba já criada, com filtro automático e valores numéricos nas colunas de R$/qtd."""
+    _, Alignment, Font, PatternFill, get_column_letter = _xlsx_import_openpyxl()
 
     font_header = Font(name="Calibri", bold=True, size=11, color="FFFFFF")
     fill_header = PatternFill(start_color="1565C0", end_color="1565C0", fill_type="solid")
@@ -3278,6 +3640,31 @@ def _xlsx_attachment_response(
     ws.auto_filter.ref = f"A1:{last_col}{last_row}"
     ws.freeze_panes = "A2"
 
+
+def _xlsx_attachment_response(
+    filename: str,
+    header: list[str],
+    rows: list[list],
+    *,
+    sheet_title: str = "Vendas",
+) -> Response:
+    """Planilha .xlsx com cabeçalho, filtro automático e valores numéricos nas colunas de R$/qtd."""
+    return _xlsx_attachment_response_multi(filename, [(sheet_title or "Vendas", header, rows)])
+
+
+def _xlsx_attachment_response_multi(
+    filename: str,
+    sheets: list[tuple[str, list[str], list[list]]],
+) -> Response:
+    """Planilha .xlsx com uma ou mais abas, cada uma com cabeçalho e filtro automático próprios."""
+    Workbook, *_ = _xlsx_import_openpyxl()
+
+    wb = Workbook()
+    for idx, (title, header, rows) in enumerate(sheets):
+        ws = wb.active if idx == 0 else wb.create_sheet()
+        ws.title = (title or f"Página{idx + 1}")[:31]
+        _xlsx_write_sheet(ws, header, rows)
+
     buf = io.BytesIO()
     wb.save(buf)
     return Response(
@@ -3329,39 +3716,34 @@ def admin_event_sales_export_xlsx(event_id: int):
         safe_seller = re.sub(r"[^a-zA-Z0-9_-]+", "_", seller_name or str(seller_filter))[:40].strip("_") or str(seller_filter)
         seller_suffix = f"_vendedor_{safe_seller}"
 
-    if nivel == "pedidos":
-        rows_data = list_transactions_summary_for_event_period(
-            event_id,
-            date_from=raw_from or None,
-            date_to=raw_to or None,
-            seller_id=seller_filter,
-        )
-        # Ordem lógica: identificação → data/hora → situação → vendedor →
-        #               financeiro → pagamento → cliente → CRO → ID interno
-        header = [
-            "Código do Pedido",
-            "Data",
-            "Hora",
-            "Status",
-            "Vendedor",
-            "Qtd. de Itens",
-            "Valor Total (R$)",
-            "Forma de Pagamento",
-            "AUT",
-            "Nome do Cliente",
-            "CPF",
-            "E-mail",
-            "Telefone",
-            "CEP",
-            "Endereço",
-            "Número",
-            "Complemento",
-            "Cidade",
-            "UF",
-            "CRO UF",
-            "Nº CRO",
-            "ID Interno",
-        ]
+    # Ordem lógica (aba Pedidos): identificação → data/hora → situação → vendedor →
+    #                              financeiro → pagamento → cliente → CRO → ID interno
+    orders_header = [
+        "Código do Pedido",
+        "Data",
+        "Hora",
+        "Status",
+        "Vendedor",
+        "Qtd. de Itens",
+        "Valor Total (R$)",
+        "Forma de Pagamento",
+        "AUT",
+        "Nome do Cliente",
+        "CPF",
+        "E-mail",
+        "Telefone",
+        "CEP",
+        "Endereço",
+        "Número",
+        "Complemento",
+        "Cidade",
+        "UF",
+        "CRO UF",
+        "Nº CRO",
+        "ID Interno",
+    ]
+
+    def _build_order_rows(rows_data) -> list[list]:
         rows = []
         for t in rows_data:
             created = t.get("created_at")
@@ -3396,136 +3778,120 @@ def admin_event_sales_export_xlsx(event_id: int):
                     _csv_cell(t.get("id")),
                 ]
             )
-        fname = f"vendas_evento_{event_id}_{safe_ev}{seller_suffix}_pedidos_{ts}.xlsx"
-    else:
-        rows_data = list_transaction_items_for_event_period(
+        return rows
+
+    if nivel == "pedidos":
+        rows_data = list_transactions_summary_for_event_period(
             event_id,
             date_from=raw_from or None,
             date_to=raw_to or None,
             seller_id=seller_filter,
         )
-        if nivel == "completo":
-            # Pedido + cliente + item: uma linha por produto, dados do cliente repetidos.
-            header = [
-                "Código do Pedido",
-                "Data",
-                "Hora",
-                "Status",
-                "Vendedor",
-                "Nome do Cliente",
-                "CPF",
-                "E-mail",
-                "Telefone",
-                "CEP",
-                "Endereço",
-                "Número",
-                "Complemento",
-                "Cidade",
-                "UF",
-                "CRO UF",
-                "Nº CRO",
-                "Forma de Pagamento",
-                "AUT",
-                "Qtd. de Itens",
-                "Valor Total (R$)",
-                "Produto",
-                "SKU",
-                "Categoria",
-                "Qtd.",
-                "Preço Unitário (R$)",
-                "Subtotal (R$)",
-                "ID Pedido",
-                "ID Item",
-            ]
-            rows = []
-            for ti in rows_data:
-                created = ti.get("created_at")
-                rows.append(
-                    [
-                        _csv_cell(ti.get("order_number")),
-                        _csv_fmt_date(created),
-                        _csv_fmt_time(created),
-                        _csv_fmt_status(ti.get("status")),
-                        _csv_cell(ti.get("seller_name")),
-                        _csv_cell(ti.get("client_name")),
-                        _csv_cell(ti.get("client_cpf")),
-                        _csv_cell(ti.get("client_email")),
-                        _csv_cell(ti.get("client_phone")),
-                        _csv_cell(ti.get("client_zipcode")),
-                        _csv_cell(ti.get("client_address")),
-                        _csv_cell(ti.get("client_number")),
-                        _csv_cell(ti.get("client_complement")),
-                        _csv_cell(ti.get("client_city")),
-                        _csv_cell(ti.get("client_state")),
-                        _csv_cell(ti.get("client_cro_uf")),
-                        _csv_cell(ti.get("client_cro_numero")),
-                        _csv_cell(
-                            _payment_method_label(
-                                ti.get("payment_method"),
-                                ti.get("card_installments"),
-                            )
-                        ),
-                        _csv_cell(ti.get("aut")),
-                        _csv_cell(ti.get("items_count")),
-                        _csv_fmt_brl(ti.get("total")),
-                        _csv_cell(ti.get("product_name")),
-                        _csv_cell(ti.get("product_sku")),
-                        _csv_cell(ti.get("category")),
-                        _csv_cell(ti.get("quantity")),
-                        _csv_fmt_brl(ti.get("unit_price")),
-                        _csv_fmt_brl(ti.get("subtotal")),
-                        _csv_cell(ti.get("transaction_id")),
-                        _csv_cell(ti.get("item_id")),
-                    ]
-                )
-            fname = f"vendas_evento_{event_id}_{safe_ev}{seller_suffix}_completo_{ts}.xlsx"
-        else:
-            # Ordem lógica: pedido → data/hora → vendedor → pagamento →
-            #               produto → quantidades → valores → IDs
-            header = [
-                "Código do Pedido",
-                "Data",
-                "Hora",
-                "Vendedor",
-                "Forma de Pagamento",
-                "AUT",
-                "Produto",
-                "SKU",
-                "Categoria",
-                "Qtd.",
-                "Preço Unitário (R$)",
-                "Subtotal (R$)",
-                "ID Pedido",
-                "ID Item",
-            ]
-            rows = []
-            for ti in rows_data:
-                created = ti.get("created_at")
-                rows.append(
-                    [
-                        _csv_cell(ti.get("order_number")),
-                        _csv_fmt_date(created),
-                        _csv_fmt_time(created),
-                        _csv_cell(ti.get("seller_name")),
-                        _csv_cell(
-                            _payment_method_label(
-                                ti.get("payment_method"),
-                                ti.get("card_installments"),
-                            )
-                        ),
-                        _csv_cell(ti.get("aut")),
-                        _csv_cell(ti.get("product_name")),
-                        _csv_cell(ti.get("product_sku")),
-                        _csv_cell(ti.get("category")),
-                        _csv_cell(ti.get("quantity")),
-                        _csv_fmt_brl(ti.get("unit_price")),
-                        _csv_fmt_brl(ti.get("subtotal")),
-                        _csv_cell(ti.get("transaction_id")),
-                        _csv_cell(ti.get("item_id")),
-                    ]
-                )
-            fname = f"vendas_evento_{event_id}_{safe_ev}{seller_suffix}_itens_{ts}.xlsx"
+        fname = f"vendas_evento_{event_id}_{safe_ev}{seller_suffix}_pedidos_{ts}.xlsx"
+        return _xlsx_attachment_response(fname, orders_header, _build_order_rows(rows_data))
 
+    if nivel == "completo":
+        # Duas abas relacionadas pelo "Código do Pedido"/"ID Pedido": Pedidos (1 linha por
+        # transação, com vendedor e cliente) e Itens (1 linha por produto, sem repetir os
+        # dados do cliente em cada linha — isso é o que tornava a planilha única confusa).
+        orders_rows_data = list_transactions_summary_for_event_period(
+            event_id,
+            date_from=raw_from or None,
+            date_to=raw_to or None,
+            seller_id=seller_filter,
+        )
+        items_rows_data = list_transaction_items_for_event_period(
+            event_id,
+            date_from=raw_from or None,
+            date_to=raw_to or None,
+            seller_id=seller_filter,
+        )
+        items_header = [
+            "Código do Pedido",
+            "Produto",
+            "SKU",
+            "Categoria",
+            "Qtd.",
+            "Preço Unitário (R$)",
+            "Subtotal (R$)",
+            "ID Pedido",
+            "ID Item",
+        ]
+        items_rows = []
+        for ti in items_rows_data:
+            items_rows.append(
+                [
+                    _csv_cell(ti.get("order_number")),
+                    _csv_cell(ti.get("product_name")),
+                    _csv_cell(ti.get("product_sku")),
+                    _csv_cell(ti.get("category")),
+                    _csv_cell(ti.get("quantity")),
+                    _csv_fmt_brl(ti.get("unit_price")),
+                    _csv_fmt_brl(ti.get("subtotal")),
+                    _csv_cell(ti.get("transaction_id")),
+                    _csv_cell(ti.get("item_id")),
+                ]
+            )
+        fname = f"vendas_evento_{event_id}_{safe_ev}{seller_suffix}_completo_{ts}.xlsx"
+        return _xlsx_attachment_response_multi(
+            fname,
+            [
+                ("Pedidos", orders_header, _build_order_rows(orders_rows_data)),
+                ("Itens", items_header, items_rows),
+            ],
+        )
+
+    # nivel == "itens" — Ordem lógica: pedido → data/hora → vendedor → pagamento →
+    #                     produto → quantidades → valores → IDs
+    rows_data = list_transaction_items_for_event_period(
+        event_id,
+        date_from=raw_from or None,
+        date_to=raw_to or None,
+        seller_id=seller_filter,
+    )
+    header = [
+        "Código do Pedido",
+        "Data",
+        "Hora",
+        "Vendedor",
+        "Forma de Pagamento",
+        "AUT",
+        "Produto",
+        "SKU",
+        "Categoria",
+        "Qtd.",
+        "Preço Unitário (R$)",
+        "Subtotal (R$)",
+        "ID Pedido",
+        "ID Item",
+    ]
+    rows = []
+    for ti in rows_data:
+        created = ti.get("created_at")
+        rows.append(
+            [
+                _csv_cell(ti.get("order_number")),
+                _csv_fmt_date(created),
+                _csv_fmt_time(created),
+                _csv_cell(ti.get("seller_name")),
+                _csv_cell(
+                    _payment_method_label(
+                        ti.get("payment_method"),
+                        ti.get("card_installments"),
+                    )
+                ),
+                _csv_cell(ti.get("aut")),
+                _csv_cell(ti.get("product_name")),
+                _csv_cell(ti.get("product_sku")),
+                _csv_cell(ti.get("category")),
+                _csv_cell(ti.get("quantity")),
+                _csv_fmt_brl(ti.get("unit_price")),
+                _csv_fmt_brl(ti.get("subtotal")),
+                _csv_cell(ti.get("transaction_id")),
+                _csv_cell(ti.get("item_id")),
+            ]
+        )
+    fname = f"vendas_evento_{event_id}_{safe_ev}{seller_suffix}_itens_{ts}.xlsx"
     return _xlsx_attachment_response(fname, header, rows)
 
 
@@ -3687,12 +4053,27 @@ def admin_event_detail(event_id: int):
     stats = get_event_stock_stats(event_id)
     sales_day_page = max(1, _parse_int(request.args.get("sales_day_page"), 1))
     sales_dashboard = get_event_sales_dashboard(event_id, sales_days_page=sales_day_page)
+    sales_analytics = get_event_sales_analytics(event_id)
+    # Rótulo de pagamento vive na camada de apresentação, não na consulta.
+    for row in sales_analytics["payment_methods"]:
+        row["label"] = _payment_method_label(row["method"])
+    sales_analytics["stock_health"] = {
+        "ok": max(
+            0,
+            int(stats.get("products_count") or 0)
+            - int(stats.get("below_min") or 0)
+            - int(stats.get("sem_estoque") or 0),
+        ),
+        "below_min": int(stats.get("below_min") or 0),
+        "out_of_stock": int(stats.get("sem_estoque") or 0),
+    }
     sellers = list_event_sellers(event_id)
     return render_template(
         "admin/event_detail.html",
         event=event,
         stats=stats,
         sales_dashboard=sales_dashboard,
+        sales_analytics=sales_analytics,
         sellers=sellers,
         active_event_tab="dashboard",
         **_admin_shell_context(active_section="eventos"),
@@ -3846,10 +4227,10 @@ def admin_event_stock(event_id: int):
     )
 
 
-@app.route("/admin/eventos/<int:event_id>/estoque/export.csv")
+@app.route("/admin/eventos/<int:event_id>/estoque/export.xlsx")
 @admin_required
-def admin_event_stock_export_csv(event_id: int):
-    """Exporta a grade de estoque do evento em CSV, respeitando os filtros ativos."""
+def admin_event_stock_export_xlsx(event_id: int):
+    """Exporta a grade de estoque do evento em planilha .xlsx, respeitando os filtros ativos."""
     event = _event_or_404(event_id)
     if event is None:
         return redirect(url_for("admin_events"))
@@ -3860,6 +4241,7 @@ def admin_event_stock_export_csv(event_id: int):
     q_filter = q_display.lower() if q_display else None
     cat_norm = category or "todos"
     stat_norm = status or "todos"
+    sort, sort_dir = _sortable_table_params(EVENT_STOCK_SORT_FIELDS)
 
     products = list_event_products_slice(
         event_id,
@@ -3869,6 +4251,8 @@ def admin_event_stock_export_csv(event_id: int):
         limit=EXPORT_STOCK_CSV_CAP,
         offset=0,
         entrega=entrega_norm,
+        sort=sort,
+        direction=sort_dir,
     )
     product_ids = [int(p["product_id"]) for p in products]
     sold_map = units_sold_by_product_for_event(event_id, product_ids=product_ids)
@@ -3914,8 +4298,21 @@ def admin_event_stock_export_csv(event_id: int):
 
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     safe_ev = re.sub(r"[^a-zA-Z0-9_-]+", "_", (event.get("name") or str(event_id)))[:40].strip("_") or str(event_id)
-    fname = f"estoque_evento_{event_id}_{safe_ev}_{ts}.csv"
-    return _csv_attachment_response(fname, header, rows)
+    fname = f"estoque_evento_{event_id}_{safe_ev}_{ts}.xlsx"
+    return _xlsx_attachment_response(fname, header, rows, sheet_title="Estoque")
+
+
+@app.route("/admin/eventos/<int:event_id>/estoque/export.csv")
+@admin_required
+def admin_event_stock_export_csv(event_id: int):
+    """Compatibilidade: o download de estoque passou a ser .xlsx."""
+    return redirect(
+        url_for(
+            "admin_event_stock_export_xlsx",
+            event_id=event_id,
+            **request.args.to_dict(flat=True),
+        )
+    )
 
 
 @app.route("/admin/eventos/<int:event_id>/estoque/<int:product_id>")
@@ -5223,6 +5620,7 @@ def _admin_event_transactions_page_data(event_id: int) -> dict:
     if per_page not in ALLOWED_ADMIN_STOCK_PER_PAGE:
         per_page = DEFAULT_ADMIN_MOVEMENTS_PER_PAGE
     page = max(1, _parse_int(request.args.get("page"), 1))
+    sort, sort_dir = _sortable_table_params(EVENT_TX_SORT_FIELDS)
 
     status_api = None if status_norm == "todos" else status_norm
 
@@ -5247,6 +5645,8 @@ def _admin_event_transactions_page_data(event_id: int) -> dict:
         delivery=delivery_api,
         limit=per_page,
         offset=offset,
+        sort=sort,
+        direction=sort_dir,
     )
 
     showing_from = offset + 1 if total > 0 else 0
@@ -5262,6 +5662,8 @@ def _admin_event_transactions_page_data(event_id: int) -> dict:
             "vendedor": seller_raw,
             "per_page": per_page,
             "data": filter_date_display,
+            "sort": sort,
+            "dir": sort_dir,
         },
         "pagination": {
             "page": page,
@@ -5634,6 +6036,17 @@ def brl_filter(value):
     return _format_brl(value)
 
 
+@app.template_filter("pct")
+def pct_filter(value):
+    """Percentual em pt-BR com até 1 casa (``6,5``, ``100``) — mesma régua dos gráficos."""
+    try:
+        n = round(float(value or 0), 1)
+    except (TypeError, ValueError):
+        return "—"
+    text = f"{n:.1f}".replace(".", ",")
+    return text[:-2] if text.endswith(",0") else text
+
+
 @app.template_filter("datahora")
 def datahora_filter(value):
     if not value:
@@ -5730,8 +6143,12 @@ def desdeontem_filter(value):
 # Painel administrativo — Clientes
 # ---------------------------------------------------------------------------
 
+# Teto de linhas para relatórios de impressão/PDF (evita PDFs gigantes; o
+# conjunto completo continua disponível via exportação em planilha .xlsx).
+ADMIN_EXPORT_PDF_ROWS_CAP = 2000
+
 ALLOWED_ADMIN_CUSTOMERS_PER_PAGE = (10, 25, 50, 100)
-DEFAULT_ADMIN_CUSTOMERS_PER_PAGE = 25
+DEFAULT_ADMIN_CUSTOMERS_PER_PAGE = 10
 
 # Rótulos das ordenações expostas na tela (chaves validadas por CUSTOMER_SORTS).
 ADMIN_CUSTOMER_SORT_LABELS = (
@@ -5745,19 +6162,15 @@ ADMIN_CUSTOMER_SORT_LABELS = (
 )
 
 
-@app.route("/admin/clientes")
+@app.route("/admin/eventos/<int:event_id>/clientes")
 @admin_required
-def admin_customers():
-    """Carteira de clientes: quem comprou, quanto e com que frequência."""
-    q = (request.args.get("q") or "").strip()
-    sort = (request.args.get("sort") or DEFAULT_CUSTOMER_SORT).strip().lower()
-    if sort not in CUSTOMER_SORTS:
-        sort = DEFAULT_CUSTOMER_SORT
-
-    event_id = _parse_int(request.args.get("evento"), 0)
-    event = get_event(event_id) if event_id > 0 else None
+def admin_event_customers(event_id: int):
+    """Carteira de clientes do evento: quem comprou, quanto e com que frequência."""
+    event = _event_or_404(event_id)
     if event is None:
-        event_id = 0
+        return redirect(url_for("admin_events"))
+
+    q, sort = _admin_event_customers_filters()
 
     per_page = _parse_int(
         request.args.get("per_page"), DEFAULT_ADMIN_CUSTOMERS_PER_PAGE
@@ -5769,7 +6182,7 @@ def admin_customers():
     def fetch(target_page: int):
         return list_customers(
             query=q or None,
-            event_id=event_id or None,
+            event_id=event_id,
             sort=sort,
             limit=per_page,
             offset=(target_page - 1) * per_page,
@@ -5794,31 +6207,183 @@ def admin_customers():
         "showing_from": offset + 1 if total > 0 else 0,
         "showing_to": min(offset + len(customers), total) if total > 0 else 0,
     }
+    portfolio = get_portfolio_analytics(event_id)
+    for row in portfolio["top"]:
+        row["url"] = url_for(
+            "admin_event_customer_detail", event_id=event_id, kind=row["kind"], ident=row["ident"]
+        )
     return render_template(
         "admin/customers.html",
         customers=customers,
+        portfolio=portfolio,
         summary=result["summary"],
         pagination=pagination,
-        filters={"q": q, "sort": sort, "evento": event_id, "per_page": per_page},
+        filters={"q": q, "sort": sort, "per_page": per_page},
         sort_options=ADMIN_CUSTOMER_SORT_LABELS,
-        scope_event=event,
+        event=event,
+        active_event_tab="clientes",
         allowed_per_page=ALLOWED_ADMIN_CUSTOMERS_PER_PAGE,
         **_admin_shell_context(active_section="clientes"),
     )
 
 
-@app.route("/admin/clientes/<kind>/<ident>")
+def _customer_event_filter_arg() -> int | None:
+    """``?evento=<id>`` do perfil do cliente; inválido ou vazio = todos os eventos."""
+    raw = (request.args.get("evento") or "").strip()
+    return int(raw) if raw.isdigit() else None
+
+
+@app.route("/admin/eventos/<int:event_id>/clientes/<kind>/<ident>")
 @admin_required
-def admin_customer_detail(kind: str, ident: str):
+def admin_event_customer_detail(event_id: int, kind: str, ident: str):
     """Perfil analítico de um cliente (histórico, periodicidade, top produtos)."""
-    customer = get_customer_profile(kind, ident)
+    event = _event_or_404(event_id)
+    if event is None:
+        return redirect(url_for("admin_events"))
+    customer = get_customer_profile(kind, ident, _customer_event_filter_arg())
     if customer is None:
         flash("Cliente não encontrado.", "error")
-        return redirect(url_for("admin_customers"))
+        return redirect(url_for("admin_event_customers", event_id=event_id))
+    # Séries dos gráficos d3; rótulos de pagamento vivem na apresentação.
+    # Com filtro de evento, os gráficos descrevem só aquele evento; a previsão da
+    # próxima compra é do cliente como um todo e não cabe no recorte.
+    filtered = bool(customer["event_filter"])
+    scoped_orders = customer["orders"]
+    charts = {
+        "intervals": customer["intervals"],
+        "next_purchase_expected_at": None if filtered else customer["next_purchase_expected_at"],
+        "first_purchase_at": (
+            scoped_orders[-1]["created_at"] if filtered and scoped_orders
+            else customer["first_purchase_at"]
+        ),
+        "payment_methods": [
+            {**p, "label": _payment_method_label(p["method"])} for p in customer["payments"]
+        ],
+        "products": customer["all_products"],
+        "customer_revenue": customer["scope"]["revenue"],
+    }
     return render_template(
         "admin/customer_detail.html",
         customer=customer,
+        charts=charts,
+        event=event,
+        active_event_tab="clientes",
         **_admin_shell_context(active_section="clientes"),
+    )
+
+
+@app.route("/admin/eventos/<int:event_id>/clientes/<kind>/<ident>/pdf")
+@admin_required
+def admin_event_customer_pdf(event_id: int, kind: str, ident: str):
+    """Renderiza a versão para impressão/PDF do perfil completo do cliente."""
+    event = _event_or_404(event_id)
+    if event is None:
+        return redirect(url_for("admin_events"))
+    customer = get_customer_profile(kind, ident, _customer_event_filter_arg())
+    if customer is None:
+        flash("Cliente não encontrado.", "error")
+        return redirect(url_for("admin_event_customers", event_id=event_id))
+    return render_template(
+        "admin/customer_detail_pdf.html",
+        customer=customer,
+        event=event,
+        back_url=url_for(
+            "admin_event_customer_detail", event_id=event_id, kind=kind, ident=ident,
+            evento=customer["event_filter"],
+        ),
+        now=datetime.now(),
+    )
+
+
+def _admin_event_customers_filters() -> tuple[str, str]:
+    """Lê GET (``q``/``sort``) da carteira de clientes, compartilhado entre listagem e exportações."""
+    q = (request.args.get("q") or "").strip()
+    sort = (request.args.get("sort") or DEFAULT_CUSTOMER_SORT).strip().lower()
+    if sort not in CUSTOMER_SORTS:
+        sort = DEFAULT_CUSTOMER_SORT
+    return q, sort
+
+
+@app.route("/admin/eventos/<int:event_id>/clientes/export.xlsx")
+@admin_required
+def admin_event_customers_export_xlsx(event_id: int):
+    """Exporta a carteira de clientes do evento em planilha .xlsx, respeitando os filtros ativos."""
+    event = _event_or_404(event_id)
+    if event is None:
+        return redirect(url_for("admin_events"))
+
+    q, sort = _admin_event_customers_filters()
+    result = list_customers(
+        query=q or None, event_id=event_id, sort=sort, limit=EXPORT_STOCK_CSV_CAP, offset=0
+    )
+    customers = result["rows"]
+    if not customers:
+        flash("Nenhum cliente para exportar.", "info")
+        return redirect(url_for("admin_event_customers", event_id=event_id, q=q or None, sort=sort))
+
+    header = [
+        "Cliente", "CPF", "CRO", "E-mail", "Telefone", "Cidade/UF",
+        "Pedidos", "Unidades", "Faturamento (R$)", "% do Total",
+        "Ticket Médio (R$)", "Periodicidade", "Última Compra",
+    ]
+    rows = []
+    for c in customers:
+        cro = f"{c.get('cro_uf') or ''} {c.get('cro_numero')}".strip() if c.get("cro_numero") else ""
+        city = c.get("city") or ""
+        state = c.get("state") or ""
+        city_state = f"{city}/{state}".strip("/") if (city or state) else ""
+        last = c.get("last_purchase_at")
+        last_str = f"{_csv_fmt_date(last)} {_csv_fmt_time(last)}".strip()
+        rows.append([
+            _csv_cell(c.get("name")),
+            _csv_cell(c.get("cpf")),
+            _csv_cell(cro),
+            _csv_cell(c.get("email")),
+            _csv_cell(c.get("phone")),
+            _csv_cell(city_state),
+            int(c.get("orders_count") or 0),
+            int(c.get("units") or 0),
+            _csv_fmt_brl(c.get("revenue")),
+            _csv_cell(c.get("revenue_share")),
+            _csv_fmt_brl(c.get("avg_ticket")),
+            _csv_cell(
+                periodicidade_filter(c.get("avg_interval_days")) if c.get("is_recurring") else "Compra única"
+            ),
+            _csv_cell(last_str),
+        ])
+
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    safe_ev = re.sub(r"[^a-zA-Z0-9_-]+", "_", (event.get("name") or str(event_id)))[:40].strip("_") or str(event_id)
+    fname = f"clientes_evento_{event_id}_{safe_ev}_{ts}.xlsx"
+    return _xlsx_attachment_response(fname, header, rows, sheet_title="Clientes")
+
+
+@app.route("/admin/eventos/<int:event_id>/clientes/pdf")
+@admin_required
+def admin_event_customers_pdf(event_id: int):
+    """Renderiza a versão para impressão/PDF da carteira de clientes do evento."""
+    event = _event_or_404(event_id)
+    if event is None:
+        return redirect(url_for("admin_events"))
+
+    q, sort = _admin_event_customers_filters()
+    result = list_customers(
+        query=q or None, event_id=event_id, sort=sort, limit=ADMIN_EXPORT_PDF_ROWS_CAP, offset=0
+    )
+    customers = result["rows"]
+    total = int(result["total"])
+    sort_label = dict(ADMIN_CUSTOMER_SORT_LABELS).get(sort, sort)
+
+    return render_template(
+        "admin/customers_pdf.html",
+        event=event,
+        customers=customers,
+        summary=result["summary"],
+        filters={"q": q, "sort": sort, "sort_label": sort_label},
+        capped=total > len(customers),
+        total=total,
+        back_url=url_for("admin_event_customers", event_id=event_id, q=q or None, sort=sort),
+        now=datetime.now(),
     )
 
 
@@ -6011,6 +6576,111 @@ def admin_event_movements(event_id: int):
         filters_active=_admin_movements_has_active_filters(filters),
         active_event_tab="movimentacoes",
         **_admin_shell_context(active_section="eventos"),
+    )
+
+
+def _admin_movements_export_qargs(filters: dict) -> dict:
+    """Query args de filtro (sem paginação) para os links de exportação/voltar."""
+    return {
+        "q": filters.get("q") or None,
+        "tipo": filters.get("tipo") or None,
+        "pedido": filters.get("pedido") or None,
+        "vendedor": filters.get("vendedor") or None,
+        "de": filters.get("de") or None,
+        "ate": filters.get("ate") or None,
+    }
+
+
+@app.route("/admin/eventos/<int:event_id>/movimentacoes/export.xlsx")
+@admin_required
+def admin_event_movements_export_xlsx(event_id: int):
+    """Exporta as movimentações de estoque do evento em planilha .xlsx, respeitando os filtros ativos."""
+    event = _event_or_404(event_id)
+    if event is None:
+        return redirect(url_for("admin_events"))
+
+    filters = _admin_movements_list_filters(event_id=event_id)
+    kwargs = _admin_movements_query_kwargs(filters, event_id=event_id)
+    movements = list_stock_movements(**kwargs, limit=EXPORT_STOCK_CSV_CAP, offset=0)
+
+    header = [
+        "Data", "Hora", "Produto", "SKU", "Categoria", "Tipo",
+        "Delta", "Saldo Após", "Referência", "Motivo", "Usuário",
+    ]
+    rows = []
+    for m in movements:
+        rows.append([
+            _csv_fmt_date(m.get("created_at")),
+            _csv_fmt_time(m.get("created_at")),
+            _csv_cell(m.get("product_name")),
+            _csv_cell(m.get("product_sku")),
+            _csv_cell(m.get("product_category")),
+            mov_label_filter(m.get("movement_type")),
+            int(m.get("delta") or 0),
+            int(m.get("balance_after") or 0),
+            _csv_cell(m.get("reference")),
+            _csv_cell(m.get("reason")),
+            _csv_cell(_display_created_by(m.get("created_by")) or m.get("seller_name") or ""),
+        ])
+
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    safe_ev = re.sub(r"[^a-zA-Z0-9_-]+", "_", (event.get("name") or str(event_id)))[:40].strip("_") or str(event_id)
+    fname = f"movimentacoes_evento_{event_id}_{safe_ev}_{ts}.xlsx"
+    return _xlsx_attachment_response(fname, header, rows, sheet_title="Movimentações")
+
+
+@app.route("/admin/eventos/<int:event_id>/movimentacoes/pdf")
+@admin_required
+def admin_event_movements_pdf(event_id: int):
+    """Renderiza a versão para impressão/PDF das movimentações de estoque do evento."""
+    event = _event_or_404(event_id)
+    if event is None:
+        return redirect(url_for("admin_events"))
+
+    filters = _admin_movements_list_filters(event_id=event_id)
+    kwargs = _admin_movements_query_kwargs(filters, event_id=event_id)
+    total = count_stock_movements(**kwargs)
+    movements = list_stock_movements(**kwargs, limit=ADMIN_EXPORT_PDF_ROWS_CAP, offset=0)
+
+    summary = {
+        "total": total,
+        "shown": len(movements),
+        "sales_count": sum(1 for m in movements if m.get("movement_type") == "venda"),
+        "units_sold": sum(
+            -int(m.get("delta") or 0) for m in movements if m.get("movement_type") == "venda"
+        ),
+        "entries_count": sum(
+            1 for m in movements if m.get("movement_type") in ("entrada", "inicial")
+        ),
+        "units_entered": sum(
+            int(m.get("delta") or 0)
+            for m in movements
+            if m.get("movement_type") in ("entrada", "inicial")
+        ),
+        "exits_count": sum(1 for m in movements if m.get("movement_type") == "saida"),
+        "units_exited": sum(
+            -int(m.get("delta") or 0) for m in movements if m.get("movement_type") == "saida"
+        ),
+    }
+
+    seller_name = ""
+    if filters["vendedor"]:
+        seller_row = get_seller(filters["vendedor"])
+        seller_name = (seller_row or {}).get("name", "")
+
+    return render_template(
+        "admin/movements_pdf.html",
+        event=event,
+        movements=movements,
+        filters=filters,
+        filters_active=_admin_movements_has_active_filters(filters),
+        summary=summary,
+        seller_name=seller_name,
+        capped=total > len(movements),
+        back_url=url_for(
+            "admin_event_movements", event_id=event_id, **_admin_movements_export_qargs(filters)
+        ),
+        now=datetime.now(),
     )
 
 

@@ -198,110 +198,85 @@
             </div>
         </div>
 
-        <div class="admin-event-dash-sales__grid">
-            <div class="admin-event-dash-sales__panel">
-                <h3 class="admin-event-dash-sales__panel-title">
-                    <i class="fa-solid fa-calendar-days" aria-hidden="true"></i>
-                    Vendas por dia
-                </h3>
-                <p class="admin-event-dash-sales__panel-hint">
-                    Dias com pedidos no {{ op_noun_l }}, mais recentes primeiro (até {{ sales_dashboard.sales_days_limit }} dias).
-                </p>
-                {% if sales_dashboard.sales_by_day %}
-                <div class="admin-table admin-event-dash-sales__table admin-event-dash-sales__table--by-day" role="table" aria-label="Vendas por dia">
-                    <div class="admin-table__head admin-event-dash-sales__row" role="row">
-                        <span role="columnheader" class="admin-event-dash-sales__cell--day">Data</span>
-                        <span role="columnheader" class="admin-event-dash-sales__cell--orders">Pedidos</span>
-                    </div>
-                    {% for row in sales_dashboard.sales_by_day %}
-                    <div class="admin-event-dash-sales__row" role="row">
-                        <span class="admin-event-dash-sales__cell--day">
-                            {% set p = row.day.split('-') %}
-                            {{ p[2] }}/{{ p[1] }}/{{ p[0] }}
-                        </span>
-                        <span class="admin-event-dash-sales__cell--orders"><strong>{{ row.orders_count }}</strong></span>
-                    </div>
-                    {% endfor %}
-                </div>
-                {% set day_pagination = sales_dashboard.sales_by_day_pagination %}
-                {% if day_pagination.total > 0 %}
-                <nav class="admin-pagination" aria-label="Paginação de vendas por dia">
-                    <p class="admin-pagination__summary">
-                        Mostrando
-                        <strong>{{ day_pagination.showing_from }}–{{ day_pagination.showing_to }}</strong>
-                        de <strong>{{ day_pagination.total }}</strong> dia(s)
-                        · página {{ day_pagination.page }} de {{ day_pagination.total_pages }}
+        {# ── Gráficos analíticos (d3) — desenhados por static/js/admin-charts.js ── #}
+        <div class="admin-event-dash-sales__charts admin-event-dash-sales__charts--series">
+            <figure class="admin-chart" data-admin-chart="revenue-by-day">
+                <figcaption class="admin-chart__head">
+                    <h3 class="admin-chart__title">
+                        <i class="fa-solid fa-chart-column" aria-hidden="true"></i>
+                        Receita por dia
+                    </h3>
+                    <p class="admin-chart__hint">
+                        Série contínua do primeiro ao último dia com vendas — dias sem pedido
+                        aparecem zerados, para não distorcer o ritmo do {{ op_noun_l }}.
                     </p>
-                    <div class="admin-pagination__nav">
-                        {% if day_pagination.has_prev %}
-                        <a class="admin-btn admin-btn--ghost admin-btn--sm"
-                           href="{{ url_for('admin_event_detail', event_id=event.id, sales_day_page=day_pagination.page - 1) }}#event-dash-sales-title"
-                           rel="prev">
-                            <i class="fa-solid fa-chevron-left" aria-hidden="true"></i>
-                            Anterior
-                        </a>
-                        {% else %}
-                        <span class="admin-pagination__disabled admin-btn admin-btn--ghost admin-btn--sm" aria-disabled="true">
-                            <i class="fa-solid fa-chevron-left" aria-hidden="true"></i>
-                            Anterior
-                        </span>
-                        {% endif %}
-                        {% if day_pagination.has_next %}
-                        <a class="admin-btn admin-btn--ghost admin-btn--sm"
-                           href="{{ url_for('admin_event_detail', event_id=event.id, sales_day_page=day_pagination.page + 1) }}#event-dash-sales-title"
-                           rel="next">
-                            Próxima
-                            <i class="fa-solid fa-chevron-right" aria-hidden="true"></i>
-                        </a>
-                        {% else %}
-                        <span class="admin-pagination__disabled admin-btn admin-btn--ghost admin-btn--sm" aria-disabled="true">
-                            Próxima
-                            <i class="fa-solid fa-chevron-right" aria-hidden="true"></i>
-                        </span>
-                        {% endif %}
-                    </div>
-                </nav>
-                {% endif %}
-                {% else %}
-                <p class="admin-event-dash-sales__empty">Nenhuma venda registrada neste {{ op_noun_l }} ainda.</p>
-                {% endif %}
-            </div>
+                </figcaption>
+            </figure>
 
-            <div class="admin-event-dash-sales__panel">
-                <h3 class="admin-event-dash-sales__panel-title">
-                    <i class="fa-solid fa-ranking-star" aria-hidden="true"></i>
-                    Top 5 produtos (SKU)
-                </h3>
-                <p class="admin-event-dash-sales__panel-hint">Por quantidade de unidades vendidas no {{ op_noun_l }}.</p>
-                {% if sales_dashboard.top_products %}
-                <div class="admin-table admin-event-dash-sales__table admin-event-dash-sales__table--top-skus" role="table" aria-label="Produtos mais vendidos">
-                    <div class="admin-table__head admin-event-dash-sales__row admin-event-dash-sales__row--top" role="row">
-                        <span role="columnheader">#</span>
-                        <span role="columnheader">SKU</span>
-                        <span role="columnheader">Produto</span>
-                        <span role="columnheader" class="admin-table__col--num">Unid.</span>
-                        <span role="columnheader" class="admin-table__col--num">Receita</span>
-                    </div>
-                    {% for item in sales_dashboard.top_products %}
-                    <div class="admin-event-dash-sales__row admin-event-dash-sales__row--top" role="row">
-                        <span class="admin-event-dash-sales__rank{% if loop.index == 1 %} admin-event-dash-sales__rank--gold{% elif loop.index == 2 %} admin-event-dash-sales__rank--silver{% elif loop.index == 3 %} admin-event-dash-sales__rank--bronze{% endif %}">{{ loop.index }}</span>
-                        <span><code class="admin-event-dash-sales__sku">{{ item.sku }}</code></span>
-                        <span class="admin-event-dash-sales__prod-name">
-                            {% if item.product_id %}
-                            <a href="{{ url_for('admin_event_stock_product', event_id=event.id, product_id=item.product_id) }}">{{ item.product_name }}</a>
-                            {% else %}
-                            {{ item.product_name }}
-                            {% endif %}
-                        </span>
-                        <span class="admin-table__col--num"><strong>{{ item.units_sold }}</strong></span>
-                        <span class="admin-table__col--num">{{ item.revenue | brl }}</span>
-                    </div>
-                    {% endfor %}
-                </div>
-                {% else %}
-                <p class="admin-event-dash-sales__empty">Sem dados de ranking até haver vendas.</p>
-                {% endif %}
-            </div>
+            <figure class="admin-chart" data-admin-chart="top-products">
+                <figcaption class="admin-chart__head">
+                    <h3 class="admin-chart__title">
+                        <i class="fa-solid fa-ranking-star" aria-hidden="true"></i>
+                        Produtos mais vendidos
+                    </h3>
+                    <p class="admin-chart__hint">
+                        Top {{ sales_analytics.top_products | length }} por unidades vendidas.
+                        A receita de cada um aparece no detalhe.
+                    </p>
+                </figcaption>
+            </figure>
+        </div>
+
+        <div class="admin-event-dash-sales__charts admin-event-dash-sales__charts--pairs">
+            <figure class="admin-chart" data-admin-chart="orders-by-hour">
+                <figcaption class="admin-chart__head">
+                    <h3 class="admin-chart__title">
+                        <i class="fa-solid fa-clock" aria-hidden="true"></i>
+                        Pedidos por hora
+                    </h3>
+                    <p class="admin-chart__hint">
+                        Distribuição dos pedidos ao longo do dia — indica os horários de pico
+                        para dimensionar equipe e estoque no balcão.
+                    </p>
+                </figcaption>
+            </figure>
+
+            <figure class="admin-chart" data-admin-chart="sellers">
+                <figcaption class="admin-chart__head">
+                    <h3 class="admin-chart__title">
+                        <i class="fa-solid fa-user-tie" aria-hidden="true"></i>
+                        Receita por vendedor
+                    </h3>
+                    <p class="admin-chart__hint">
+                        Quanto cada vendedor fechou neste {{ op_noun_l }}, do maior para o menor.
+                    </p>
+                </figcaption>
+            </figure>
+
+            <figure class="admin-chart" data-admin-chart="payment-mix">
+                <figcaption class="admin-chart__head">
+                    <h3 class="admin-chart__title">
+                        <i class="fa-solid fa-credit-card" aria-hidden="true"></i>
+                        Composição por forma de pagamento
+                    </h3>
+                    <p class="admin-chart__hint">
+                        Participação de cada meio de pagamento na receita confirmada.
+                    </p>
+                </figcaption>
+            </figure>
+
+            <figure class="admin-chart" data-admin-chart="stock-health">
+                <figcaption class="admin-chart__head">
+                    <h3 class="admin-chart__title">
+                        <i class="fa-solid fa-boxes-stacked" aria-hidden="true"></i>
+                        Saúde do estoque
+                    </h3>
+                    <p class="admin-chart__hint">
+                        Situação atual dos {{ stats.products_count }} produto(s) do {{ op_noun_l }}:
+                        saudáveis, abaixo do mínimo e sem estoque.
+                    </p>
+                </figcaption>
+            </figure>
         </div>
     </div>
 </section>
@@ -396,6 +371,12 @@
 {% endblock %}
 
 {% block admin_scripts %}
+{# Séries dos gráficos: JSON inerte lido por admin-charts.js. #}
+<script type="application/json" id="event-analytics-data">{{ sales_analytics | tojson }}</script>
+<script src="{{ url_for('static', filename='vendor/d3/d3.min.js') }}"></script>
+{# Visual anterior dos gráficos, usado só no mobile (≤767px). #}
+<script src="{{ url_for('static', filename='js/admin-charts-legacy.js') }}"></script>
+<script src="{{ url_for('static', filename='js/admin-charts.js') }}"></script>
 <script>
 (() => {
     const dialog = document.getElementById('event-edit-modal');

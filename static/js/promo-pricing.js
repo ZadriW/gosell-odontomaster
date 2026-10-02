@@ -8,6 +8,17 @@
         return Math.round((Number(n) + Number.EPSILON) * 100) / 100;
     }
 
+    /** Corrige, na maior linha, o centavo que o rateio perde ao arredondar. */
+    function balanceRounding(values, target) {
+        const sum = round2(values.reduce((acc, v) => acc + v, 0));
+        const diff = round2(Number(target) - sum);
+        if (Math.abs(diff) < 0.005 || !values.length) return values;
+        let idx = 0;
+        values.forEach((v, i) => { if (v > values[idx]) idx = i; });
+        values[idx] = round2(Math.max(0, values[idx] + diff));
+        return values;
+    }
+
     function packGroupsAndExtra(qty, packQty) {
         const pack = Math.max(2, parseInt(String(packQty), 10) || 2);
         const q = Math.max(0, parseInt(String(qty), 10) || 0);
@@ -46,20 +57,114 @@
         if (rt === 'min_bundle') {
             const minQ = Math.max(2, parseInt(String(minQty), 10) || 2);
             if (q < minQ) return round2(list * q);
-            const eff = packSubtotal(q, minQ, ruleValue, list);
-            if (eff >= round2(list * q)) return round2(list * q);
-            return eff;
+            return packSubtotal(q, minQ, ruleValue, list);
         }
         if (rt === 'exact_bundle') {
             // Kit de minQ por ruleValue; unidades além do pacote (ex.: 6ª) no preço de lista.
             const minQ = Math.max(2, parseInt(String(minQty), 10) || 2);
             const { groups } = packGroupsAndExtra(q, minQ);
             if (groups <= 0) return round2(list * q);
-            const eff = packSubtotal(q, minQ, ruleValue, list);
-            if (eff >= round2(list * q)) return round2(list * q);
-            return eff;
+            return packSubtotal(q, minQ, ruleValue, list);
         }
         return round2(list * q);
+    }
+
+    /**
+     * A regra da promoção se cumpre nesta quantidade? Só olha a regra, nunca o
+     * preço: o pacote vale mesmo quando não fica abaixo do preço de lista.
+     */
+    function promoRuleApplies(promo, qty) {
+        const q = Math.max(0, parseInt(String(qty), 10) || 0);
+        if (q <= 0 || !promo) return false;
+        const rt = String(promo.promo_tipo || '').trim();
+        if (rt === 'percent' || rt === 'fixed') return true;
+        if (rt === 'bogo') {
+            const freeQ = Math.max(0, parseInt(String(promo.promo_free_qty), 10) || 0);
+            return freeQ > 0 && q >= Math.max(1, parseInt(String(promo.promo_min_qty), 10) || 1);
+        }
+        if (rt === 'min_bundle' || rt === 'exact_bundle') {
+            return q >= Math.max(2, parseInt(String(promo.promo_min_qty), 10) || 2);
+        }
+        return false;
+    }
+
+    /** Pacotes (qtd/valor) das promoções de pacote de um produto. */
+    function packOptionsOf(promos) {
+        return (promos || [])
+            .filter((p) => p && (p.promo_tipo === 'exact_bundle' || p.promo_tipo === 'min_bundle'))
+            .map((p) => ({
+                packQty: Math.max(2, parseInt(String(p.promo_min_qty), 10) || 2),
+                packTotal: Math.max(0, Number(p.promo_rule_value) || 0),
+                promo: p,
+            }));
+    }
+
+    /** Cobrir mais unidades vence; o total menor só desempata. */
+    function planBeats(candidate, current) {
+        if (!current) return true;
+        if (candidate.covered !== current.covered) return candidate.covered > current.covered;
+        return candidate.cost < current.cost - 0.0001;
+    }
+
+    /**
+     * Melhor combinação de pacotes para `qty` unidades do mesmo produto.
+     *
+     * Cada promoção entra pela sua própria regra — pacotes completos pelo valor
+     * do pacote, sobra a preço de lista — e vence a combinação que cobre mais
+     * unidades; o total menor só desempata. Ex.: 5 un. a R$ 69,90 com kits de
+     * 3/R$ 190,00 e 5/R$ 349,50 → 1 kit de 5, e não 1 kit de 3 + 2 avulsas.
+     * Com 8 un., os dois kits se somam: 5 + 3 = R$ 539,50.
+     * Espelha _best_pack_plan em database/promotions.py.
+     */
+    function bestPackPlan(packOptions, listPrice, qty) {
+        const q = Math.max(0, parseInt(String(qty), 10) || 0);
+        if (q <= 0 || !packOptions.length) return null;
+        const unit = Number(listPrice) || 0;
+        const dp = [{ covered: 0, cost: 0, used: [] }];
+        for (let n = 1; n <= q; n++) {
+            const prev = dp[n - 1];
+            let best = { covered: prev.covered, cost: round2(prev.cost + unit), used: prev.used };
+            packOptions.forEach((opt) => {
+                if (opt.packQty > n) return;
+                const base = dp[n - opt.packQty];
+                const cand = {
+                    covered: base.covered + opt.packQty,
+                    cost: round2(base.cost + opt.packTotal),
+                    used: base.used.concat([opt]),
+                };
+                if (planBeats(cand, best)) best = cand;
+            });
+            dp.push(best);
+        }
+        const chosen = dp[q];
+        if (!chosen.used.length) return null;
+
+        const rows = [];
+        chosen.used.forEach((opt) => {
+            const id = opt.promo.promo_id || 0;
+            const found = rows.find((r) => r.promoId === id && r.packQty === opt.packQty);
+            if (found) {
+                found.groups += 1;
+                return;
+            }
+            rows.push({
+                promoId: id,
+                packQty: opt.packQty,
+                packTotal: opt.packTotal,
+                groups: 1,
+                promo: opt.promo,
+                promo_nome: opt.promo.promo_nome || '',
+            });
+        });
+        rows.sort((a, b) => (b.packQty - a.packQty) || (a.promoId - b.promoId));
+        // A linha guarda uma promoção só: fica com a que cobre mais unidades.
+        let dominant = rows[0];
+        rows.forEach((r) => {
+            const key = r.packQty * r.groups;
+            const bestKey = dominant.packQty * dominant.groups;
+            if (key > bestKey || (key === bestKey && r.packQty > dominant.packQty)) dominant = r;
+        });
+        return { covered: chosen.covered, cost: round2(chosen.cost), promo: dominant.promo, plan: rows };
     }
 
     function extraBitText(extra, listUnit, formatBRL) {
@@ -76,10 +181,40 @@
             : `${groups} pacotes de ${minQ} un. por ${formatBRL(bundleTotal)} cada`;
     }
 
+    /** Normaliza uma linha do plano (front: packQty; servidor: min_qty). */
+    function planRow(row) {
+        if (!row) return null;
+        const packQty = Math.max(2, parseInt(String(row.packQty != null ? row.packQty : row.min_qty), 10) || 0);
+        const groups = Math.max(0, parseInt(String(row.groups), 10) || 0);
+        if (packQty < 2 || groups <= 0) return null;
+        return {
+            packQty,
+            groups,
+            packTotal: Math.max(0, Number(row.packTotal != null ? row.packTotal : row.rule_value) || 0),
+        };
+    }
+
     function formatBundleQtyMeta(item, formatBRL) {
-        const tipo = String(item && item.promo_tipo ? item.promo_tipo : '');
-        if (tipo !== 'exact_bundle' && tipo !== 'min_bundle') return '';
         if (!item || !item.promo_aplicada) return '';
+
+        // Plano de pacotes: pode somar kits de tamanhos diferentes
+        // ("1 pacote de 5 un. + 1 pacote de 3 un. + 1 un. a R$ 69,90").
+        const planRaw = Array.isArray(item.bundle_plan) && item.bundle_plan.length
+            ? item.bundle_plan
+            : item.promo_plan;
+        const plan = (Array.isArray(planRaw) ? planRaw : []).map(planRow).filter(Boolean);
+        if (plan.length) {
+            const qtyTotal = Math.max(0, parseInt(String(item.quantidade), 10) || 0);
+            const unit = Number(item.preco_lista) || Number(item.preco) || 0;
+            const covered = plan.reduce((acc, r) => acc + r.packQty * r.groups, 0);
+            const bits = plan.map((r) => packBitText(r.groups, r.packQty, r.packTotal, formatBRL));
+            const extraBit = extraBitText(Math.max(0, qtyTotal - covered), unit, formatBRL);
+            if (extraBit) bits.push(extraBit);
+            return bits.filter(Boolean).join(' + ');
+        }
+
+        const tipo = String(item.promo_tipo || '');
+        if (tipo !== 'exact_bundle' && tipo !== 'min_bundle') return '';
         const minQ = Math.max(2, parseInt(String(item.promo_min_qty), 10) || 2);
         const qty = Math.max(0, parseInt(String(item.quantidade), 10) || 0);
         const bundleTotal = Math.max(0, Number(item.promo_rule_value) || 0);
@@ -197,6 +332,11 @@
         if (Array.isArray(item.promos) && item.promos.length) {
             next.promos = item.promos;
         }
+        // Rateio de kit entre produtos diferentes é recalculado depois (cross):
+        // limpa o resíduo do cálculo anterior para não descrever o kit errado.
+        delete next.bundle_groups;
+        delete next.bundle_extra;
+        delete next.bundle_item_extra;
 
         const listSubtotal = round2(listPrice * qty);
         if (next.bogo_auto_free) {
@@ -212,7 +352,7 @@
         const candidates = promosOf(next).filter((promo) => {
             if (!promo.promo_tipo || promo.promo_tipo === 'combo_bundle') return false;
             if (isBogoPairPromo(promo)) return false;
-            return true;
+            return promoRuleApplies(promo, qty);
         });
 
         if (!candidates.length) {
@@ -220,12 +360,21 @@
             next.subtotal = listSubtotal;
             next.economia = 0;
             next.promo_aplicada = false;
+            next.bundle_plan = [];
+            next.promo_covered_qty = 0;
             return next;
         }
 
-        let best = null;
-        let bestSubtotal = listSubtotal;
+        let best = bestPackPlan(packOptionsOf(candidates), listPrice, qty);
+        // percent/fixed/bogo cobrem 100% da quantidade por definição — não há
+        // "unidade deixada de fora da regra" a proteger como há entre pacotes
+        // de tamanhos diferentes. Aqui a comparação é só de preço (nunca
+        // planBeats): um pacote parcial mais barato não pode perder para um
+        // desconto mais caro só por "cobrir mais" — pacote nunca cobre mais
+        // que a própria quantidade, então esse critério sempre favoreceria
+        // percent/fixed/bogo e a promoção de pacote nunca seria escolhida.
         candidates.forEach((promo) => {
+            if (promo.promo_tipo === 'exact_bundle' || promo.promo_tipo === 'min_bundle') return;
             const eff = computeEffectiveSubtotal(
                 promo.promo_tipo,
                 promo.promo_rule_value,
@@ -234,31 +383,30 @@
                 listPrice,
                 qty,
             );
-            if (eff < bestSubtotal - 0.001) {
-                bestSubtotal = eff;
-                best = promo;
+            if (!best || eff < best.cost - 0.0001) {
+                best = { covered: qty, cost: eff, promo, plan: [] };
             }
         });
 
         if (best) {
-            stampPromoFields(next, best);
-            next.subtotal = bestSubtotal;
-            next.economia = round2(listSubtotal - bestSubtotal);
+            stampPromoFields(next, best.promo);
+            const covered = Math.min(qty, best.covered);
+            const extraUnits = Math.max(0, qty - covered);
+            next.subtotal = best.cost;
+            next.economia = round2(Math.max(0, listSubtotal - best.cost));
             next.promo_aplicada = true;
-            const isPack = next.promo_tipo === 'exact_bundle' || next.promo_tipo === 'min_bundle';
-            if (isPack) {
-                const { extra } = packGroupsAndExtra(qty, next.promo_min_qty);
-                next.preco = extra > 0
-                    ? listPrice
-                    : (qty > 0 ? round2(bestSubtotal / qty) : listPrice);
-            } else {
-                next.preco = qty > 0 ? round2(bestSubtotal / qty) : listPrice;
-            }
+            next.bundle_plan = best.plan;
+            next.promo_covered_qty = covered;
+            next.preco = extraUnits > 0
+                ? listPrice
+                : (qty > 0 ? round2(best.cost / qty) : listPrice);
         } else {
             next.subtotal = listSubtotal;
             next.preco = listPrice;
             next.economia = 0;
             next.promo_aplicada = false;
+            next.bundle_plan = [];
+            next.promo_covered_qty = 0;
         }
         return next;
     }
@@ -524,13 +672,15 @@
             });
 
             const promoSub = round2(numCombos * comboTotal);
-            if (promoSub >= originalComboSub) return;
+            if (promoSub >= originalComboSub) {
+                // Ao contrário de exact_bundle/min_bundle (mesmo produto, risco de
+                // "quebrar" o pacote em sub-combinação mais barata), o combo junta
+                // produtos diferentes — não há regra de quantidade a proteger. Sem
+                // desconto real, não aplica (deixa a promoção individual de cada
+                // item, se houver, decidir).
+                return;
+            }
 
-            let currentGroup = 0;
-            indices.forEach(i => {
-                currentGroup += Number(all[i].subtotal) || 0;
-            });
-            let proposedGroup = 0;
             const proposed = [];
             indices.forEach(i => {
                 const qty = Math.max(0, parseInt(String(all[i].quantidade), 10) || 0);
@@ -541,22 +691,28 @@
                 const itemPromo = round2(promoSub * share);
                 const itemTotal = round2(itemPromo + extra * lp);
                 proposed.push(itemTotal);
-                proposedGroup += itemTotal;
             });
-            if (proposedGroup >= currentGroup - 0.001) return;
+
+            let comboTarget = promoSub;
+            indices.forEach(i => {
+                const qty = Math.max(0, parseInt(String(all[i].quantidade), 10) || 0);
+                const lp = Number(all[i].preco_lista) || 0;
+                comboTarget = round2(comboTarget + Math.max(0, qty - numCombos) * lp);
+            });
+            balanceRounding(proposed, comboTarget);
 
             indices.forEach((i, n) => {
                 const qty = Math.max(0, parseInt(String(all[i].quantidade), 10) || 0);
                 const lp = Number(all[i].preco_lista) || 0;
                 const itemOrig = round2(lp * qty);
                 const itemTotal = proposed[n];
-                if (itemTotal < itemOrig) {
-                    stampPromoFields(all[i], group.meta);
-                    all[i].subtotal = itemTotal;
-                    all[i].economia = round2(itemOrig - itemTotal);
-                    all[i].promo_aplicada = true;
-                    all[i].preco = qty > 0 ? round2(itemTotal / qty) : lp;
-                }
+                stampPromoFields(all[i], group.meta);
+                all[i].subtotal = itemTotal;
+                all[i].economia = round2(Math.max(0, itemOrig - itemTotal));
+                all[i].promo_aplicada = true;
+                all[i].preco = qty > 0 ? round2(itemTotal / qty) : lp;
+                all[i].bundle_plan = [];
+                all[i].promo_covered_qty = Math.min(qty, numCombos);
             });
         });
     }
@@ -619,10 +775,28 @@
             }
             const bundleSub = round2(groups * packTotal);
             const promoTotal = round2(bundleSub + extraSub);
-            if (promoTotal >= originalSubtotal - 0.001) return;
-            if (promoTotal >= currentSubtotal - 0.001) return;
+            // Não compara com o preço de lista: o kit vale mesmo sem gerar economia.
+            // Frente ao que já está aplicado, cobertura primeiro: só cede lugar
+            // quando deixa mais unidades fora dos pacotes, ou quando empata e
+            // sai mais caro.
+            const currentCovered = indices.reduce(
+                (acc, i) => acc + (parseInt(String(all[i].promo_covered_qty), 10) || 0), 0,
+            );
+            const crossCovered = groups * minQ;
+            if (crossCovered < currentCovered) return;
+            const hasApplied = indices.some(i => !!all[i].promo_aplicada);
+            if (crossCovered === currentCovered && hasApplied && promoTotal >= currentSubtotal - 0.001) return;
 
-            indices.forEach(i => {
+            const shares = indices.map(i => {
+                const q = Math.max(0, parseInt(String(all[i].quantidade), 10) || 0);
+                const lp = Number(all[i].preco_lista) || 0;
+                const share = originalSubtotal > 0 ? round2(lp * q) / originalSubtotal : 0;
+                return round2(promoTotal * share);
+            });
+            // O rateio arredondado não pode mudar o valor do kit.
+            balanceRounding(shares, promoTotal);
+
+            indices.forEach((i, n) => {
                 const q = Math.max(0, parseInt(String(all[i].quantidade), 10) || 0);
                 if (q <= 0) return;
                 const lp = Number(all[i].preco_lista) || 0;
@@ -630,18 +804,17 @@
                 all[i].bundle_groups = groups;
                 all[i].bundle_extra = extra;
                 all[i].bundle_item_extra = extraOnItem;
+                all[i].bundle_plan = [];
+                all[i].promo_covered_qty = Math.max(0, q - extraOnItem);
                 const itemOrig = round2(lp * q);
-                const share = originalSubtotal > 0 ? itemOrig / originalSubtotal : 0;
-                const itemPromo = round2(promoTotal * share);
-                if (itemPromo < itemOrig) {
-                    stampPromoFields(all[i], group.meta);
-                    all[i].subtotal = itemPromo;
-                    all[i].economia = round2(itemOrig - itemPromo);
-                    all[i].promo_aplicada = true;
-                    all[i].preco = extraOnItem > 0
-                        ? lp
-                        : (q > 0 ? round2(itemPromo / q) : lp);
-                }
+                const itemPromo = shares[n];
+                stampPromoFields(all[i], group.meta);
+                all[i].subtotal = itemPromo;
+                all[i].economia = round2(Math.max(0, itemOrig - itemPromo));
+                all[i].promo_aplicada = true;
+                all[i].preco = extraOnItem > 0
+                    ? lp
+                    : (q > 0 ? round2(itemPromo / q) : lp);
             });
         });
 

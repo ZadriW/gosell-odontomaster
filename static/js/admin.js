@@ -71,6 +71,10 @@
                     ? 'fa-solid fa-chevron-up'
                     : 'fa-solid fa-chevron-down';
             }
+            // Gráficos desenhados com o painel oculto ficaram sem largura: redesenha ao abrir.
+            if (nextExpanded && panel.querySelector('[data-admin-chart]') && window.TotemAdminCharts) {
+                requestAnimationFrame(() => window.TotemAdminCharts.render());
+            }
             return;
         }
 

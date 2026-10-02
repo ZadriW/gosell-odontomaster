@@ -50,11 +50,14 @@ from .checkout_holds import (
 from .customers import (
     CUSTOMER_SORTS,
     DEFAULT_CUSTOMER_SORT,
+    find_customer_by_cpf,
     get_customer_display_name,
     get_customer_profile,
+    get_portfolio_analytics,
     list_customers,
 )
 from .connection import DB_PATH, DEFAULT_MIN_STOCK, get_conn
+from .seller_analytics import get_seller_analytics, list_seller_events
 from .events import (
     EXPORT_MOVEMENTS_CSV_CAP,
     EXPORT_SALES_ITEMS_CSV_CAP,
@@ -74,6 +77,7 @@ from .events import (
     get_event_goal_progress,
     get_active_event_for_seller,
     get_event,
+    get_event_sales_analytics,
     get_event_sales_dashboard,
     get_event_stats,
     get_event_stock_stats,
@@ -242,10 +246,15 @@ __all__ = [
     "get_conn",
     "CUSTOMER_SORTS",
     "DEFAULT_CUSTOMER_SORT",
+    "find_customer_by_cpf",
     "get_customer_display_name",
     "get_customer_profile",
+    "get_portfolio_analytics",
     "list_customers",
+    "get_seller_analytics",
+    "list_seller_events",
     "get_event",
+    "get_event_sales_analytics",
     "get_event_sales_dashboard",
     "get_event_stats",
     "get_event_stock_stats",
