@@ -15,6 +15,9 @@
     );
 
     let inFlight = false;
+    /** Incrementa quando o filtro troca a lista: descarta respostas de polls com a busca anterior. */
+    let filterGeneration = 0;
+    document.addEventListener('totem:admin-filter-updated', () => { filterGeneration += 1; });
 
     function openTxIds(container) {
         const ids = [];
@@ -42,6 +45,7 @@
     function shouldSkipRefresh() {
         if (document.hidden) return true;
         if (document.getElementById('admin-confirm-dialog')?.open) return true;
+        if (root.classList.contains('is-filter-loading')) return true;
 
         const active = document.activeElement;
         if (!active || !root.contains(active)) return false;
@@ -60,6 +64,7 @@
     async function refreshTransactions() {
         if (inFlight || shouldSkipRefresh()) return;
         inFlight = true;
+        const generation = filterGeneration;
         const opened = openTxIds(root);
         try {
             const response = await fetch(pollUrl(), {
@@ -68,7 +73,7 @@
             });
             if (!response.ok) return;
             const html = await response.text();
-            if (shouldSkipRefresh()) return;
+            if (shouldSkipRefresh() || generation !== filterGeneration) return;
             root.innerHTML = html;
             restoreOpenRows(root, opened);
             document.dispatchEvent(new CustomEvent('totem:admin-tx-live-updated', { detail: { root } }));

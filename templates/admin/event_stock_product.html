@@ -253,7 +253,7 @@
 <section class="admin-section" id="event-product-movements">
     <header class="admin-section__header">
         <h2 class="admin-section__title">Histórico de movimentações</h2>
-        <p class="admin-section__subtitle">
+        <p class="admin-section__subtitle" data-filter-region="resumo">
             Movimentações deste produto no {{ op_noun_l }} <strong>{{ event.name }}</strong>.
             {% if pagination.total > 0 %}
                 Mostrando {{ pagination.showing_from }}–{{ pagination.showing_to }} de {{ pagination.total }}.
@@ -265,7 +265,7 @@
 
     <form class="admin-filters" method="get"
           action="{{ url_for('admin_event_stock_product', event_id=event.id, product_id=product.id) }}#lista"
-          data-scroll-to-table>
+          data-scroll-to-table data-filter-async>
         <label class="admin-filter admin-filter--wide">
             <span class="admin-filter__label">Código do pedido</span>
             <span class="admin-filter__wrap">
@@ -321,6 +321,7 @@
         role="table"
         aria-label="Movimentações do produto no {{ op_noun_l }}"
         data-product-movements
+        data-filter-region="tabela"
         data-movements-cap="{{ pagination.per_page }}"
         {% if pagination.page == 1 and filters.tipo == 'todos' and not filters.pedido and filters.vendedor == 0 %}
         data-movements-live
@@ -379,6 +380,7 @@
         {% endif %}
     </div>
 
+    <div class="admin-filter-region" data-filter-region="paginacao">
     {% if pagination.total > 0 %}
     <nav class="admin-pagination" aria-label="Paginação das movimentações">
         <p class="admin-pagination__summary">
@@ -417,6 +419,7 @@
         </div>
     </nav>
     {% endif %}
+    </div>
 </section>
 {% endblock %}
 

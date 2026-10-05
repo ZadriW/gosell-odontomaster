@@ -229,6 +229,15 @@
     }
 
     const productMovementsLatestByTable = new WeakMap();
+    /** Incrementa quando o filtro troca a lista: descarta respostas de polls com a busca anterior. */
+    let filterGeneration = 0;
+
+    document.addEventListener('totem:admin-filter-updated', () => {
+        filterGeneration += 1;
+        document.querySelectorAll('[data-product-movements]').forEach(table => {
+            productMovementsLatestByTable.delete(table);
+        });
+    });
 
     function movementsTableWithEvent(table) {
         const head = table.querySelector('.admin-table__head');
@@ -434,9 +443,12 @@
     async function refreshProduct() {
         const root = document.querySelector('[data-admin-product]');
         if (!root) return;
+        const generation = filterGeneration;
         const response = await fetch(root.dataset.apiUrl, fetchJsonOpts);
         if (!response.ok) return;
-        updateProductView(await response.json());
+        const payload = await response.json();
+        if (generation !== filterGeneration) return;
+        updateProductView(payload);
     }
 
     function setupProductForms() {
@@ -614,9 +626,11 @@
         if (!table) return;
         const url = root.dataset.apiUrl;
         if (!url) return;
+        const generation = filterGeneration;
         const response = await fetch(url, fetchJsonOpts);
         if (!response.ok) return;
         const data = await response.json();
+        if (generation !== filterGeneration) return;
         mergeProductMovements(table, data.movements || []);
     }
 

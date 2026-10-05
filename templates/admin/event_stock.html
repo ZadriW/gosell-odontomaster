@@ -1,12 +1,13 @@
 {% extends "admin/_layout.html" %}
 
+{# `data-filter-attrs`: atualizados pelo admin-filters.js quando o filtro é aplicado sem recarregar. #}
 {% macro event_stock_preserved_filters(filters, pagination) -%}
-<input type="hidden" name="ret_q" value="{{ filters.q }}">
-<input type="hidden" name="ret_categoria" value="{{ filters.categoria }}">
-<input type="hidden" name="ret_status" value="{{ filters.status }}">
-<input type="hidden" name="ret_entrega" value="{{ filters.entrega }}">
-<input type="hidden" name="ret_per_page" value="{{ filters.per_page }}">
-<input type="hidden" name="ret_page" value="{{ pagination.page }}">
+<input type="hidden" name="ret_q" value="{{ filters.q }}" data-filter-attrs="ret">
+<input type="hidden" name="ret_categoria" value="{{ filters.categoria }}" data-filter-attrs="ret">
+<input type="hidden" name="ret_status" value="{{ filters.status }}" data-filter-attrs="ret">
+<input type="hidden" name="ret_entrega" value="{{ filters.entrega }}" data-filter-attrs="ret">
+<input type="hidden" name="ret_per_page" value="{{ filters.per_page }}" data-filter-attrs="ret">
+<input type="hidden" name="ret_page" value="{{ pagination.page }}" data-filter-attrs="ret">
 {%- endmacro %}
 
 {% block title %}Estoque — {{ event.name }} | Dental Odonto Master{% endblock %}
@@ -132,7 +133,7 @@
     {% endif %}
 
     <form class="admin-filters" method="get" action="{{ url_for('admin_event_stock', event_id=event.id) }}#lista"
-          data-scroll-to-table>
+          data-scroll-to-table data-filter-async>
         <label class="admin-filter admin-filter--search">
             <span class="admin-filter__label">Buscar</span>
             <span class="admin-filter__wrap">
@@ -196,6 +197,7 @@
             </button>
             <a href="{{ url_for('admin_event_stock', event_id=event.id) }}" class="admin-btn admin-btn--ghost">Limpar</a>
             <a class="admin-btn admin-btn--ghost"
+               data-filter-attrs="exportar"
                href="{{ url_for('admin_event_stock_export_xlsx', event_id=event.id, q=filters.q, categoria=filters.categoria, status=filters.status, entrega=filters.entrega, sort=filters.sort, dir=filters.dir) }}"
                title="Exportar a lista de estoque filtrada como planilha .xlsx">
                 <i class="fa-solid fa-file-excel" aria-hidden="true"></i>
@@ -215,9 +217,9 @@
                 class="admin-btn admin-btn--primary"
                 id="bulk-stock-open-btn"
                 disabled
-                title="Selecione produtos na tabela para adicionar estoque em lote">
+                title="Selecione produtos na tabela para registrar entrada ou saída de estoque em lote">
             <i class="fa-solid fa-boxes-packing" aria-hidden="true"></i>
-            <span id="bulk-stock-open-label">Adicionar estoque</span>
+            <span id="bulk-stock-open-label">Movimentar estoque</span>
         </button>
     </div>
     {% endif %}
@@ -228,6 +230,7 @@
         role="table"
         aria-label="Produtos do {{ op_noun_l }} {{ event.name }}"
         data-admin-event-stock
+        data-filter-region="tabela"
         data-op-noun-l="{{ op_noun_l }}"
         data-api-url="{{ url_for('admin_api_event_stock', event_id=event.id, q=filters.q, categoria=filters.categoria, status=filters.status, entrega=filters.entrega, per_page=filters.per_page, page=pagination.page, sort=filters.sort, dir=filters.dir) }}"
     >
@@ -261,7 +264,8 @@
                            data-product-name="{{ p.name }}"
                            data-product-sku="{{ p.sku or '' }}"
                            data-product-img="{{ p.image or '' }}"
-                           aria-label="Selecionar {{ p.name }} para entrada em lote">
+                           data-product-stock="{{ p.stock }}"
+                           aria-label="Selecionar {{ p.name }} para entrada ou saída em lote">
                     {% endif %}
                     <img class="admin-stock__thumb" src="{{ p.image or '' }}" alt="{{ p.name }}"
                          loading="lazy" onerror="this.style.visibility='hidden'">
@@ -385,6 +389,7 @@
         {% endif %}
     </div>
 
+    <div class="admin-filter-region" data-filter-region="paginacao">
     {% if pagination.total > 0 %}
     <nav class="admin-pagination" aria-label="Paginação da listagem de estoque do {{ op_noun_l }}">
         <p class="admin-pagination__summary">
@@ -423,6 +428,7 @@
         </div>
     </nav>
     {% endif %}
+    </div>
 </section>
 
 {% if event_ops_open(event) %}
@@ -431,8 +437,8 @@
     <div class="admin-modal__panel">
         <header class="admin-modal__header">
             <h2 class="admin-modal__title" id="bulk-stock-modal-title">
-                <i class="fa-solid fa-boxes-packing" aria-hidden="true"></i>
-                Adicionar estoque em lote
+                <i class="fa-solid fa-boxes-packing" aria-hidden="true" data-bulk-mode-icon></i>
+                <span data-bulk-mode-title>Adicionar estoque em lote</span>
             </h2>
             <button type="button" class="admin-modal__close" id="bulk-stock-close" aria-label="Fechar modal">
                 <i class="fa-solid fa-xmark" aria-hidden="true"></i>
@@ -441,11 +447,27 @@
 
         <form method="post"
               action="{{ url_for('admin_event_stock_bulk_entry', event_id=event.id) }}"
+              data-action-entrada="{{ url_for('admin_event_stock_bulk_entry', event_id=event.id) }}"
+              data-action-saida="{{ url_for('admin_event_stock_bulk_exit', event_id=event.id) }}"
               id="bulk-stock-form">
             {% include 'partials/csrf_field.html' %}
             {{ event_stock_preserved_filters(filters, pagination) }}
 
-            <div class="admin-modal__body">
+            <div class="admin-modal__body" data-bulk-mode="entrada">
+                {# Entrada x saída: o mesmo lote selecionado, trocando ação, rótulos e limites. #}
+                <nav class="bulk-stock-modal__modes" role="tablist" aria-label="Tipo de movimentação">
+                    <a href="#bulk-stock-entrada" class="bulk-stock-modal__mode bulk-stock-modal__mode--entrada is-active"
+                       role="tab" aria-selected="true" data-bulk-mode-tab="entrada">
+                        <i class="fa-solid fa-arrow-down" aria-hidden="true"></i>
+                        Entrada
+                    </a>
+                    <a href="#bulk-stock-saida" class="bulk-stock-modal__mode bulk-stock-modal__mode--saida"
+                       role="tab" aria-selected="false" tabindex="-1" data-bulk-mode-tab="saida">
+                        <i class="fa-solid fa-arrow-up" aria-hidden="true"></i>
+                        Saída
+                    </a>
+                </nav>
+
                 <p class="admin-modal__feedback" id="bulk-stock-feedback" hidden></p>
 
                 <div class="bulk-stock-modal__list" id="bulk-stock-list" role="table" aria-label="Produtos selecionados"></div>
@@ -462,7 +484,7 @@
                         placeholder="Ex.: Reposição estande — NF 8844"
                         autocomplete="off"
                     >
-                    <span class="admin-field__hint">Aplicado a todos os produtos selecionados nesta entrada.</span>
+                    <span class="admin-field__hint" data-bulk-mode-hint>Aplicado a todos os produtos selecionados nesta entrada.</span>
                 </div>
             </div>
 
@@ -557,7 +579,6 @@
 
     var openBtn    = document.getElementById('bulk-stock-open-btn');
     var openLabel  = document.getElementById('bulk-stock-open-label');
-    var selectAll  = document.getElementById('bulk-stock-select-all');
     var modal      = document.getElementById('bulk-stock-modal');
     var closeBtn   = document.getElementById('bulk-stock-close');
     var cancelBtn  = document.getElementById('bulk-stock-cancel');
@@ -579,33 +600,74 @@
         return Array.prototype.slice.call(document.querySelectorAll('[data-bulk-select]'));
     }
 
+    /*
+     * Seleção guardada por ID de produto, fora do DOM: aplicar filtros/paginar sem recarregar
+     * troca as linhas da tabela, mas os produtos já marcados continuam no lote.
+     */
+    var selection = new Map();
+
+    function setSelected(cb, on) {
+        var id = String(cb.dataset.productId || '');
+        if (!id) return;
+        cb.checked = on;
+        if (on) {
+            selection.set(id, {
+                id: id,
+                name: cb.dataset.productName || '',
+                sku: cb.dataset.productSku || '',
+                img: cb.dataset.productImg || '',
+                stock: parseInt(cb.dataset.productStock, 10) || 0
+            });
+        } else {
+            selection.delete(id);
+        }
+    }
+
+    /** Remarca as linhas visíveis que já estão no lote (após troca da tabela). */
+    function restoreChecks() {
+        getCheckboxes().forEach(function (cb) {
+            cb.checked = selection.has(String(cb.dataset.productId || ''));
+        });
+    }
+
     function getChecked() {
-        return getCheckboxes().filter(function (cb) { return cb.checked; });
+        return Array.from(selection.values());
+    }
+
+    /* Buscado a cada uso: o cabeçalho da tabela é trocado ao aplicar filtros sem recarregar. */
+    function getSelectAll() {
+        return document.getElementById('bulk-stock-select-all');
     }
 
     function updateOpenButton() {
         var n = getChecked().length;
+        var selectAll = getSelectAll();
         openBtn.disabled = n === 0;
-        openLabel.textContent = n > 0 ? ('Adicionar estoque (' + n + ')') : 'Adicionar estoque';
+        openLabel.textContent = n > 0 ? ('Movimentar estoque (' + n + ')') : 'Movimentar estoque';
         if (selectAll) {
             var all = getCheckboxes();
-            selectAll.checked = all.length > 0 && n === all.length;
-            selectAll.indeterminate = n > 0 && n < all.length;
+            var visibleChecked = all.filter(function (cb) { return cb.checked; }).length;
+            selectAll.checked = all.length > 0 && visibleChecked === all.length;
+            selectAll.indeterminate = visibleChecked > 0 && visibleChecked < all.length;
         }
     }
 
     document.addEventListener('change', function (e) {
-        if (e.target.matches && e.target.matches('[data-bulk-select]')) {
+        if (!e.target.matches) return;
+        if (e.target === getSelectAll()) {
+            getCheckboxes().forEach(function (cb) { setSelected(cb, e.target.checked); });
+            updateOpenButton();
+        } else if (e.target.matches('[data-bulk-select]')) {
+            setSelected(e.target, e.target.checked);
             updateOpenButton();
         }
     });
 
-    if (selectAll) {
-        selectAll.addEventListener('change', function () {
-            getCheckboxes().forEach(function (cb) { cb.checked = selectAll.checked; });
-            updateOpenButton();
-        });
-    }
+    document.addEventListener('totem:admin-filter-updated', function () {
+        restoreChecks();
+        updateOpenButton();
+    });
+    getCheckboxes().forEach(function (cb) { if (cb.checked) setSelected(cb, true); });
 
     function hideFeedback() {
         if (!feedbackEl) return;
@@ -631,24 +693,114 @@
             '<i class="fa-regular fa-image"></i></span>';
     }
 
-    function buildRow(cb) {
-        var id   = cb.dataset.productId;
-        var name = cb.dataset.productName || ('Produto #' + id);
-        var sku  = cb.dataset.productSku || '';
-        var img  = cb.dataset.productImg || '';
+    /* ---- Modo do modal: entrada x saída (mesmo lote, ação e limites diferentes) ---- */
+    var MODES = {
+        entrada: {
+            title: 'Adicionar estoque em lote',
+            icon: 'fa-solid fa-boxes-packing',
+            hint: 'Aplicado a todos os produtos selecionados nesta entrada.',
+            placeholder: 'Ex.: Reposição estande — NF 8844',
+            submit: '<i class="fa-solid fa-plus" aria-hidden="true"></i> Adicionar estoque',
+            submitClass: 'admin-btn admin-btn--primary',
+            busy: 'Adicionando…'
+        },
+        saida: {
+            title: 'Saída de estoque em lote',
+            icon: 'fa-solid fa-dolly',
+            hint: 'Aplicado a todos os produtos selecionados nesta saída. A quantidade não pode passar do estoque atual.',
+            placeholder: 'Ex.: Avaria, devolução ao CD, transferência',
+            submit: '<i class="fa-solid fa-minus" aria-hidden="true"></i> Registrar saída',
+            submitClass: 'admin-btn admin-btn--danger-solid',
+            busy: 'Registrando saída…'
+        }
+    };
+    var modeBody  = modal ? modal.querySelector('[data-bulk-mode]') : null;
+    var modeTabs  = modal ? Array.prototype.slice.call(modal.querySelectorAll('[data-bulk-mode-tab]')) : [];
+    var modeTitle = modal ? modal.querySelector('[data-bulk-mode-title]') : null;
+    var modeIcon  = modal ? modal.querySelector('[data-bulk-mode-icon]') : null;
+    var modeHint  = modal ? modal.querySelector('[data-bulk-mode-hint]') : null;
+    var currentMode = 'entrada';
+
+    /** Estoque atual: a célula da linha (atualizada ao vivo) quando visível; senão o valor da seleção. */
+    function currentStock(item) {
+        var cell = document.querySelector('[data-filter-region="tabela"] .admin-stock__row[data-product-id="' + item.id + '"] [data-stock-qty]');
+        var live = cell ? parseInt(cell.textContent.replace(/[^\d-]/g, ''), 10) : NaN;
+        return Number.isFinite(live) ? live : item.stock;
+    }
+
+    function syncRowsToMode() {
+        var exit = currentMode === 'saida';
+        listEl.querySelectorAll('.bulk-stock-modal__row').forEach(function (row) {
+            var item = selection.get(row.dataset.productId);
+            var stock = item ? currentStock(item) : 0;
+            var qty = row.querySelector('[data-bulk-qty]');
+            var stockEl = row.querySelector('[data-bulk-stock]');
+            if (stockEl) stockEl.textContent = 'Estoque atual: ' + stock + ' un.';
+            row.classList.toggle('bulk-stock-modal__row--no-stock', exit && stock <= 0);
+            if (!qty) return;
+            if (exit) qty.max = String(Math.max(stock, 0));
+            else qty.removeAttribute('max');
+        });
+    }
+
+    function setMode(mode) {
+        if (!MODES[mode]) return;
+        currentMode = mode;
+        var cfg = MODES[mode];
+        if (modeBody) modeBody.setAttribute('data-bulk-mode', mode);
+        modeTabs.forEach(function (tab) {
+            var on = tab.getAttribute('data-bulk-mode-tab') === mode;
+            tab.classList.toggle('is-active', on);
+            tab.setAttribute('aria-selected', String(on));
+            tab.setAttribute('tabindex', on ? '0' : '-1');
+        });
+        if (form) form.setAttribute('action', form.getAttribute('data-action-' + mode));
+        if (modeTitle) modeTitle.textContent = cfg.title;
+        if (modeIcon) modeIcon.className = cfg.icon;
+        if (modeHint) modeHint.textContent = cfg.hint;
+        if (reasonIn) reasonIn.placeholder = cfg.placeholder;
+        if (submitBtn) {
+            submitBtn.className = cfg.submitClass;
+            submitBtn.innerHTML = cfg.submit;
+        }
+        hideFeedback();
+        syncRowsToMode();
+    }
+
+    modeTabs.forEach(function (tab) {
+        tab.addEventListener('click', function (e) {
+            e.preventDefault();
+            setMode(tab.getAttribute('data-bulk-mode-tab'));
+        });
+        tab.addEventListener('keydown', function (e) {
+            if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+            e.preventDefault();
+            var next = currentMode === 'entrada' ? 'saida' : 'entrada';
+            setMode(next);
+            modal.querySelector('[data-bulk-mode-tab="' + next + '"]').focus();
+        });
+    });
+
+    function buildRow(item) {
+        var id   = item.id;
+        var name = item.name || ('Produto #' + id);
+        var sku  = item.sku;
+        var img  = item.img;
         var row = document.createElement('div');
         row.className = 'bulk-stock-modal__row';
+        row.dataset.productId = id;
         row.innerHTML =
             '<input type="hidden" name="product_ids" value="' + escHtml(id) + '">' +
             productThumbHtml(img, name) +
             '<span class="bulk-stock-modal__row-info">' +
                 '<strong>' + escHtml(name) + '</strong>' +
                 (sku ? '<small>SKU: ' + escHtml(sku) + '</small>' : '') +
+                '<small class="bulk-stock-modal__row-stock" data-bulk-stock></small>' +
             '</span>' +
             '<span class="admin-field bulk-stock-modal__row-qty">' +
                 '<label class="admin-field__label" for="bulk-stock-qty-' + escHtml(id) + '">Quantidade</label>' +
                 '<input id="bulk-stock-qty-' + escHtml(id) + '" class="admin-field__input" type="number" ' +
-                'name="qty_' + escHtml(id) + '" min="1" step="1" value="1" required>' +
+                'name="qty_' + escHtml(id) + '" min="1" step="1" value="1" required data-bulk-qty>' +
             '</span>';
         return row;
     }
@@ -657,10 +809,10 @@
         var checked = getChecked();
         if (!checked.length) return;
         listEl.innerHTML = '';
-        checked.forEach(function (cb) { listEl.appendChild(buildRow(cb)); });
+        checked.forEach(function (item) { listEl.appendChild(buildRow(item)); });
         listEl.classList.toggle('bulk-stock-modal__list--scroll', listEl.children.length >= 5);
         if (reasonIn) reasonIn.value = '';
-        hideFeedback();
+        setMode('entrada');
         modal.showModal();
         if (reasonIn) reasonIn.focus();
     }
@@ -684,6 +836,19 @@
                 showFeedbackError('Selecione ao menos um produto.');
                 return;
             }
+            if (currentMode === 'saida') {
+                syncRowsToMode();
+                var over = Array.prototype.slice.call(listEl.querySelectorAll('[data-bulk-qty]')).find(function (input) {
+                    return (parseInt(input.value, 10) || 0) > (parseInt(input.max, 10) || 0);
+                });
+                if (over) {
+                    e.preventDefault();
+                    var name = over.closest('.bulk-stock-modal__row').querySelector('strong').textContent;
+                    showFeedbackError('A saída de "' + name + '" passa do estoque atual (' + (over.max || 0) + ' un.).');
+                    over.focus();
+                    return;
+                }
+            }
             if (!reasonIn || !reasonIn.value.trim()) {
                 e.preventDefault();
                 showFeedbackError('Informe o Motivo / Ref.');
@@ -692,7 +857,7 @@
             }
             if (submitBtn) {
                 submitBtn.disabled = true;
-                submitBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin" aria-hidden="true"></i> Adicionando…';
+                submitBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin" aria-hidden="true"></i> ' + MODES[currentMode].busy;
             }
         });
     }

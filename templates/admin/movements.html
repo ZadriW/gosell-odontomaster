@@ -18,11 +18,12 @@
     class="admin-section"
     data-admin-movements
     data-api-url="{{ url_for('admin_api_event_movements', event_id=event.id, **qargs) }}"
+    data-filter-attrs="secao"
 >
     <header class="admin-section__header admin-section__header--row">
         <div>
             <h1 class="admin-section__title">Movimentações de estoque</h1>
-            <p class="admin-section__subtitle">
+            <p class="admin-section__subtitle" data-filter-region="resumo">
                 Histórico de <strong>vendas</strong>, <strong>entradas</strong> e <strong>saídas</strong>
                 de todos os produtos neste {{ op_noun_l }}, com delta, saldo após a operação,
                 motivo e responsável.
@@ -39,7 +40,7 @@
 
     <form class="admin-filters" method="get"
           action="{{ url_for('admin_event_movements', event_id=event.id) }}#lista"
-          data-scroll-to-table>
+          data-scroll-to-table data-filter-async>
         <label class="admin-filter admin-filter--search">
             <span class="admin-filter__label">Produto</span>
             <span class="admin-filter__wrap">
@@ -119,6 +120,7 @@
             </button>
             <a href="{{ url_for('admin_event_movements', event_id=event.id) }}" class="admin-btn admin-btn--ghost">Limpar</a>
             <a
+                data-filter-attrs="exportar-xlsx"
                 href="{{ url_for('admin_event_movements_export_xlsx', event_id=event.id, **qargs) }}"
                 class="admin-btn admin-btn--ghost"
                 title="Exporta as movimentações filtradas como planilha .xlsx"
@@ -127,6 +129,7 @@
                 Exportar Planilha
             </a>
             <a
+                data-filter-attrs="exportar-pdf"
                 href="{{ url_for('admin_event_movements_pdf', event_id=event.id, **qargs) }}"
                 class="admin-btn admin-btn--ghost"
                 target="_blank"
@@ -146,6 +149,7 @@
         aria-label="Movimentações de estoque deste {{ op_noun_l }}"
         data-product-movements
         data-movements-wide
+        data-filter-region="tabela"
         data-movements-cap="{{ pagination.per_page }}"
         {% if movements_live %}data-movements-live{% endif %}
     >
@@ -219,6 +223,7 @@
         {% endif %}
     </div>
 
+    <div class="admin-filter-region" data-filter-region="paginacao">
     {% if pagination.total > 0 %}
     <nav class="admin-pagination" aria-label="Paginação das movimentações">
         <p class="admin-pagination__summary">
@@ -251,6 +256,7 @@
         </div>
     </nav>
     {% endif %}
+    </div>
 </section>
 {% endblock %}
 

@@ -466,23 +466,24 @@
         });
     });
 
-    document.querySelectorAll('button[data-confirm]').forEach(btn => {
-        btn.addEventListener('click', event => {
-            if (btn.dataset.adminConfirmSubmitting === '1') {
-                delete btn.dataset.adminConfirmSubmitting;
-                return;
+    // Delegado: cobre também botões de linhas trocadas pelos filtros sem recarregar.
+    document.addEventListener('click', event => {
+        const btn = event.target.closest('button[data-confirm]');
+        if (!btn) return;
+        if (btn.dataset.adminConfirmSubmitting === '1') {
+            delete btn.dataset.adminConfirmSubmitting;
+            return;
+        }
+        event.preventDefault();
+        openAdminConfirm(readConfirmOptions(btn)).then(ok => {
+            if (!ok) return;
+            btn.dataset.adminConfirmSubmitting = '1';
+            const form = btn.closest('form');
+            if (form) {
+                form.requestSubmit();
+            } else {
+                btn.click();
             }
-            event.preventDefault();
-            openAdminConfirm(readConfirmOptions(btn)).then(ok => {
-                if (!ok) return;
-                btn.dataset.adminConfirmSubmitting = '1';
-                const form = btn.closest('form');
-                if (form) {
-                    form.requestSubmit();
-                } else {
-                    btn.click();
-                }
-            });
         });
     });
 
@@ -682,6 +683,10 @@
         const liveRoot = event.detail?.root || document;
         initDeliveryPanels(liveRoot);
         initTxItemReplace(liveRoot);
+    });
+    document.addEventListener('totem:admin-filter-updated', () => {
+        initDeliveryPanels();
+        initTxItemReplace();
     });
     window.TotemAdminDelivery = { initDeliveryPanels, syncDeliveryPanel };
 

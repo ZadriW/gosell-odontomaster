@@ -16,6 +16,7 @@
                 {% endif %}
             </p>
         </div>
+        <div class="admin-filter-region" data-filter-region="exportar">
         {% if customers %}
         <div class="admin-section__header-actions" style="display:flex;gap:8px;align-self:center;">
             <a class="admin-btn admin-btn--ghost"
@@ -33,6 +34,7 @@
             </a>
         </div>
         {% endif %}
+        </div>
     </header>
 
     <div class="admin-kpis">
@@ -88,7 +90,7 @@
         <p class="admin-section__subtitle">Clique no nome de um cliente para abrir o perfil analítico.</p>
     </header>
 
-    <form class="admin-filters" method="get" action="{{ url_for('admin_event_customers', event_id=event.id) }}">
+    <form class="admin-filters" method="get" action="{{ url_for('admin_event_customers', event_id=event.id) }}" data-filter-async>
         <label class="admin-filter admin-filter--search">
             <span class="admin-filter__label">Buscar</span>
             <span class="admin-filter__wrap">
@@ -134,7 +136,7 @@
         </div>
     </form>
 
-    <div class="admin-table admin-customers" role="table" aria-label="Clientes que compraram">
+    <div class="admin-table admin-customers" role="table" aria-label="Clientes que compraram" data-filter-region="tabela">
         <div class="admin-table__head admin-customers__row" role="row">
             <span role="columnheader">Cliente</span>
             <span class="admin-table__col--num" role="columnheader">Pedidos</span>
@@ -219,6 +221,7 @@
         {% endif %}
     </div>
 
+    <div class="admin-filter-region" data-filter-region="paginacao">
     {% if pagination.total > 0 %}
     <nav class="admin-pagination" aria-label="Paginação da carteira de clientes">
         <p class="admin-pagination__summary">
@@ -257,6 +260,7 @@
         </div>
     </nav>
     {% endif %}
+    </div>
 </section>
 
 {# ── Análise da carteira (d3) — só desktop; o mobile mantém o layout anterior ── #}

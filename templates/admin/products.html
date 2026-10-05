@@ -33,7 +33,7 @@
         </div>
     </header>
 
-    <form class="admin-filters" method="get" action="{{ url_for('admin_products') }}">
+    <form class="admin-filters" method="get" action="{{ url_for('admin_products') }}" data-filter-async>
         <label class="admin-filter admin-filter--search">
             <span class="admin-filter__label">Buscar</span>
             <span class="admin-filter__wrap">
@@ -97,6 +97,7 @@
         role="table"
         aria-label="Catálogo de produtos"
         data-admin-stock-list
+        data-filter-region="tabela"
         data-bulk-add-url="{{ url_for('admin_products_bulk_add_to_event') }}"
         data-api-url="{{ url_for('admin_api_products', q=filters.q, categoria=filters.categoria, per_page=filters.per_page, page=pagination.page) }}"
     >
@@ -168,6 +169,7 @@
         {% endif %}
     </div>
 
+    <div class="admin-filter-region" data-filter-region="paginacao">
     {% if pagination.total > 0 %}
     <nav class="admin-pagination" aria-label="Paginação da listagem de produtos">
         <p class="admin-pagination__summary">
@@ -206,6 +208,7 @@
         </div>
     </nav>
     {% endif %}
+    </div>
 </section>
 
 {# Modal dentro de admin_body: em Jinja, conteúdo fora de blocos em template que extends é descartado. #}
@@ -705,7 +708,6 @@
     const modal = document.getElementById('bulk-stock-modal');
     const openBtn = document.getElementById('bulk-stock-open-btn');
     const openLabel = document.getElementById('bulk-stock-open-label');
-    const selectAll = document.getElementById('bulk-stock-select-all');
     const closeBtn = document.getElementById('bulk-stock-close');
     const cancelBtn = document.getElementById('bulk-stock-cancel');
     const submitBtn = document.getElementById('bulk-stock-submit');
@@ -726,12 +728,47 @@
         return Array.prototype.slice.call(document.querySelectorAll('[data-bulk-select]'));
     }
 
+    /*
+     * Seleção guardada por ID de produto, fora do DOM: aplicar filtros/paginar sem recarregar
+     * troca as linhas da tabela, mas os produtos já marcados continuam no lote.
+     */
+    const selection = new Map();
+
+    function setSelected(cb, on) {
+        const id = String(cb.dataset.productId || '');
+        if (!id) return;
+        cb.checked = on;
+        if (on) {
+            selection.set(id, {
+                id,
+                name: cb.dataset.productName || '',
+                sku: cb.dataset.productSku || '',
+                img: cb.dataset.productImg || '',
+            });
+        } else {
+            selection.delete(id);
+        }
+    }
+
+    /** Remarca as linhas visíveis que já estão no lote (após troca da tabela). */
+    function restoreChecks() {
+        getCheckboxes().forEach(cb => {
+            cb.checked = selection.has(String(cb.dataset.productId || ''));
+        });
+    }
+
     function getChecked() {
-        return getCheckboxes().filter(cb => cb.checked);
+        return Array.from(selection.values());
+    }
+
+    /* Buscado a cada uso: o cabeçalho da tabela é trocado ao aplicar filtros sem recarregar. */
+    function getSelectAll() {
+        return document.getElementById('bulk-stock-select-all');
     }
 
     function updateOpenButton() {
         const n = getChecked().length;
+        const selectAll = getSelectAll();
         const noEvents = openBtn.hasAttribute('data-no-events');
         openBtn.disabled = noEvents || n === 0;
         if (openLabel) {
@@ -739,8 +776,9 @@
         }
         if (selectAll) {
             const all = getCheckboxes();
-            selectAll.checked = all.length > 0 && n === all.length;
-            selectAll.indeterminate = n > 0 && n < all.length;
+            const visibleChecked = all.filter(cb => cb.checked).length;
+            selectAll.checked = all.length > 0 && visibleChecked === all.length;
+            selectAll.indeterminate = visibleChecked > 0 && visibleChecked < all.length;
         }
     }
 
@@ -770,11 +808,11 @@
         feedbackEl.removeAttribute('hidden');
     }
 
-    function buildRow(cb) {
-        const id = cb.dataset.productId || '';
-        const name = cb.dataset.productName || ('Produto #' + id);
-        const sku = cb.dataset.productSku || '';
-        const img = cb.dataset.productImg || '';
+    function buildRow(item) {
+        const id = item.id;
+        const name = item.name || ('Produto #' + id);
+        const sku = item.sku;
+        const img = item.img;
         const row = document.createElement('div');
         row.className = 'bulk-stock-modal__row';
         row.setAttribute('role', 'listitem');
@@ -797,7 +835,7 @@
         const checked = getChecked();
         if (!checked.length || !bulkAddUrl) return;
         listEl.innerHTML = '';
-        checked.forEach(cb => listEl.appendChild(buildRow(cb)));
+        checked.forEach(item => listEl.appendChild(buildRow(item)));
         listEl.classList.toggle('bulk-stock-modal__list--scroll', listEl.children.length >= 5);
         if (eventSel) eventSel.value = '';
         if (reasonIn) reasonIn.value = '';
@@ -834,9 +872,8 @@
     function uncheckAdded(ids) {
         const added = new Set((ids || []).map(String));
         if (!added.size) return;
-        getCheckboxes().forEach(cb => {
-            if (added.has(String(cb.dataset.productId || ''))) cb.checked = false;
-        });
+        added.forEach(id => selection.delete(id));
+        restoreChecks();
         listEl.querySelectorAll('.bulk-stock-modal__row').forEach(row => {
             if (added.has(String(row.dataset.productId || ''))) row.remove();
         });
@@ -845,15 +882,21 @@
     }
 
     document.addEventListener('change', e => {
-        if (e.target.matches && e.target.matches('[data-bulk-select]')) updateOpenButton();
-    });
-    if (selectAll) {
-        selectAll.addEventListener('change', () => {
-            const on = selectAll.checked;
-            getCheckboxes().forEach(cb => { cb.checked = on; });
+        if (!e.target.matches) return;
+        if (e.target === getSelectAll()) {
+            const on = e.target.checked;
+            getCheckboxes().forEach(cb => setSelected(cb, on));
             updateOpenButton();
-        });
-    }
+        } else if (e.target.matches('[data-bulk-select]')) {
+            setSelected(e.target, e.target.checked);
+            updateOpenButton();
+        }
+    });
+    document.addEventListener('totem:admin-filter-updated', () => {
+        restoreChecks();
+        updateOpenButton();
+    });
+    getCheckboxes().forEach(cb => { if (cb.checked) setSelected(cb, true); });
     openBtn.addEventListener('click', openModal);
     if (closeBtn) closeBtn.addEventListener('click', closeModal);
     if (cancelBtn) cancelBtn.addEventListener('click', closeModal);

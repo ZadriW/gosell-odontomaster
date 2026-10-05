@@ -75,7 +75,7 @@
 
     <form class="admin-filters" method="get"
           action="{{ url_for('admin_event_transactions', event_id=event.id) }}#lista"
-          data-scroll-to-table>
+          data-scroll-to-table data-filter-async>
         <label class="admin-filter">
             <span class="admin-filter__label">Venda por vendedor</span>
             <select name="vendedor" class="admin-filter__input">
@@ -161,6 +161,7 @@
     <div
         id="lista"
         data-admin-event-tx-live
+        data-filter-region="tabela"
         data-api-url="{{ url_for('admin_api_event_transactions', event_id=event.id) }}"
         data-poll-ms="20000"
         aria-live="polite"

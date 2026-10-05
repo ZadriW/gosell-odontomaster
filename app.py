@@ -5045,28 +5045,47 @@ def admin_event_stock_entry(event_id: int, product_id: int):
     return _redirect_back( fallback)
 
 
-@app.route("/admin/eventos/<int:event_id>/produtos/entrada-em-lote", methods=["POST"])
-@admin_required
-@require_event_ops_open
-def admin_event_stock_bulk_entry(event_id: int):
-    """Registra entrada de estoque para vários produtos do evento de uma só vez.
+_BULK_STOCK_KINDS = {
+    "entrada": {
+        "register": "entry",
+        "noun": "entrada",
+        "empty": "Selecione ao menos um produto para adicionar estoque.",
+        "done": "Entrada registrada em {count} produto(s), {units} unidade(s) no total.",
+        "none": "Nenhuma entrada registrada.",
+    },
+    "saida": {
+        "register": "exit",
+        "noun": "saída",
+        "empty": "Selecione ao menos um produto para registrar a saída.",
+        "done": "Saída registrada em {count} produto(s), {units} unidade(s) no total.",
+        "none": "Nenhuma saída registrada.",
+    },
+}
+
+
+def _admin_event_stock_bulk_movement(event_id: int, kind: str):
+    """Entrada ou saída de estoque para vários produtos do evento de uma só vez.
 
     Espera ``product_ids`` (lista de IDs marcados) + um campo ``qty_<id>`` por
-    produto + um único ``reason`` (Motivo / Ref) aplicado a todas as entradas.
+    produto + um único ``reason`` (Motivo / Ref) aplicado a todos. Cada produto é
+    movimentado de forma independente: os que falham (ex.: saída maior que o
+    estoque) são listados no flash de erro sem desfazer os demais.
     """
     if _event_or_404(event_id) is None:
         return redirect(url_for("admin_events"))
+    cfg = _BULK_STOCK_KINDS[kind]
+    register = register_event_stock_entry if cfg["register"] == "entry" else register_event_stock_exit
     preserved = _event_stock_return_filters_from_form()
     fallback = _url_for_admin_event_stock_list(event_id, preserved)
 
     reason = (request.form.get("reason") or "").strip()
     if not reason:
-        flash("Informe o Motivo / Ref. da entrada em lote.", "error")
+        flash(f"Informe o Motivo / Ref. da {cfg['noun']} em lote.", "error")
         return redirect(fallback)
 
     product_ids = request.form.getlist("product_ids")
     if not product_ids:
-        flash("Selecione ao menos um produto para adicionar estoque.", "error")
+        flash(cfg["empty"], "error")
         return redirect(fallback)
 
     admin_user = _current_admin_user()
@@ -5082,7 +5101,7 @@ def admin_event_stock_bulk_entry(event_id: int):
             errors.append(f"#{product_id}: quantidade inválida.")
             continue
         try:
-            register_event_stock_entry(
+            register(
                 event_id,
                 product_id,
                 qty,
@@ -5095,15 +5114,31 @@ def admin_event_stock_bulk_entry(event_id: int):
             errors.append(f"#{product_id}: {exc}")
 
     if ok_count:
-        flash(f"Entrada registrada em {ok_count} produto(s), {ok_units} unidade(s) no total.", "success")
+        flash(cfg["done"].format(count=ok_count, units=ok_units), "success")
     if errors:
         short = errors[:5]
         tail = f" (+{len(errors) - 5})" if len(errors) > 5 else ""
         flash("Falha em: " + "; ".join(short) + tail, "error")
     elif not ok_count:
-        flash("Nenhuma entrada registrada.", "error")
+        flash(cfg["none"], "error")
 
     return redirect(fallback)
+
+
+@app.route("/admin/eventos/<int:event_id>/produtos/entrada-em-lote", methods=["POST"])
+@admin_required
+@require_event_ops_open
+def admin_event_stock_bulk_entry(event_id: int):
+    """Registra entrada de estoque para vários produtos do evento de uma só vez."""
+    return _admin_event_stock_bulk_movement(event_id, "entrada")
+
+
+@app.route("/admin/eventos/<int:event_id>/produtos/saida-em-lote", methods=["POST"])
+@admin_required
+@require_event_ops_open
+def admin_event_stock_bulk_exit(event_id: int):
+    """Registra saída de estoque para vários produtos do evento de uma só vez."""
+    return _admin_event_stock_bulk_movement(event_id, "saida")
 
 
 @app.route("/admin/eventos/<int:event_id>/produtos/<int:product_id>/saida", methods=["POST"])

@@ -3343,6 +3343,23 @@ html.admin-theme--dark .admin-tx__delivery-check-all {
     opacity: 0.45;
 }
 
+/* Filtros sem recarregar (admin-filters.js): blocos trocados enquanto a busca carrega.
+   O invólucro de blocos condicionais (paginação) não gera caixa própria no layout. */
+.admin-filter-region {
+    display: contents;
+}
+
+[data-filter-region].is-filter-loading:not(.admin-filter-region),
+.admin-filter-region.is-filter-loading > * {
+    opacity: 0.55;
+    pointer-events: none;
+    transition: opacity 0.15s ease;
+}
+
+.admin-filters.is-filter-loading button[type="submit"] {
+    cursor: progress;
+}
+
 /* ==========================================================================
    KPI variante warn
    ========================================================================== */
@@ -7049,6 +7066,66 @@ html.admin-theme--dark .admin-mov__order-link:hover code {
 
 .bulk-stock-modal__row-qty .admin-field__label {
     font-size: 11px;
+}
+
+/* Entrada x saída no modal em lote (estoque do evento) */
+.bulk-stock-modal__modes {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 4px;
+    padding: 4px;
+    background: var(--color-bg);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+}
+
+.bulk-stock-modal__mode {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    min-height: 40px;
+    padding: 8px 12px;
+    border-radius: var(--radius-sm);
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--color-text-muted);
+    text-decoration: none;
+    transition: background var(--transition), color var(--transition), box-shadow var(--transition);
+}
+
+.bulk-stock-modal__mode:hover {
+    color: var(--color-text);
+}
+
+.bulk-stock-modal__mode:focus-visible {
+    outline: 2px solid var(--color-primary);
+    outline-offset: 2px;
+}
+
+.bulk-stock-modal__mode.is-active {
+    background: var(--color-surface);
+    box-shadow: var(--shadow-sm);
+}
+
+.bulk-stock-modal__mode--entrada.is-active { color: #1a8a4a; }
+.bulk-stock-modal__mode--saida.is-active   { color: #c37506; }
+
+.bulk-stock-modal__row-stock {
+    display: none;
+}
+
+[data-bulk-mode="saida"] .bulk-stock-modal__row-stock {
+    display: block;
+}
+
+[data-bulk-mode="saida"] .bulk-stock-modal__row {
+    border-left: 3px solid #e8890b;
+}
+
+.bulk-stock-modal__row--no-stock .bulk-stock-modal__row-stock {
+    color: var(--color-danger, #c0392b);
+    font-weight: 600;
 }
 
 .admin-modal__product-strip {

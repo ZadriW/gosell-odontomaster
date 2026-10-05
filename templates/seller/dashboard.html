@@ -85,7 +85,7 @@
 <section class="admin-section">
     <header class="admin-section__header admin-section__header--row">
         <div>
-            <h2 class="admin-section__title">
+            <h2 class="admin-section__title" data-filter-region="titulo">
                 {% if filters.status == 'pendente' %}
                     Carrinho abandonado{% if seller_event %} no evento{% endif %}
                 {% elif filters.entrega == 'parcial' %}
@@ -94,7 +94,7 @@
                     Histórico de transações
                 {% endif %}
             </h2>
-            <p class="admin-section__subtitle">
+            <p class="admin-section__subtitle" data-filter-region="descricao">
                 {% if filters.status == 'pendente' %}
                     {% if seller_event %}
                     Seus pedidos com checkout iniciado e ainda sem confirmação de AUT no evento <strong>{{ seller_event.name }}</strong>.
@@ -115,7 +115,7 @@
     </header>
 
     <form class="admin-filters" method="get" action="{{ url_for('seller_dashboard') }}#lista"
-          data-scroll-to-table>
+          data-scroll-to-table data-filter-async>
         <label class="admin-filter">
             <span class="admin-filter__label">Status</span>
             <select name="status" class="admin-filter__input">
@@ -177,7 +177,7 @@
 
     <header class="admin-section__header admin-section__header--row" style="margin-top: 8px;">
         <div>
-            <p class="admin-section__subtitle" style="margin: 0;" data-seller-tx-subtitle>
+            <p class="admin-section__subtitle" style="margin: 0;" data-seller-tx-subtitle data-filter-region="resumo">
                 {% if pagination.total > 0 %}
                 Mostrando <strong>{{ pagination.showing_from }}–{{ pagination.showing_to }}</strong>
                 de <strong>{{ pagination.total }}</strong>
@@ -191,7 +191,7 @@
 
     {% include 'partials/admin_tx_legend.html' %}
 
-    <div id="lista" class="admin-table admin-table--with-payment" role="table" aria-label="Histórico de transações do vendedor">
+    <div id="lista" class="admin-table admin-table--with-payment" role="table" aria-label="Histórico de transações do vendedor" data-filter-region="tabela">
         <div class="admin-table__head" role="row">
             <span class="admin-table__col admin-table__col--toggle" aria-hidden="true"></span>
             <span class="admin-table__col" role="columnheader">Pedido</span>
@@ -296,6 +296,7 @@
         </div>
     </div>
 
+    <div class="admin-filter-region" data-filter-region="paginacao">
     {% if pagination.total > 0 %}
     <nav class="admin-pagination" aria-label="Paginação das transações">
         <div class="admin-pagination__nav">
@@ -328,5 +329,6 @@
         </div>
     </nav>
     {% endif %}
+    </div>
 </section>
 {% endblock %}

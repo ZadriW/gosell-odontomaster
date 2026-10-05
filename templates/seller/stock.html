@@ -23,7 +23,7 @@
 
     {% if seller_event %}
     <form class="admin-filters" method="get" action="{{ url_for('seller_stock') }}#lista"
-          data-scroll-to-table>
+          data-scroll-to-table data-filter-async>
         <label class="admin-filter admin-filter--search">
             <span class="admin-filter__label">Buscar</span>
             <span class="admin-filter__wrap">
@@ -76,7 +76,7 @@
 
     {% if not seller_event %}
     <form class="admin-filters" method="get" action="{{ url_for('seller_stock') }}#lista"
-          data-scroll-to-table>
+          data-scroll-to-table data-filter-async>
         <label class="admin-filter admin-filter--search">
             <span class="admin-filter__label">Buscar</span>
             <span class="admin-filter__wrap">
@@ -143,6 +143,7 @@
         role="table"
         aria-label="Produtos em estoque para vendedor"
         data-seller-stock-list
+        data-filter-region="tabela"
         data-api-url="{{ stock_api_url }}"
     >
         <div class="admin-table__head admin-stock__row" role="row">
@@ -231,6 +232,7 @@
         {% endif %}
     </div>
 
+    <div class="admin-filter-region" data-filter-region="paginacao">
     {% if seller_event and pagination.total > 0 %}
     <nav class="admin-pagination" aria-label="Paginação do estoque do evento (vendedor)">
         <p class="admin-pagination__summary">
@@ -308,6 +310,7 @@
         </div>
     </nav>
     {% endif %}
+    </div>
 </section>
 {% endblock %}
 
