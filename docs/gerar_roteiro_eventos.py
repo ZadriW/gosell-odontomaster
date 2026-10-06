@@ -1064,7 +1064,9 @@ code([
     "TOTEM_SELLER_NAME=Vendedor Padrão",
     "TOTEM_SELLER_EMAIL=vendedor@odontomaster.com.br",
     "TOTEM_SELLER_PASS=defina-uma-senha-forte",
-    "WAKE_TOKEN=token-se-for-usar-importacao-wake",
+    "SANKHYA_API_KEY=chave-do-gateway-4r",
+    "SANKHYA_LOGIN=usuario-do-sankhya",
+    "SANKHYA_PASSWORD=senha-do-sankhya",
 ])
 
 h3("Passo 5 — Adicionar um Volume persistente (etapa crítica)")

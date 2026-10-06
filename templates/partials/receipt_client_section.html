@@ -24,7 +24,7 @@
         <div class="receipt__client-row">
             <span class="receipt__client-key">Endereço</span>
             <span class="receipt__client-val">
-                {{ tx.client_address }}{% if tx.client_number %}, {{ tx.client_number }}{% endif %}{% if tx.client_complement %} — {{ tx.client_complement }}{% endif %}{% if tx.client_city %}, {{ tx.client_city }}{% endif %}{% if tx.client_state %} — {{ tx.client_state }}{% endif %}
+                {{ tx.client_address }}{% if tx.client_number %}, {{ tx.client_number }}{% endif %}{% if tx.client_complement %} — {{ tx.client_complement }}{% endif %}{% if tx.client_neighborhood %}, {{ tx.client_neighborhood }}{% endif %}{% if tx.client_city %}, {{ tx.client_city }}{% endif %}{% if tx.client_state %} — {{ tx.client_state }}{% endif %}
             </span>
         </div>
         {% endif %}

@@ -14,9 +14,10 @@ import os
 import re
 import secrets
 import subprocess
+import threading
 import sys
 
-import totem_env  # noqa: F401 — carrega .env / totem.env antes da integração Wake
+import totem_env  # noqa: F401 — carrega .env / totem.env antes da integração Sankhya
 from receipt_tokens import sign_receipt_token, verify_receipt_token
 from functools import wraps
 from urllib.parse import unquote, urlparse
@@ -179,9 +180,10 @@ from database import (
     reset_totem_to_default_state,
     restore_event,
     set_product_active,
-    sync_catalog_from_wake,
-    get_distinct_wake_product_ids,
-    upsert_wake_variant,
+    get_product_erp_link_summary,
+    list_sellers_without_codvend,
+    normalize_seller_codvend,
+    set_product_erp_codprod,
     update_event,
     update_event_product_backorder_limit,
     update_event_product_price,
@@ -204,8 +206,15 @@ from database import (
     sync_seller_checkout_holds,
 )
 import breadcrumbs
+import erp_sync
 import product_images
-import wake_api
+import sankhya_api
+from database import erp as erp_db
+from database.payment_methods import (
+    accepts_installments,
+    normalize_payment_method,
+    payment_method_label,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -377,27 +386,11 @@ def _seller_pending_cancel_url(tx_id: int) -> str:
 
 
 def _normalize_payment_method_for_db(value) -> str:
-    v = (value or "").strip().lower()
-    if v in ("pix", "cartao", "dinheiro"):
-        return v
-    return "cartao"
+    return normalize_payment_method(value)
 
 
 def _payment_method_label(value, card_installments=None) -> str:
-    v = (value or "").strip().lower()
-    if v == "pix":
-        return "PIX"
-    if v == "dinheiro":
-        return "Dinheiro"
-    if v == "cartao":
-        try:
-            n = int(card_installments)
-        except (TypeError, ValueError):
-            n = None
-        if n is not None and n > 1:
-            return f"Cartão em {n}x"
-        return "Cartão"
-    return "—"
+    return payment_method_label(value, card_installments)
 
 
 def _format_brl(value) -> str:
@@ -412,8 +405,7 @@ def _format_brl(value) -> str:
 
 def _card_installment_plan_text(total, payment_method, card_installments):
     """Texto do parcelamento no cartão (ex.: ``2x de R$187,25``)."""
-    pm = (payment_method or "").strip().lower()
-    if pm != "cartao":
+    if not accepts_installments(payment_method):
         return None
     try:
         n = int(card_installments)
@@ -1150,6 +1142,7 @@ def api_create_transaction():
             client_complement=client.get("complement"),
             client_city=client.get("city"),
             client_state=client.get("state"),
+            client_neighborhood=client.get("neighborhood"),
             payment_method=payment_method,
             card_installments=card_installments,
             client_cro_uf=cro_uf or None,
@@ -1218,6 +1211,7 @@ def api_update_pending_transaction(tx_id: int):
             client_complement=client.get("complement"),
             client_city=client.get("city"),
             client_state=client.get("state"),
+            client_neighborhood=client.get("neighborhood"),
             payment_method=payment_method,
             card_installments=card_installments,
             client_cro_uf=cro_uf or None,
@@ -1256,6 +1250,7 @@ def api_confirm_transaction_aut(tx_id: int):
         result = confirm_transaction_with_aut(
             tx_id, aut, created_by=f"vendedor:{seller_name}"
         )
+        erp_sync.notify_worker()
         order_number = (result.get("order_number") or "").strip()
         if order_number:
             result["receipt_token"] = sign_receipt_token(
@@ -2325,6 +2320,12 @@ def _parse_new_seller_post(form) -> tuple[dict[str, str], dict[str, str]]:
     if "username" not in errors and username and get_seller_by_username(username):
         errors["username"] = "Já existe um vendedor com este usuário."
 
+    codvend_raw = (form.get("erp_codvend") or "").strip()
+    try:
+        normalize_seller_codvend(codvend_raw)
+    except ValueError as exc:
+        errors["erp_codvend"] = str(exc)
+
     def keep(field: str, value: str) -> str:
         return "" if field in errors else value
 
@@ -2333,6 +2334,7 @@ def _parse_new_seller_post(form) -> tuple[dict[str, str], dict[str, str]]:
         "username": keep("username", username),
         "password": keep("password", password),
         "event_id": "" if "event_id" in errors else event_id_raw,
+        "erp_codvend": keep("erp_codvend", codvend_raw),
     }
     return errors, repop
 
@@ -2373,9 +2375,16 @@ def _parse_edit_seller_post(form, _seller_id: int) -> tuple[dict[str, str], dict
                         "Não é possível associar o vendedor a um evento com operações encerradas."
                     )
 
+    codvend_raw = (form.get("erp_codvend") or "").strip()
+    try:
+        normalize_seller_codvend(codvend_raw)
+    except ValueError as exc:
+        errors["erp_codvend"] = str(exc)
+
     repop = {
         "name": "" if "name" in errors else name,
         "username": "" if "username" in errors else username,
+        "erp_codvend": "" if "erp_codvend" in errors else codvend_raw,
         "active": active,
         "password": "" if "password" in errors else password,
         "event_id": "" if "event_id" in errors else event_id_raw,
@@ -2398,6 +2407,7 @@ def admin_sellers():
                     (request.form.get("username") or request.form.get("email") or "").strip().lower(),
                     generate_password_hash(request.form.get("password") or ""),
                     pin_hash=None,
+                    erp_codvend=normalize_seller_codvend(request.form.get("erp_codvend")),
                 )
                 add_seller_to_event(event_id, int(seller["id"]))
                 ev = get_event(event_id)
@@ -2409,7 +2419,11 @@ def admin_sellers():
                 return redirect(url_for("admin_seller_detail", seller_id=seller["id"]))
             except ValueError as exc:
                 msg = str(exc)
-                if "usuário" in msg.lower() and ("já" in msg.lower() or "existente" in msg.lower()):
+                if "codvend" in msg.lower():
+                    seller_form_errors = {"erp_codvend": msg}
+                    seller_form = _parse_new_seller_post(request.form)[1]
+                    seller_form["erp_codvend"] = ""
+                elif "usuário" in msg.lower() and ("já" in msg.lower() or "existente" in msg.lower()):
                     seller_form_errors = {"username": msg}
                     seller_form = _parse_new_seller_post(request.form)[1]
                     seller_form["username"] = ""
@@ -2599,17 +2613,22 @@ def admin_seller_update(seller_id: int):
             active=active,
             password_hash=password_hash,
             clear_pin_hash=True,
+            erp_codvend=normalize_seller_codvend(request.form.get("erp_codvend")),
         )
     except ValueError as exc:
         msg = str(exc)
         seller_form_errors: dict[str, str] = {}
-        if "usuário" in msg.lower() or "usuario" in msg.lower():
+        bad_field = "username"
+        if "codvend" in msg.lower():
+            bad_field = "erp_codvend"
+            seller_form_errors["erp_codvend"] = msg
+        elif "usuário" in msg.lower() or "usuario" in msg.lower():
             seller_form_errors["username"] = msg
         else:
             flash(msg, "error")
             return redirect(url_for("admin_seller_detail", seller_id=seller_id))
         seller_form = _parse_edit_seller_post(request.form, seller_id)[1]
-        seller_form["username"] = ""
+        seller_form[bad_field] = ""
         flash(_first_seller_form_error_message(seller_form_errors), "error")
         events_for_seller_form = list_events(include_archived=True)
         seller_primary_event_id = get_seller_admin_event_selection_id(seller_id)
@@ -3155,7 +3174,7 @@ def admin_stock_legacy_redirect():
 
 
 def _admin_stock_library_category_options() -> list[str]:
-    """Opções do filtro Categoria: banco (fonte de verdade) + cache Wake após sync."""
+    """Opções do filtro Categoria: banco (fonte de verdade) + categorias legadas em memória."""
     db_cats = list_distinct_product_categories()
     seen = {c.casefold() for c in db_cats}
     merged = list(db_cats)
@@ -3736,6 +3755,7 @@ def admin_event_sales_export_xlsx(event_id: int):
         "Endereço",
         "Número",
         "Complemento",
+        "Bairro",
         "Cidade",
         "UF",
         "CRO UF",
@@ -3771,6 +3791,7 @@ def admin_event_sales_export_xlsx(event_id: int):
                     _csv_cell(t.get("client_address")),
                     _csv_cell(t.get("client_number")),
                     _csv_cell(t.get("client_complement")),
+                    _csv_cell(t.get("client_neighborhood")),
                     _csv_cell(t.get("client_city")),
                     _csv_cell(t.get("client_state")),
                     _csv_cell(t.get("client_cro_uf")),
@@ -4402,20 +4423,26 @@ def admin_event_stock_product(event_id: int, product_id: int):
     )
 
 
-def _wake_token_help_message() -> str:
-    return (
-        "Configure WAKE_TOKEN com o TCS-Access-Token da Storefront API Wake Commerce. "
-        "Crie um arquivo .env na raiz do projeto (copie de .env.example) ou defina "
-        "a variável de ambiente do sistema."
-    )
+def _erp_lookup_hint(err: str | None) -> str:
+    """Complemento da mensagem de "produto não encontrado" conforme a falha no ERP."""
+    if err == "erp_config":
+        return (
+            " A busca no Sankhya está desligada: confira SANKHYA_* no .env "
+            "(inclusive SANKHYA_PRODUCT_FILTER_PARAM) ou rode a sincronização do catálogo."
+        )
+    if err == "erp_offline":
+        return " O Sankhya não respondeu (sem internet?)."
+    if err == "erp_rejected":
+        return " O Sankhya recusou a consulta; veja o log do sistema."
+    return ""
 
 
 def _find_or_fetch_product(sku_or_id: str) -> tuple[dict | None, bool, str | None]:
-    """Localiza um produto por SKU/ID, com fallback Wake quando ausente localmente.
+    """Localiza um produto por SKU/CODPROD/ID, buscando no Sankhya quando ausente aqui.
 
-    Retorna ``(produto_dict | None, veio_da_wake, erro)``.
-    ``erro`` é preenchido quando a busca falha por token Wake ausente
-    (``"wake_token"``).
+    Retorna ``(produto_dict | None, veio_do_erp, erro)``. ``erro``:
+    ``"erp_config"`` (busca avulsa não configurada), ``"erp_offline"`` ou
+    ``"erp_rejected"``; ``None`` quando a consulta rodou (achando ou não).
     """
     q = (sku_or_id or "").strip()
     if not q:
@@ -4425,28 +4452,26 @@ def _find_or_fetch_product(sku_or_id: str) -> tuple[dict | None, bool, str | Non
     if local is not None:
         return local, False, None
 
-    if not wake_api.wake_token_configured():
-        return None, False, "wake_token"
-
-    wake_data = wake_api.fetch_product_by_sku(q)
-    if wake_data is None:
+    if not q.lstrip("#").strip().isdigit():
         return None, False, None
-
-    if not upsert_wake_variant(wake_data):
+    if not sankhya_api.is_configured() or not sankhya_api.product_filter_param():
+        return None, False, "erp_config"
+    try:
+        local_id = erp_sync.import_single_product(q)
+    except sankhya_api.SankhyaConfigError:
+        return None, False, "erp_config"
+    except sankhya_api.SankhyaNetworkError:
+        return None, False, "erp_offline"
+    except sankhya_api.SankhyaError as exc:
+        app.logger.warning("Busca do produto %s no Sankhya falhou: %s", q, exc)
+        return None, False, "erp_rejected"
+    if local_id is None:
         return None, False, None
-
-    saved = find_product_by_sku_or_id(q)
+    saved = get_product(local_id)
     if saved is None:
-        vid = wake_data.get("variant_id") or wake_data.get("id")
-        if vid:
-            saved = find_product_by_sku_or_id(str(vid))
-    if saved is None:
         return None, False, None
-
-    app.logger.info(
-        "Variante Wake importada on-demand: SKU=%s id=%s nome=%s",
-        saved.get("sku"), saved.get("id"), saved.get("name"),
-    )
+    saved = dict(saved, name=saved.get("nome"))
+    app.logger.info("Produto importado do Sankhya: CODPROD=%s id=%s", q, local_id)
     return saved, True, None
 
 
@@ -4462,16 +4487,17 @@ def admin_event_add_product(event_id: int):
     if not q:
         flash("Informe o SKU ou ID do produto.", "error")
         return redirect(_url_for_admin_event_stock_list(event_id, preserved))
-    product, from_wake, lookup_err = _find_or_fetch_product(q)
-    if lookup_err == "wake_token":
-        flash(_wake_token_help_message(), "error")
-        return redirect(_url_for_admin_event_stock_list(event_id, preserved))
+    product, from_erp, lookup_err = _find_or_fetch_product(q)
     if product is None:
-        flash(f"Produto \"{q}\" não encontrado no catálogo nem na Wake Commerce.", "error")
+        flash(
+            f"Produto \"{q}\" não encontrado no catálogo nem no Sankhya."
+            + _erp_lookup_hint(lookup_err),
+            "error",
+        )
         return redirect(_url_for_admin_event_stock_list(event_id, preserved))
     try:
         add_product_to_event(event_id, int(product["id"]), 0)
-        suffix = " (variante importada da Wake)" if from_wake else ""
+        suffix = " (importado do Sankhya)" if from_erp else ""
         flash(f"Produto \"{product['name']}\" adicionado ao {_op_noun(event, lower=True)}{suffix}.", "success")
     except ValueError as exc:
         flash(str(exc), "error")
@@ -4491,7 +4517,7 @@ def _flash_image_cache_stats(stats: dict) -> None:
     elif fail:
         flash(
             f"Nenhuma imagem nova foi salva ({fail} falha(s)). "
-            "Verifique a internet e as URLs da Wake.",
+            "Verifique a internet e os endereços das imagens.",
             "error",
         )
     else:
@@ -4504,7 +4530,7 @@ def _flash_image_cache_stats(stats: dict) -> None:
 @app.route("/admin/eventos/<int:event_id>/produtos/baixar-imagens", methods=["POST"])
 @admin_required
 def admin_event_cache_product_images(event_id: int):
-    """Copia as fotos da Wake para disco, para o catálogo funcionar sem internet."""
+    """Copia as fotos remotas para disco, para o catálogo funcionar sem internet."""
     event = _event_or_404(event_id)
     preserved = _event_stock_return_filters_from_form()
     if event is None:
@@ -4533,61 +4559,215 @@ def admin_products_cache_images():
     return redirect(url_for("admin_products"))
 
 
-@app.route("/admin/catalogo/sincronizar-wake", methods=["POST"])
+@app.route("/admin/catalogo/sincronizar-erp", methods=["POST"])
 @admin_required
-def admin_sync_catalog_wake():
-    """Sincroniza nomes/SKU/preço/imagem/variante com a Wake Commerce.
+def admin_sync_catalog_erp():
+    """Sincroniza nomes/categoria/marca/preço/imagem com o Sankhya, em segundo plano.
 
-    NÃO altera estoque, vendas, promoções nem vínculos com eventos.
-    Requer internet e WAKE_TOKEN configurado.
+    NÃO altera estoque, vendas, promoções nem vínculos com eventos. Produto que
+    sumiu da lista do ERP continua ativo aqui.
     """
-    from database.products import get_local_ids_without_wake_mapping
-
-    if not wake_api.wake_token_configured():
+    missing = sankhya_api.missing_config()
+    if missing:
         flash(
-            "Token Wake (WAKE_TOKEN) não configurado. "
-            "Defina a variável de ambiente antes de sincronizar.",
+            "Integração Sankhya não configurada. Preencha no .env: " + ", ".join(missing),
             "error",
         )
         return _redirect_back_admin()
+    run_id = erp_sync.start_catalog_sync_async()
+    if run_id is None:
+        flash("Já existe uma sincronização do catálogo em andamento.", "info")
+    else:
+        flash(
+            "Sincronização do catálogo com o Sankhya iniciada. Acompanhe o resultado em "
+            "Integração ERP. Estoque e eventos não são alterados.",
+            "success",
+        )
+    return _redirect_back_admin()
 
-    all_variants: list = []
 
-    # Etapa 1: Buscar famílias via wake_product_id já mapeados
-    wake_pids = get_distinct_wake_product_ids()
-    if wake_pids:
-        try:
-            family_variants = wake_api.fetch_all_local_families_from_wake(wake_pids)
-            all_variants.extend(family_variants)
-        except Exception as exc:
-            app.logger.exception("Sync Wake: falha ao buscar famílias")
-            flash(f"Erro ao consultar famílias Wake: {exc}", "error")
-            return _redirect_back_admin()
+# ---------------------------------------------------------------------------
+# Painel administrativo — integração ERP (Sankhya)
+# ---------------------------------------------------------------------------
 
-    # Etapa 2: Buscar por productVariantId para produtos sem wake_product_id
-    unmapped_ids = get_local_ids_without_wake_mapping()
-    if unmapped_ids:
-        already_synced = {int(v.get("variant_id") or v.get("id") or 0) for v in all_variants}
-        to_fetch = [vid for vid in unmapped_ids if vid not in already_synced]
-        if to_fetch:
+_erp_worker_boot_lock = threading.Lock()
+_erp_worker_booted = False
+
+
+@app.before_request
+def _boot_erp_worker():
+    """Sobe o worker da fila no primeiro request (o pai do reloader nunca atende)."""
+    global _erp_worker_booted
+    if _erp_worker_booted:
+        return None
+    with _erp_worker_boot_lock:
+        if not _erp_worker_booted:
+            _erp_worker_booted = True
             try:
-                extra = wake_api.fetch_variants_by_ids(to_fetch)
-                all_variants.extend(extra)
-            except Exception as exc:
-                app.logger.warning("Sync Wake: falha ao buscar variantes extras: %s", exc)
+                erp_db.abandon_running_syncs()
+                erp_sync.start_worker()
+            except Exception:
+                app.logger.exception("Não foi possível iniciar o worker da fila ERP")
+    return None
 
-    if not all_variants:
-        flash("Nenhuma variante retornada pela Wake. Verifique o token e a internet.", "error")
-        return _redirect_back_admin()
 
-    stats = sync_catalog_from_wake(all_variants)
+app.add_template_global(erp_db.ERP_STATUS_LABELS, "erp_status_labels")
+
+
+@app.route("/admin/integracao-erp")
+@admin_required
+def admin_erp():
+    status_filter = (request.args.get("status") or "").strip().lower()
+    settings = erp_db.get_erp_settings()
+    events_unsent = []
+    for ev in list_events(include_archived=True):
+        n = erp_db.count_unsent_orders(int(ev["id"]))
+        if n:
+            events_unsent.append({"id": int(ev["id"]), "name": ev["name"], "count": n})
+    return render_template(
+        "admin/erp.html",
+        settings=settings,
+        api_missing=sankhya_api.missing_config(),
+        api_base_url=sankhya_api.base_url(),
+        product_filter_param=sankhya_api.product_filter_param(),
+        readiness=erp_db.orders_readiness(settings),
+        payment_grid=erp_db.payment_type_grid(),
+        counts=erp_db.outbox_counts(),
+        jobs=erp_db.list_outbox(status_filter or None, limit=200),
+        status_filter=status_filter,
+        outbox_status_labels=erp_db.OUTBOX_STATUS_LABELS,
+        sync_runs=erp_db.list_sync_runs(10),
+        sync_running=erp_sync.catalog_sync_running(),
+        link_summary=get_product_erp_link_summary(50),
+        sellers_without_codvend=list_sellers_without_codvend(),
+        unsent_total=erp_db.count_unsent_orders(),
+        events_unsent=events_unsent,
+        **_admin_shell_context(active_section="erp"),
+    )
+
+
+@app.route("/admin/integracao-erp/configuracao", methods=["POST"])
+@admin_required
+def admin_erp_settings():
+    form = request.form
+    values = {
+        "codemp": (form.get("codemp") or "").strip(),
+        "codvend": (form.get("codvend") or "").strip(),
+        "order_ref_field": (form.get("order_ref_field") or "").strip(),
+        "cro_field": (form.get("cro_field") or "").strip(),
+        "orders_enabled": "1" if form.get("orders_enabled") else "0",
+    }
+    for key, label in (("codemp", "CODEMP"), ("codvend", "CODVEND")):
+        if values[key] and not values[key].isdigit():
+            flash(f"{label} deve ter só números.", "error")
+            return redirect(url_for("admin_erp"))
+    for key in ("order_ref_field", "cro_field"):
+        if values[key] and not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,59}", values[key]):
+            flash("Nome de campo do Sankhya inválido: use letras, números e _.", "error")
+            return redirect(url_for("admin_erp"))
+    erp_db.save_erp_settings(values)
+    missing = erp_db.orders_readiness()
+    if values["orders_enabled"] == "1" and missing:
+        flash(
+            "Configuração salva, mas o envio de pedidos só começa quando estiver completo: "
+            + ", ".join(m for m in missing if m != "Envio de pedidos ativado") + ".",
+            "warning",
+        )
+    else:
+        flash("Configuração da integração salva.", "success")
+    erp_sync.notify_worker()
+    return redirect(url_for("admin_erp"))
+
+
+@app.route("/admin/integracao-erp/tipos-negociacao", methods=["POST"])
+@admin_required
+def admin_erp_payment_types():
+    rows = []
+    for item in erp_db.payment_type_grid():
+        rows.append({
+            "payment_method": item["payment_method"],
+            "installments": item["installments"],
+            "codtipvenda": request.form.get(f"code_{item['key']}") or "",
+            "description": request.form.get(f"desc_{item['key']}") or "",
+        })
+    try:
+        saved = erp_db.save_payment_types(rows)
+    except ValueError as exc:
+        flash(str(exc), "error")
+        return redirect(url_for("admin_erp") + "#tipos-negociacao")
+    flash(f"{saved} tipo(s) de negociação salvo(s).", "success")
+    erp_sync.notify_worker()
+    return redirect(url_for("admin_erp") + "#tipos-negociacao")
+
+
+@app.route("/admin/integracao-erp/fila/<int:job_id>/reenviar", methods=["POST"])
+@admin_required
+def admin_erp_job_retry(job_id: int):
+    try:
+        erp_db.retry_job(job_id)
+        flash("Item recolocado na fila; o envio acontece em instantes.", "success")
+        erp_sync.notify_worker()
+    except ValueError as exc:
+        flash(str(exc), "error")
+    return _redirect_back(url_for("admin_erp") + "#fila")
+
+
+@app.route("/admin/integracao-erp/fila/<int:job_id>/descartar", methods=["POST"])
+@admin_required
+def admin_erp_job_discard(job_id: int):
+    try:
+        erp_db.mark_job_discarded(
+            job_id, f"Retirado da fila por {_current_admin_user()}."
+        )
+        flash("Item retirado da fila.", "success")
+    except ValueError as exc:
+        flash(str(exc), "error")
+    return _redirect_back(url_for("admin_erp") + "#fila")
+
+
+@app.route("/admin/integracao-erp/enviar-agora", methods=["POST"])
+@admin_required
+def admin_erp_process_now():
+    erp_sync.notify_worker()
+    flash("Envio da fila solicitado. Atualize a página em alguns segundos.", "success")
+    return redirect(url_for("admin_erp") + "#fila")
+
+
+@app.route("/admin/integracao-erp/enviar-historico", methods=["POST"])
+@admin_required
+def admin_erp_enqueue_history():
+    raw_event = (request.form.get("event_id") or "").strip()
+    event_id = int(raw_event) if raw_event.isdigit() else None
+    n = erp_db.enqueue_unsent_orders(event_id)
+    if n:
+        flash(
+            f"{n} venda(s) anterior(es) à integração colocada(s) na fila do Sankhya.",
+            "success",
+        )
+        erp_sync.notify_worker()
+    else:
+        flash("Nenhuma venda confirmada pendente de envio.", "info")
+    return redirect(url_for("admin_erp") + "#historico")
+
+
+@app.route("/admin/integracao-erp/produtos/<int:product_id>/codprod", methods=["POST"])
+@admin_required
+def admin_erp_link_product(product_id: int):
+    raw = (request.form.get("codprod") or "").strip()
+    if raw and not raw.isdigit():
+        flash("O CODPROD deve ter só números.", "error")
+        return _redirect_back(url_for("admin_erp") + "#vinculos")
+    try:
+        set_product_erp_codprod(product_id, int(raw) if raw else None)
+    except ValueError as exc:
+        flash(str(exc), "error")
+        return _redirect_back(url_for("admin_erp") + "#vinculos")
     flash(
-        f"Sincronização concluída: {stats['updated']} atualizado(s), "
-        f"{stats['inserted']} novo(s), {stats['skipped']} ignorado(s). "
-        "Estoque e eventos preservados.",
+        f"Produto #{product_id} vinculado ao CODPROD {raw}." if raw
+        else f"Vínculo ERP do produto #{product_id} removido.",
         "success",
     )
-    return _redirect_back_admin()
+    return _redirect_back(url_for("admin_erp") + "#vinculos")
 
 
 def _redirect_back_admin():
@@ -4915,22 +5095,21 @@ def admin_event_import_xls(event_id: int):
     added: list[str] = []
     already: list[str] = []
     not_found: list[str] = []
-    wake_fetched: list[str] = []   # SKUs que vieram da Wake on-demand
+    erp_fetched: list[str] = []   # SKUs trazidos do Sankhya na hora
+    erp_lookup_err: str | None = None
     import_actor = _current_admin_user()
     total_units_imported = 0
 
     price_set_count = 0
 
     for sku, unit_price, qty in sku_stock_pairs:
-        product, from_wake, lookup_err = _find_or_fetch_product(sku)
-        if lookup_err == "wake_token":
-            flash(_wake_token_help_message(), "error")
-            return redirect(_url_for_admin_event_stock_list(event_id, preserved))
+        product, from_erp, lookup_err = _find_or_fetch_product(sku)
         if product is None:
             not_found.append(sku)
+            erp_lookup_err = erp_lookup_err or lookup_err
             continue
-        if from_wake:
-            wake_fetched.append(sku)
+        if from_erp:
+            erp_fetched.append(sku)
         product_id = int(product["id"])
         try:
             add_product_to_event(
@@ -4980,17 +5159,20 @@ def admin_event_import_xls(event_id: int):
         parts.append(f"{len(added)} produto(s) adicionado(s) com sucesso{units_txt}")
     if price_set_count:
         parts.append(f"{price_set_count} preço(s) atualizado(s) no evento")
-    if wake_fetched:
+    if erp_fetched:
         parts.append(
-            f"{len(wake_fetched)} variante(s) importada(s) da Wake e adicionada(s) ao catálogo: "
-            f"{', '.join(wake_fetched[:5])}{'…' if len(wake_fetched) > 5 else ''}"
+            f"{len(erp_fetched)} produto(s) importado(s) do Sankhya e adicionado(s) ao catálogo: "
+            f"{', '.join(erp_fetched[:5])}{'…' if len(erp_fetched) > 5 else ''}"
         )
     if already:
         parts.append(f"{len(already)} já estavam no evento")
     if not_found:
         short = not_found[:10]
         tail = "…" if len(not_found) > 10 else ""
-        parts.append(f"{len(not_found)} código(s) não encontrado(s) no catálogo nem na Wake: {', '.join(short)}{tail}")
+        parts.append(
+            f"{len(not_found)} código(s) não encontrado(s) no catálogo nem no Sankhya: "
+            f"{', '.join(short)}{tail}.{_erp_lookup_hint(erp_lookup_err)}"
+        )
 
     summary = " · ".join(parts) if parts else "Nenhuma alteração realizada."
     category = (
@@ -5748,10 +5930,16 @@ def admin_event_transaction_refund(event_id: int, tx_id: int):
             expected_event_id=event_id,
         )
         order_label = result.get("order_number") or f"#{tx_id}"
+        erp_note = {
+            "retirado": " O pedido ainda não tinha ido ao Sankhya e saiu da fila.",
+            "cancelamento": " O cancelamento no Sankhya entrou na fila de envio.",
+        }.get(result.get("erp_action") or "", "")
         flash(
-            f"Pedido {order_label} estornado. Estoque reposto e totais de vendas atualizados.",
+            f"Pedido {order_label} estornado. Estoque reposto e totais de vendas atualizados."
+            + erp_note,
             "warning",
         )
+        erp_sync.notify_worker()
     except ValueError as exc:
         flash(str(exc), "error")
     return _redirect_back(url_for("admin_event_transactions", event_id=event_id))
@@ -5827,12 +6015,13 @@ def admin_transaction_replace_item(tx_id: int, item_id: int):
         flash("Informe o SKU do novo produto.", "error")
         return _redirect_back( url_for("admin_events"))
 
-    product, from_wake, lookup_err = _find_or_fetch_product(sku)
-    if lookup_err == "wake_token":
-        flash(_wake_token_help_message(), "error")
-        return _redirect_back( url_for("admin_events"))
+    product, from_erp, lookup_err = _find_or_fetch_product(sku)
     if product is None:
-        flash(f'Produto "{sku}" não encontrado no catálogo nem na Wake Commerce.', "error")
+        flash(
+            f'Produto "{sku}" não encontrado no catálogo nem no Sankhya.'
+            + _erp_lookup_hint(lookup_err),
+            "error",
+        )
         return _redirect_back( url_for("admin_events"))
 
     expected_event = _parse_int(request.form.get("event_id") or "", 0)
@@ -5849,7 +6038,7 @@ def admin_transaction_replace_item(tx_id: int, item_id: int):
         flash(str(exc), "error")
         return _redirect_back( url_for("admin_events"))
 
-    suffix = " (variante importada da Wake)" if from_wake else ""
+    suffix = " (importado do Sankhya)" if from_erp else ""
     msg = (
         f"Item alterado no pedido {result.get('order_number') or '#' + str(tx_id)}: "
         f"«{result['old_product_name']}» → «{result['new_product_name']}» "
@@ -5858,6 +6047,8 @@ def admin_transaction_replace_item(tx_id: int, item_id: int):
     if result.get("pending"):
         msg += f" {result['pending']} un. ficaram pendentes de retirada (sem estoque)."
     flash(msg, "success")
+    if result.get("erp_warning"):
+        flash(result["erp_warning"], "warning")
     return _redirect_back( url_for("admin_events"))
 
 

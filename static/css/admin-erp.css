@@ -1,0 +1,230 @@
+/* Integração ERP (Sankhya) — templates/admin/erp.html */
+
+.erp-status-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 16px;
+}
+
+.erp-status {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 18px;
+}
+
+.erp-status__title {
+    margin: 0;
+    font-size: 15px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.erp-status__state {
+    margin: 0;
+    font-size: 20px;
+    font-weight: 700;
+}
+
+.erp-status__state--ok { color: var(--admin-success, #0c8a4d); }
+.erp-status__state--warn { color: var(--admin-warn, #a5620a); }
+.erp-status__state--bad { color: var(--admin-danger, #b91c1c); }
+
+.erp-status__hint {
+    margin: 0;
+    font-size: 13px;
+    color: var(--color-text-muted);
+    overflow-wrap: anywhere;
+}
+
+.erp-status__list {
+    margin: 0;
+    padding-left: 18px;
+    font-size: 13px;
+}
+
+.erp-counts {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 8px;
+    margin: 0;
+}
+
+.erp-counts dt {
+    font-size: 12px;
+    color: var(--color-text-muted);
+}
+
+.erp-counts dd {
+    margin: 0;
+    font-size: 22px;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+}
+
+.erp-counts--bad { color: var(--admin-danger, #b91c1c); }
+
+.erp-form {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    padding: 0 18px 18px;
+    align-items: flex-start;
+}
+
+.erp-form__grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 14px;
+    width: 100%;
+}
+
+.erp-form__grid .admin-field {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.erp-form__check {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-weight: 600;
+}
+
+.erp-table-wrap {
+    overflow-x: auto;
+    margin-bottom: 14px;
+}
+
+#tipos-negociacao form {
+    padding: 0 18px 18px;
+}
+
+.erp-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+}
+
+.erp-table th,
+.erp-table td {
+    padding: 8px 10px;
+    text-align: left;
+    vertical-align: top;
+    border-bottom: 1px solid var(--color-border);
+}
+
+.erp-table th {
+    font-size: 12px;
+    color: var(--color-text-muted);
+    font-weight: 600;
+    white-space: nowrap;
+}
+
+.erp-table .num {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+
+.erp-table td small {
+    display: block;
+    color: var(--color-text-muted);
+    font-size: 11px;
+    margin-top: 2px;
+}
+
+.erp-table__code {
+    max-width: 120px;
+}
+
+.erp-table__error {
+    max-width: 360px;
+    overflow-wrap: anywhere;
+}
+
+.erp-table__error pre {
+    white-space: pre-wrap;
+    font-size: 11px;
+    max-height: 220px;
+    overflow: auto;
+    margin: 4px 0 0;
+}
+
+.erp-table__error summary {
+    cursor: pointer;
+    color: var(--color-text-muted);
+    font-size: 12px;
+}
+
+.erp-table__actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.erp-filter {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.erp-filter a {
+    padding: 4px 10px;
+    border-radius: 999px;
+    border: 1px solid var(--color-border);
+    color: var(--color-text-muted);
+    text-decoration: none;
+    font-size: 12px;
+}
+
+.erp-filter a.is-active {
+    background: var(--admin-tint, rgba(240, 192, 48, 0.18));
+    color: var(--color-text);
+    border-color: transparent;
+}
+
+.erp-empty {
+    color: var(--color-text-muted);
+    font-size: 14px;
+    padding: 0 18px 18px;
+    margin: 0;
+}
+
+.erp-history,
+.erp-links {
+    list-style: none;
+    margin: 0;
+    padding: 0 18px 18px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.erp-history li,
+.erp-links li {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--color-border);
+}
+
+.erp-history small,
+.erp-links small {
+    color: var(--color-text-muted);
+}
+
+.erp-links__form {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+}
+
+.erp-links__form .admin-field__input {
+    width: 120px;
+}

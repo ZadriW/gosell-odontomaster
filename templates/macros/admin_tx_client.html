@@ -9,10 +9,11 @@
 {% set num = (tx.client_number or '')|trim %}
 {% set comp = (tx.client_complement or '')|trim %}
 {% set city = (tx.client_city or '')|trim %}
+{% set hood = (tx.client_neighborhood or '')|trim %}
 {% set st = (tx.client_state or '')|trim %}
 {% set cro_uf = (tx.client_cro_uf or '')|trim %}
 {% set cro_num = (tx.client_cro_numero or '')|trim %}
-{% set has_client = cn or cpf or email or phone or zipc or addr or num or comp or city or st or cro_uf or cro_num %}
+{% set has_client = cn or cpf or email or phone or zipc or addr or num or comp or hood or city or st or cro_uf or cro_num %}
 {% if has_client %}
 <h3 class="admin-tx__details-title">
     Dados do cliente (Pedido)
@@ -62,6 +63,7 @@
                 {% if addr %}{{ addr }}{% endif %}
                 {% if num %}{% if addr %}, {% endif %}nº {{ num }}{% endif %}
                 {% if comp %}{% if addr or num %} · {% endif %}{{ comp }}{% endif %}
+                {% if hood %}{% if addr or num or comp %} · {% endif %}{{ hood }}{% endif %}
             </dd>
         </div>
         {% endif %}

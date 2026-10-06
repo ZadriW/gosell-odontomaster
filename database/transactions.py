@@ -8,6 +8,8 @@ from datetime import datetime
 from typing import Dict, Iterable, List, Optional, Tuple
 
 from .connection import DEFAULT_MIN_STOCK, _now_iso, get_conn
+from .erp import enqueue_order_in_conn, handle_refund_in_conn, note_items_changed_in_conn
+from .payment_methods import INTERNAL_AUT, accepts_installments, normalize_payment_method
 from .event_stock import _apply_event_movement
 from .promotions import (
     apply_list_prices_to_normalized_items,
@@ -76,8 +78,7 @@ def _normalize_card_installments_for_db(
     total: float,
     raw,
 ) -> Optional[int]:
-    pm = (payment_method or "").strip().lower()
-    if pm != "cartao":
+    if not accepts_installments(payment_method):
         return None
     try:
         n = int(raw)
@@ -176,6 +177,7 @@ def create_transaction(
     client_complement: Optional[str] = None,
     client_city: Optional[str] = None,
     client_state: Optional[str] = None,
+    client_neighborhood: Optional[str] = None,
     payment_method: Optional[str] = None,
     card_installments: Optional[int] = None,
     client_cro_uf: Optional[str] = None,
@@ -324,8 +326,9 @@ def create_transaction(
                  client_number, client_complement, client_city, client_state,
                  seller_id, seller_name, payment_method, card_installments,
                  client_cro_uf, client_cro_numero, client_cro_categoria,
-                 client_cro_validated, client_cro_validation_data, aut, event_id)
-            VALUES (?, ?, ?, ?, 'pendente', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, NULL, NULL, ?)
+                 client_cro_validated, client_cro_validation_data, aut, event_id,
+                 client_neighborhood)
+            VALUES (?, ?, ?, ?, 'pendente', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, NULL, NULL, ?, ?)
             """,
             (
                 order_number, created_at, total, items_count,
@@ -334,6 +337,7 @@ def create_transaction(
                 client_number, client_complement, client_city, client_state,
                 seller_id, seller_name, payment_method, card_installments_store,
                 client_cro_uf, client_cro_numero, event_id,
+                (client_neighborhood or "").strip() or None,
             ),
         )
         tx_id = cur.lastrowid
@@ -438,6 +442,7 @@ def update_pending_transaction(
     client_complement: Optional[str] = None,
     client_city: Optional[str] = None,
     client_state: Optional[str] = None,
+    client_neighborhood: Optional[str] = None,
     payment_method: Optional[str] = None,
     card_installments: Optional[int] = None,
     client_cro_uf: Optional[str] = None,
@@ -590,6 +595,9 @@ def update_pending_transaction(
         merged_comp = _pending_tx_merge_client_field(client_complement, tx_row.get("client_complement"))
         merged_city = _pending_tx_merge_client_field(client_city, tx_row.get("client_city"))
         merged_state = _pending_tx_merge_client_field(client_state, tx_row.get("client_state"))
+        merged_neighborhood = _pending_tx_merge_client_field(
+            client_neighborhood, tx_row.get("client_neighborhood")
+        )
         merged_cro_n = _pending_tx_merge_client_field(
             client_cro_numero,
             tx_row.get("client_cro_numero"),
@@ -620,6 +628,7 @@ def update_pending_transaction(
                    client_name = ?, client_cpf = ?, client_email = ?, client_phone = ?,
                    client_zipcode = ?, client_address = ?,
                    client_number = ?, client_complement = ?, client_city = ?, client_state = ?,
+                   client_neighborhood = ?,
                    payment_method = ?, card_installments = ?,
                    client_cro_uf = ?, client_cro_numero = ?
              WHERE id = ? AND status = 'pendente' AND seller_id = ?
@@ -637,6 +646,7 @@ def update_pending_transaction(
                 merged_comp,
                 merged_city,
                 merged_state,
+                merged_neighborhood,
                 payment_method,
                 card_installments_store,
                 merged_cro_uf,
@@ -841,9 +851,10 @@ def confirm_transaction_with_aut(tx_id: int, aut: str, *, created_by: str = "tot
 
         tx_row = dict(row)
         pm = (tx_row.get("payment_method") or "").strip().lower()
-        if not aut_clean:
-            if pm == "dinheiro":
-                aut_clean = "DINHEIRO"
+        if not aut_clean or pm in INTERNAL_AUT:
+            # Dinheiro e faturado não passam pela maquininha: AUT interno.
+            if pm in INTERNAL_AUT:
+                aut_clean = INTERNAL_AUT[pm]
             else:
                 raise ValueError("O código AUT não pode estar vazio.")
 
@@ -956,6 +967,8 @@ def confirm_transaction_with_aut(tx_id: int, aut: str, *, created_by: str = "tot
             "WHERE id = ?",
             (aut_clean, delivery_status, tx_id),
         )
+        # Mesma transação do banco: venda confirmada nunca fica fora da fila do ERP.
+        enqueue_order_in_conn(conn, tx_id)
 
     return {
         "id": tx_id,
@@ -1072,11 +1085,13 @@ def refund_transaction(
             "UPDATE transactions SET status = 'estornado' WHERE id = ?",
             (tx_id,),
         )
+        erp_action = handle_refund_in_conn(conn, tx_id)
 
     return {
         "id": tx_id,
         "order_number": tx_row.get("order_number"),
         "status": "estornado",
+        "erp_action": erp_action,
     }
 
 
@@ -1423,9 +1438,11 @@ def replace_transaction_item_product(
             """,
             (items_count, total, delivery_status, int(tx_id)),
         )
+        erp_warning = note_items_changed_in_conn(conn, int(tx_id))
 
     return {
         "id": int(tx_id),
+        "erp_warning": erp_warning,
         "item_id": int(item_id),
         "order_number": tx_row.get("order_number"),
         "old_product_name": item["product_name"],
@@ -2254,9 +2271,7 @@ def get_pending_transaction_restore_payload(tx_id: int, seller_id: int) -> Optio
 
             cart_items.append(entry)
 
-    pm = (tx.get("payment_method") or "cartao").strip().lower()
-    if pm not in ("pix", "cartao", "dinheiro"):
-        pm = "cartao"
+    pm = normalize_payment_method(tx.get("payment_method"))
     installments_raw = tx.get("card_installments")
     try:
         installments = max(1, int(installments_raw))
@@ -2276,6 +2291,7 @@ def get_pending_transaction_restore_payload(tx_id: int, seller_id: int) -> Optio
         "complement": (tx.get("client_complement") or "").strip(),
         "city": (tx.get("client_city") or "").strip(),
         "state": (tx.get("client_state") or "").strip(),
+        "neighborhood": (tx.get("client_neighborhood") or "").strip(),
         "payment_method": pm,
         "installments": installments,
     }
@@ -2356,7 +2372,7 @@ def list_transactions(limit: int = 200, seller_id: Optional[int] = None) -> List
                    seller_id, seller_name, payment_method, card_installments, aut,
                    event_id,
                    client_name, client_cpf, client_email, client_phone, client_zipcode, client_address,
-                   client_number, client_complement, client_city, client_state,
+                   client_number, client_complement, client_city, client_state, client_neighborhood, erp_status, erp_order_id,
                    client_cro_uf, client_cro_numero, delivery_status,
                    handover_status, handover_confirmed_at, receipt_note
               FROM transactions
@@ -2505,7 +2521,7 @@ def list_transactions_for_event(
         SELECT id, order_number, created_at, total, items_count, status,
                seller_id, seller_name, payment_method, card_installments, aut,
                client_name, client_cpf, client_email, client_phone, client_zipcode, client_address,
-               client_number, client_complement, client_city, client_state,
+               client_number, client_complement, client_city, client_state, client_neighborhood, erp_status, erp_order_id,
                client_cro_uf, client_cro_numero, delivery_status,
                handover_status, handover_confirmed_at, receipt_note
           FROM transactions t
@@ -2616,7 +2632,7 @@ def list_transactions_for_seller(
                seller_id, seller_name, payment_method, card_installments, aut,
                event_id,
                client_name, client_cpf, client_email, client_phone, client_zipcode, client_address,
-               client_number, client_complement, client_city, client_state,
+               client_number, client_complement, client_city, client_state, client_neighborhood, erp_status, erp_order_id,
                client_cro_uf, client_cro_numero, delivery_status,
                handover_status, handover_confirmed_at, receipt_note
           FROM transactions t

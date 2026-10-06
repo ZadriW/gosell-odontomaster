@@ -1,4 +1,4 @@
-"""SKU helpers shared by Wake sync, migrations and catalog."""
+"""SKU helpers shared by ERP sync, migrations and catalog."""
 from __future__ import annotations
 
 import sqlite3
@@ -67,7 +67,7 @@ def _build_sku_by_product_id(
 
 
 def _ensure_distinct_sku(conn: sqlite3.Connection, pid: int, sku: str) -> str:
-    """Garante ``sku`` único na tabela (a Wake pode repetir SKU entre produtos)."""
+    """Garante ``sku`` único na tabela (integrações podem repetir SKU entre produtos)."""
     base = (sku or "").strip() or _default_sku_for_id(pid)
     clash = conn.execute(
         "SELECT id FROM products WHERE sku = ? AND id != ?",

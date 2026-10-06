@@ -1,8 +1,9 @@
 """Camada de persistência do totem.
 
 Usa SQLite (stdlib) para armazenar **produtos**, **movimentações de estoque**
-e **vendas** realizadas no totem. O catálogo é sincronizado a partir da
-**Wake Commerce**; o estoque operacional é gerido no painel administrativo.
+e **vendas** realizadas no totem. O catálogo é sincronizado a partir do ERP
+**Sankhya** (``database.erp`` + ``erp_sync.py``), para onde também vão clientes e
+pedidos; o estoque operacional é gerido no painel administrativo.
 
 Os símbolos públicos são reexportados aqui para manter ``from database import ...``.
 
@@ -14,6 +15,9 @@ Esquema (resumo)
 - ``transactions`` / ``transaction_items`` — pedidos e itens com snapshot.
 - ``sellers`` — credenciais dos vendedores.
 - ``events`` / ``event_products`` / ``event_sellers`` — inventário por evento.
+- ``erp_settings`` / ``erp_payment_types`` / ``erp_customers`` / ``erp_outbox`` /
+  ``erp_sync_runs`` — integração Sankhya (configuração, tipos de negociação,
+  CPF → CODPARC, fila de pedidos e histórico de sincronizações).
 
 Invariante: toda alteração de ``products.stock`` é feita na mesma conexão
 que insere a ``stock_movements`` correspondente.
@@ -123,13 +127,11 @@ from .products import (
     summarize_catalog_option_groups,
     retire_unsellable_variant_parents,
     set_product_active,
-    sync_products_from_wake,
-    sync_catalog_from_wake,
-    get_distinct_wake_product_ids,
-    get_local_ids_without_wake_mapping,
+    get_product_erp_link_summary,
+    set_product_erp_codprod,
+    upsert_products_from_erp,
     update_product_min_stock,
     update_product_price,
-    upsert_wake_variant,
     variant_children_preview,
 )
 from .schema import init_db
@@ -142,6 +144,8 @@ from .sellers import (
     get_seller_by_username,
     list_seller_pin_hashes,
     list_sellers,
+    list_sellers_without_codvend,
+    normalize_seller_codvend,
     update_seller_account,
     update_seller_last_login,
     validate_seller_username,
@@ -322,11 +326,9 @@ __all__ = [
     "event_ops_open",
     "set_product_active",
     "sync_seller_checkout_holds",
-    "sync_products_from_wake",
-    "sync_catalog_from_wake",
-    "get_distinct_wake_product_ids",
-    "get_local_ids_without_wake_mapping",
-    "upsert_wake_variant",
+    "get_product_erp_link_summary",
+    "set_product_erp_codprod",
+    "upsert_products_from_erp",
     "variant_children_preview",
     "update_event",
     "update_event_goals",
@@ -338,6 +340,8 @@ __all__ = [
     "update_product_min_stock",
     "update_product_price",
     "update_seller_account",
+    "list_sellers_without_codvend",
+    "normalize_seller_codvend",
     "update_seller_last_login",
     "validate_seller_username",
 ]

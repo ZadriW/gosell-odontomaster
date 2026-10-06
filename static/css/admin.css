@@ -273,6 +273,11 @@ select.admin-field__input {
     white-space: nowrap;
 }
 
+.admin-sellers__no-codvend {
+    color: var(--admin-warn, #a5620a);
+    font-weight: 600;
+}
+
 .admin-sellers__actions {
     display: flex;
     align-items: center;

@@ -53,6 +53,23 @@
                 {% if fe.username %}<p class="admin-field__error" id="seller-username-err">{{ fe.username }}</p>{% endif %}
             </div>
             <div class="admin-field">
+                <label class="admin-field__label" for="seller-codvend">Código no Sankhya (CODVEND)</label>
+                <input
+                    id="seller-codvend"
+                    class="admin-field__input{% if fe.erp_codvend %} admin-field__input--invalid{% endif %}"
+                    type="text"
+                    name="erp_codvend"
+                    inputmode="numeric"
+                    pattern="[0-9]*"
+                    maxlength="10"
+                    placeholder="ex.: 29"
+                    value="{{ sf.erp_codvend | default('', true) }}"
+                    {% if fe.erp_codvend %}aria-invalid="true" aria-describedby="seller-codvend-err"{% endif %}
+                >
+                <p class="admin-field__hint">As vendas deste vendedor vão ao Sankhya com este código. Sem ele, ficam na fila com erro até ser preenchido.</p>
+                {% if fe.erp_codvend %}<p class="admin-field__error" id="seller-codvend-err">{{ fe.erp_codvend }}</p>{% endif %}
+            </div>
+            <div class="admin-field">
                 <label class="admin-field__label" for="seller-event-id">Evento <span aria-hidden="true">*</span></label>
                 <select
                     id="seller-event-id"
@@ -141,7 +158,7 @@
             <div class="admin-sellers__row" role="row">
                 <span class="admin-sellers__person">
                     <strong>{{ seller.name }}</strong>
-                    <small>{{ seller.username or seller.email }}</small>
+                    <small>{{ seller.username or seller.email }} · {% if seller.erp_codvend %}CODVEND {{ seller.erp_codvend }}{% else %}<span class="admin-sellers__no-codvend">sem CODVEND</span>{% endif %}</small>
                 </span>
                 <span class="admin-sellers__events-cell">
                     {% if seller.assigned_events %}

@@ -3,8 +3,8 @@
  *
  * Fluxo:
  *  1. Vendedor clica "Pagamento realizado" → cria transação PENDENTE via POST.
- *  2. PIX/cartão: tela de AUT → PATCH confirma, baixa estoque.
- *  3. Dinheiro: confirma direto (AUT interno "DINHEIRO"), sem maquininha.
+ *  2. PIX, Pix Inter, crédito e débito: tela de AUT → PATCH confirma, baixa estoque.
+ *  3. Dinheiro e faturado: confirmam direto (AUT interno), sem maquininha.
  *  4. Tela de sucesso é exibida.
  */
 (() => {
@@ -29,7 +29,8 @@
     const SUMMARY_URL = FLOW.payment || '/vendedor/pagamento';
     const HOME_URL = FLOW.home || '/';
     const SUCCESS_REDIRECT_MS = 30000;
-    const CASH_AUT = 'DINHEIRO';
+    // Formas confirmadas sem maquininha → AUT interno gravado na venda.
+    const INTERNAL_AUT = { dinheiro: 'DINHEIRO', faturado: 'FATURADO' };
 
     function escapeHtml(value) {
         const d = document.createElement('div');
@@ -93,18 +94,29 @@
             : null;
     }
 
-    function isCashPayment(clientData) {
+    function selectedMethod(clientData) {
         const data = clientData || loadClientData();
-        return String(data && data.payment_method || '').toLowerCase() === 'dinheiro';
+        return String(data && data.payment_method || '').toLowerCase();
+    }
+
+    /** Dinheiro ou faturado: confirmação direta, sem AUT da maquininha. */
+    function isCashPayment(clientData) {
+        return Object.prototype.hasOwnProperty.call(INTERNAL_AUT, selectedMethod(clientData));
     }
 
     function paymentMethodLabel(raw, installments) {
         const v = String(raw || '').toLowerCase();
-        if (v === 'pix') return 'PIX';
-        if (v === 'dinheiro') return 'Dinheiro';
+        const labels = {
+            pix: 'PIX',
+            pix_inter: 'Pix Inter',
+            debito: 'Cartão de débito',
+            dinheiro: 'Dinheiro',
+            faturado: 'Faturado',
+        };
+        if (labels[v]) return labels[v];
         const n = parseInt(String(installments ?? ''), 10);
-        if (Number.isFinite(n) && n > 1) return `Cartão em ${n}x`;
-        return 'Cartão';
+        if (Number.isFinite(n) && n > 1) return `Cartão de crédito em ${n}x`;
+        return 'Cartão de crédito';
     }
 
     function syncWaitingPaymentMethodUi() {
@@ -112,14 +124,21 @@
         const pm   = clientData && clientData.payment_method;
         const inst = clientData && clientData.installments;
         const cash = isCashPayment(clientData);
+        const method = selectedMethod(clientData);
+        const invoiced = method === 'faturado';
+        const pixInter = method === 'pix_inter';
 
         const methodEl = document.getElementById('waitingPaymentMethod');
         if (methodEl) methodEl.textContent = paymentMethodLabel(pm, inst);
 
         const heroIcon = document.querySelector('.payment-wait__pulse i');
         if (heroIcon) {
-            if (cash) {
+            if (invoiced) {
+                heroIcon.className = 'fa-solid fa-file-invoice-dollar';
+            } else if (cash) {
                 heroIcon.className = 'fa-solid fa-money-bill-wave';
+            } else if (pixInter) {
+                heroIcon.className = 'fa-solid fa-building-columns';
             } else if (String(pm || '').toLowerCase() === 'pix') {
                 heroIcon.className = 'fa-brands fa-pix';
             } else {
@@ -128,13 +147,23 @@
         }
 
         if (waitingTitle) {
-            waitingTitle.textContent = cash
-                ? 'Pagamento em dinheiro'
-                : 'Aguardando pagamento';
+            waitingTitle.textContent = invoiced
+                ? 'Venda faturada'
+                : cash
+                    ? 'Pagamento em dinheiro'
+                    : 'Aguardando pagamento';
         }
 
         if (waitingLead) {
-            waitingLead.innerHTML = cash
+            waitingLead.innerHTML = invoiced
+                ? 'O cliente <strong>não paga agora</strong>: a cobrança sai pelo financeiro. '
+                    + 'Confira os dados do cliente e toque no botão abaixo para registrar a venda '
+                    + 'e liberar a nota de retirada.'
+                : pixInter
+                ? 'Receba o pagamento pelo <strong>Pix da conta Inter</strong> (QR Code ou chave). '
+                    + 'Quando o comprovante chegar, toque no botão abaixo e informe o código da transação '
+                    + 'para registrar a venda e liberar a nota de retirada.'
+                : cash
                 ? 'Receba o valor em <strong>espécie</strong> do cliente conforme o total do pedido. '
                     + 'Depois de conferir o recebimento, toque no botão abaixo para registrar a venda '
                     + 'e liberar a nota de retirada.'
@@ -145,9 +174,11 @@
         }
 
         if (confirmLabel) {
-            confirmLabel.textContent = cash
-                ? 'Confirmar recebimento em dinheiro'
-                : 'Pagamento realizado';
+            confirmLabel.textContent = invoiced
+                ? 'Confirmar venda faturada'
+                : cash
+                    ? 'Confirmar recebimento em dinheiro'
+                    : 'Pagamento realizado';
         }
     }
 
@@ -208,7 +239,7 @@
             client: clientData || {},
             payment_method: (clientData && clientData.payment_method)
                 ? clientData.payment_method
-                : 'cartao',
+                : 'credito',
             seller_total: clientData && clientData.seller_total != null
                 ? clientData.seller_total
                 : undefined,
@@ -261,7 +292,7 @@
             await patchPendingTransaction(txId);
             renderWaiting();
         }
-        const aut = isCashPayment() ? CASH_AUT : null;
+        const aut = isCashPayment() ? INTERNAL_AUT[selectedMethod()] : null;
         if (!aut) {
             throw new Error('Fluxo inválido: confirmação sem AUT.');
         }
@@ -488,7 +519,9 @@
                 if (hint && RESUME.order_number != null && String(RESUME.order_number).trim()) {
                     hint.hidden = false;
                     hint.textContent =
-                        `Pedido #${RESUME.order_number}. Confirme o recebimento em dinheiro para concluir a venda.`;
+                        selectedMethod() === 'faturado'
+                            ? `Pedido #${RESUME.order_number}. Confirme a venda faturada para concluir.`
+                            : `Pedido #${RESUME.order_number}. Confirme o recebimento em dinheiro para concluir a venda.`;
                 }
                 syncWaitingPaymentMethodUi();
                 return;

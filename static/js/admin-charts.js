@@ -43,8 +43,16 @@
     };
 
     // Cor segue a entidade, nunca a posição no ranking: filtrar um período em
-    // que o PIX some não repinta o cartão.
-    const PAYMENT_SLOT = { cartao: 0, pix: 1, dinheiro: 2 };
+    // que o PIX some não repinta o cartão. A paleta tem 3 séries validadas, então
+    // a pizza agrupa por família (cartão = crédito + débito + "Cartão" antigo;
+    // PIX = PIX + Pix Inter); faturado entra em "Outros". A tabela ao lado
+    // continua mostrando cada forma separada.
+    const PAYMENT_SLOT = {
+        cartao: 0, credito: 0, debito: 0,
+        pix: 1, pix_inter: 1,
+        dinheiro: 2,
+    };
+    const PAYMENT_FAMILY_LABEL = ['Cartão', 'PIX', 'Dinheiro'];
 
     const MARK = {
         maxBar: 24,      // espessura máxima de barra/coluna
@@ -1086,7 +1094,7 @@
     /** Agrupa as formas de pagamento em fatias, com "Outros" para métodos fora do mapa de cores. */
     function paymentMixSegments(data) {
         const t = theme();
-        const known = [];
+        const bySlot = new Map();
         const other = { label: 'Outros', value: 0, orders: 0, color: t.other };
         (data.payment_methods || []).forEach((d) => {
             const slot = PAYMENT_SLOT[String(d.method || '').trim().toLowerCase()];
@@ -1095,13 +1103,17 @@
                 other.orders += Number(d.orders) || 0;
                 return;
             }
-            known.push({
-                label: d.label || 'Outro',
-                value: Number(d.revenue) || 0,
-                orders: Number(d.orders) || 0,
+            const seg = bySlot.get(slot) || {
+                label: PAYMENT_FAMILY_LABEL[slot],
+                value: 0,
+                orders: 0,
                 color: t.series[slot],
-            });
+            };
+            seg.value += Number(d.revenue) || 0;
+            seg.orders += Number(d.orders) || 0;
+            bySlot.set(slot, seg);
         });
+        const known = [...bySlot.values()];
         known.sort((a, b) => b.value - a.value);
         return other.value > 0 ? [...known, other] : known;
     }

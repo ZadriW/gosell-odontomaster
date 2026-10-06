@@ -1,7 +1,7 @@
 {% from "macros/admin_tx_client.html" import admin_tx_client_section %}
 {% from "macros/admin_tx_order_cell.html" import admin_tx_order_cell %}
 {% from "macros/admin_tx_receipt_link.html" import admin_tx_receipt_link %}
-{% from "macros/admin_tx_status_badge.html" import admin_tx_status_badge %}
+{% from "macros/admin_tx_status_badge.html" import admin_tx_status_badge, admin_tx_erp_badge %}
 {% from "macros/admin_tx_item_cells.html" import admin_tx_item_cells, admin_tx_discount_summary with context %}
 {% from "macros/admin_tx_delivery.html" import admin_tx_delivery_badge, admin_tx_delivery_section with context %}
 {% from "macros/admin_tx_handover.html" import admin_tx_handover_action %}
@@ -66,6 +66,7 @@
                 <span class="admin-table__col admin-table__col--num admin-tx__status">
                     <span class="admin-tx__status-stack">
                         {{ admin_tx_status_badge(tx) }}
+                        {{ admin_tx_erp_badge(tx) }}
                         {{ admin_tx_delivery_badge(tx) }}
                         {{ admin_tx_handover_action(tx, 'admin_event_confirm_transaction_handover', event_id=event.id, writable=event_ops_open(event)) }}
                         {{ admin_tx_receipt_link(tx) }}

@@ -1,4 +1,4 @@
-"""Product catalog, Wake sync and admin library listings."""
+"""Product catalog, ERP (Sankhya) sync and admin library listings."""
 from __future__ import annotations
 
 import logging
@@ -9,12 +9,7 @@ from collections import defaultdict
 from typing import Dict, Iterable, List, Optional, Tuple
 
 from .connection import DEFAULT_MIN_STOCK, _now_iso, get_conn
-from .sku_helpers import (
-    _default_sku_for_id,
-    _ensure_distinct_sku,
-    _is_generated_fallback_sku,
-    _is_placeholder_product_name,
-)
+from .sku_helpers import _default_sku_for_id
 import product_images
 
 log = logging.getLogger(__name__)
@@ -113,7 +108,7 @@ def _product_catalog_like_clause(
     *,
     alias: str = "p",
     include_sku_aliases: bool = False,
-    include_wake_id: bool = False,
+    include_family_id: bool = False,
 ) -> Tuple[str, List]:
 
     tokens = _product_search_tokens(q)
@@ -179,8 +174,10 @@ def _product_catalog_like_clause(
             f"INSTR(CAST({id_col} AS TEXT), ?) > 0",
         ]
         id_params: List = [int(id_part), id_part]
-        if include_wake_id:
-            id_ors.append(f"{prefix}wake_product_id = ?")
+        if include_family_id:
+            id_ors.append(f"{prefix}family_id = ?")
+            id_params.append(int(id_part))
+            id_ors.append(f"{prefix}erp_codprod = ?")
             id_params.append(int(id_part))
         clause = f"({clause} OR ({' OR '.join(id_ors)}))"
         token_params.extend(id_params)
@@ -233,7 +230,7 @@ def _retire_variant_parent_ids(conn: sqlite3.Connection, parent_ids: Iterable[in
 def _detect_variant_parent_ids(conn: sqlite3.Connection) -> List[int]:
     """IDs de SKU-base quando já existem variantes do mesmo produto (ativos ou não).
 
-    1. ``id = wake_product_id`` com irmãos (importação Wake).
+    1. ``id = family_id`` com irmãos (família de variantes cadastrada).
     2. Nome do cadastro é prefixo do nome de outro item, e o ``id`` do base
        é menor que o das variantes.
     """
@@ -242,12 +239,12 @@ def _detect_variant_parent_ids(conn: sqlite3.Connection) -> List[int]:
         """
         SELECT p.id
           FROM products p
-         WHERE p.wake_product_id IS NOT NULL
-           AND p.wake_product_id > 0
-           AND p.id = p.wake_product_id
+         WHERE p.family_id IS NOT NULL
+           AND p.family_id > 0
+           AND p.id = p.family_id
            AND EXISTS (
                 SELECT 1 FROM products v
-                 WHERE v.wake_product_id = p.wake_product_id
+                 WHERE v.family_id = p.family_id
                    AND v.id != p.id
            )
         """
@@ -315,20 +312,20 @@ def restore_retired_variant_parents_in_conn(conn: sqlite3.Connection) -> Dict[st
     for r in tx_rows:
         pairs.setdefault((int(r["event_id"]), int(r["product_id"])), 0)
 
-    catalog = conn.execute("SELECT id, name, wake_product_id FROM products").fetchall()
+    catalog = conn.execute("SELECT id, name, family_id FROM products").fetchall()
     folded_by_id = {int(r["id"]): _fold_product_name(r["name"]) for r in catalog}
-    wake_by_id = {
-        int(r["id"]): int(r["wake_product_id"] or 0) for r in catalog
+    family_by_id = {
+        int(r["id"]): int(r["family_id"] or 0) for r in catalog
     }
     for parent_id in ids:
         prefix = folded_by_id.get(parent_id) or ""
-        wake_id = wake_by_id.get(parent_id) or 0
+        family_ref = family_by_id.get(parent_id) or 0
         child_ids = [
             int(r["id"])
             for r in catalog
             if int(r["id"]) != parent_id
             and (
-                (wake_id > 0 and int(r["wake_product_id"] or 0) == wake_id)
+                (family_ref > 0 and int(r["family_id"] or 0) == family_ref)
                 or (
                     prefix
                     and len(prefix) >= 12
@@ -416,336 +413,6 @@ def variant_children_preview(parent_id: int, limit: int = 5) -> List[Dict]:
     return out
 
 
-def _maybe_migrate_legacy_wake_product_id(
-    conn: sqlite3.Connection,
-    wake_product_id: int,
-    variant_id: int,
-) -> bool:
-    """Antes desativava o SKU-base ao importar variantes; os dois passam a conviver."""
-    return False
-
-
-def sync_products_from_wake(
-    products: Iterable[Dict],
-    *,
-    remap_legacy: bool = True,
-) -> Dict[str, int]:
-    """Sincroniza a biblioteca local com variantes Wake (``id`` = ``productVariantId``).
-
-    - Produto novo → insere com estoque ``0``.
-    - Produto existente → atualiza catálogo; preserva estoque/mínimo/ativo locais.
-    - Com ``remap_legacy``, cadastros antigos indexados por ``productId`` são
-      redirecionados para a variante principal quando aplicável.
-
-    Retorna ``{"inserted": N, "updated": N, "skipped": N, "remapped": N}``.
-    """
-    inserted = updated = skipped = remapped = 0
-    now = _now_iso()
-
-    with get_conn() as conn:
-        for p in products:
-            variant_id = int(p.get("variant_id") or p.get("id") or 0)
-            if variant_id <= 0:
-                skipped += 1
-                continue
-
-            wake_product_id = int(p.get("wake_product_id") or variant_id)
-            raw_sku_wake = (p.get("sku") or "").strip()
-            nome_wake = str(p.get("nome") or "").strip()
-            name = nome_wake if nome_wake else "Produto"
-            category = str(p.get("categoria") or "Geral")
-            price = float(p.get("preco") or 0)
-            image = p.get("imagem") or ""
-            variant_name = str(p.get("variant_name") or "").strip()
-            main_variant = 1 if p.get("main_variant") else 0
-
-            existing = conn.execute(
-                "SELECT id, name, sku FROM products WHERE id = ?", (variant_id,)
-            ).fetchone()
-
-            if existing is None:
-                sku = raw_sku_wake or _default_sku_for_id(variant_id)
-            else:
-                ex_name = (existing["name"] or "").strip()
-                ex_sku = (existing["sku"] or "").strip()
-                if _is_placeholder_product_name(name) and not _is_placeholder_product_name(
-                    ex_name
-                ):
-                    name = ex_name
-                if raw_sku_wake:
-                    sku = raw_sku_wake
-                elif ex_sku and not _is_generated_fallback_sku(ex_sku, variant_id):
-                    sku = ex_sku
-                else:
-                    sku = _default_sku_for_id(variant_id)
-
-            sku = _ensure_distinct_sku(conn, variant_id, sku)
-            description = f"{name} — {category}"
-
-            if existing is None:
-                conn.execute(
-                    """
-                    INSERT INTO products
-                        (id, sku, name, category, description, price, image,
-                         stock, min_stock, active, wake_product_id, variant_name,
-                         main_variant, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        variant_id, sku, name, category, description, price, image,
-                        0, DEFAULT_MIN_STOCK, 1, wake_product_id, variant_name or None,
-                        main_variant, now, now,
-                    ),
-                )
-                inserted += 1
-            else:
-                conn.execute(
-                    """
-                    UPDATE products
-                       SET sku = ?, name = ?, category = ?, description = ?,
-                           price = ?, image = ?, wake_product_id = ?,
-                           variant_name = ?, main_variant = ?, updated_at = ?
-                     WHERE id = ?
-                    """,
-                    (
-                        sku, name, category, description, price, image,
-                        wake_product_id, variant_name or None, main_variant,
-                        now, variant_id,
-                    ),
-                )
-                updated += 1
-
-            if remap_legacy and _maybe_migrate_legacy_wake_product_id(
-                conn,
-                wake_product_id,
-                variant_id,
-            ):
-                remapped += 1
-
-    return {
-        "inserted": inserted,
-        "updated": updated,
-        "skipped": skipped,
-        "remapped": remapped,
-    }
-
-
-def sync_catalog_from_wake(wake_variants: List[Dict]) -> Dict[str, int]:
-    """Atualiza catálogo local a partir de variantes Wake SEM tocar em estoque/evento.
-
-    Campos atualizados: name, sku, category, description, price, image,
-    wake_product_id, variant_name, main_variant, subtitle.
-
-    Campos PRESERVADOS: stock, min_stock, active, created_at.
-    Tabelas intocadas: event_products, stock_movements, transactions.
-
-    Produtos novos (variant_id inexistente) são inseridos com stock=0, active=1.
-    """
-    updated = inserted = skipped = 0
-    now = _now_iso()
-
-    with get_conn() as conn:
-        for p in wake_variants:
-            variant_id = int(p.get("variant_id") or p.get("id") or 0)
-            if variant_id <= 0:
-                skipped += 1
-                continue
-
-            wake_product_id = int(p.get("wake_product_id") or variant_id)
-            raw_sku = (p.get("sku") or "").strip()
-            nome = str(p.get("nome") or "").strip() or "Produto"
-            category = str(p.get("categoria") or "Geral")
-            price = float(p.get("preco") or 0)
-            image = p.get("imagem") or ""
-            variant_name = str(p.get("variant_name") or "").strip()
-            subtitle = str(p.get("subtitle") or "").strip()
-            main_variant = 1 if p.get("main_variant") else 0
-            description = f"{nome} — {category}"
-
-            existing = conn.execute(
-                "SELECT id, sku FROM products WHERE id = ?", (variant_id,)
-            ).fetchone()
-
-            if existing is None:
-                if raw_sku:
-                    by_sku = conn.execute(
-                        "SELECT id, sku FROM products WHERE sku = ? ORDER BY active DESC, id ASC LIMIT 1",
-                        (raw_sku,),
-                    ).fetchone()
-                    if by_sku:
-                        existing = by_sku
-                        variant_id = int(by_sku["id"])
-
-            if existing is None:
-                sku = raw_sku or _default_sku_for_id(variant_id)
-                sku = _ensure_distinct_sku(conn, variant_id, sku)
-                conn.execute(
-                    """
-                    INSERT INTO products
-                        (id, sku, name, category, description, price, image,
-                         stock, min_stock, active, wake_product_id, variant_name,
-                         main_variant, subtitle, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, 1, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        variant_id, sku, nome, category, description, price, image,
-                        DEFAULT_MIN_STOCK, wake_product_id, variant_name or None,
-                        main_variant, subtitle or None, now, now,
-                    ),
-                )
-                inserted += 1
-            else:
-                local_id = int(existing["id"])
-                ex_sku = (existing["sku"] or "").strip()
-                sku = raw_sku if raw_sku else (
-                    ex_sku if ex_sku and not _is_generated_fallback_sku(ex_sku, local_id)
-                    else _default_sku_for_id(local_id)
-                )
-                sku = _ensure_distinct_sku(conn, local_id, sku)
-                conn.execute(
-                    """
-                    UPDATE products
-                       SET sku = ?, name = ?, category = ?, description = ?,
-                           price = ?, image = ?, wake_product_id = ?,
-                           variant_name = ?, main_variant = ?, subtitle = ?,
-                           updated_at = ?
-                     WHERE id = ?
-                    """,
-                    (
-                        sku, nome, category, description, price, image,
-                        wake_product_id, variant_name or None, main_variant,
-                        subtitle or None, now, local_id,
-                    ),
-                )
-                updated += 1
-
-    return {"inserted": inserted, "updated": updated, "skipped": skipped}
-
-
-def get_distinct_wake_product_ids() -> List[int]:
-    """Retorna os wake_product_id distintos (> 0) gravados na biblioteca."""
-    with get_conn() as conn:
-        rows = conn.execute(
-            """
-            SELECT DISTINCT wake_product_id
-              FROM products
-             WHERE wake_product_id IS NOT NULL AND wake_product_id > 0
-            """
-        ).fetchall()
-    return [int(r[0]) for r in rows]
-
-
-def get_local_ids_without_wake_mapping() -> List[int]:
-    """IDs locais ativos que não possuem wake_product_id mapeado.
-
-    Esses IDs provavelmente correspondem a productVariantId da Wake,
-    inseridos diretamente sem rastreamento de família.
-    Usados para enriquecer o sync via busca direta por productVariantId.
-    """
-    with get_conn() as conn:
-        rows = conn.execute(
-            """
-            SELECT id FROM products
-             WHERE active = 1
-               AND (wake_product_id IS NULL OR wake_product_id = 0)
-             ORDER BY id
-            """
-        ).fetchall()
-    return [int(r[0]) for r in rows]
-
-
-def _find_product_row_local(conn: sqlite3.Connection, q: str) -> Optional[sqlite3.Row]:
-    """Busca produto no SQLite (variante, alias ERP ou ``wake_product_id`` legado)."""
-    q = (q or "").strip()
-    if not q:
-        return None
-
-    row = conn.execute(
-        "SELECT * FROM products WHERE sku = ? AND active = 1", (q,)
-    ).fetchone()
-    if row:
-        return row
-
-    row = conn.execute(
-        """
-        SELECT p.* FROM product_sku_aliases a
-          JOIN products p ON p.id = a.product_id
-         WHERE a.sku = ? AND p.active = 1
-        """,
-        (q,),
-    ).fetchone()
-    if row:
-        return row
-
-    try:
-        num = int(q.lstrip("#").strip())
-    except ValueError:
-        return None
-
-    row = conn.execute(
-        "SELECT * FROM products WHERE id = ? AND active = 1", (num,)
-    ).fetchone()
-    if row:
-        return row
-
-    row = conn.execute(
-        """
-        SELECT * FROM products
-         WHERE wake_product_id = ? AND active = 1 AND id != wake_product_id
-         ORDER BY id ASC
-         LIMIT 1
-        """,
-        (num,),
-    ).fetchone()
-    return row
-
-
-def resolve_product_by_sku_or_id(
-    q: str,
-    *,
-    fetch_wake: bool = True,
-) -> Optional[Dict]:
-    """Resolve produto por SKU/ID local; fallback Wake on-demand se configurado.
-
-    O fallback Wake consulta a API apenas quando o SKU não existe no SQLite,
-    upserta a variante encontrada e retorna o cadastro local.
-    """
-    q = (q or "").strip()
-    if not q:
-        return None
-
-    with get_conn() as conn:
-        row = _find_product_row_local(conn, q)
-        if row:
-            return _row_to_product_dict(row)
-
-    if not fetch_wake:
-        return None
-
-    try:
-        import wake_api
-    except ImportError:
-        return None
-
-    if not wake_api.wake_token_configured():
-        return None
-
-    try:
-        wake_rows = wake_api.fetch_variants_by_sku(q)
-    except Exception as exc:
-        log.warning("Wake lookup SKU %s falhou: %s", q, exc)
-        return None
-
-    if not wake_rows:
-        return None
-
-    sync_products_from_wake(wake_rows, remap_legacy=True)
-
-    with get_conn() as conn:
-        row = _find_product_row_local(conn, q)
-        return _row_to_product_dict(row) if row else None
-
-
 # ---------------------------------------------------------------------------
 # Catálogo (produtos)
 # ---------------------------------------------------------------------------
@@ -765,9 +432,9 @@ def _product_row_to_client(row: sqlite3.Row) -> Dict:
     except (KeyError, IndexError):
         vn = ""
     try:
-        wake_pid = int(row["wake_product_id"] or 0)
+        family_pid = int(row["family_id"] or 0)
     except (KeyError, IndexError, TypeError, ValueError):
-        wake_pid = 0
+        family_pid = 0
     try:
         main_variant = bool(int(row["main_variant"] or 0))
     except (KeyError, IndexError, TypeError, ValueError):
@@ -776,6 +443,14 @@ def _product_row_to_client(row: sqlite3.Row) -> Dict:
         subtitle = (row["subtitle"] or "").strip()
     except (KeyError, IndexError):
         subtitle = ""
+    try:
+        erp_codprod = int(row["erp_codprod"]) if row["erp_codprod"] is not None else None
+    except (KeyError, IndexError, TypeError, ValueError):
+        erp_codprod = None
+    try:
+        brand = (row["brand"] or "").strip()
+    except (KeyError, IndexError):
+        brand = ""
     return {
         "id": pid,
         "sku": sku,
@@ -789,7 +464,9 @@ def _product_row_to_client(row: sqlite3.Row) -> Dict:
         "estoque": int(row["stock"] or 0),
         "estoque_minimo": int(row["min_stock"] or 0),
         "ativo": bool(row["active"]),
-        "wake_product_id": wake_pid,
+        "family_id": family_pid,
+        "erp_codprod": erp_codprod,
+        "marca": brand,
         "main_variant": main_variant,
         "tem_opcoes": False,
         "catalog_oculto": False,
@@ -810,16 +487,16 @@ def _is_name_variant_child(parent_name: str, child_name: str) -> bool:
 
 def _catalog_children_of_parent(parent: Dict, products: List[Dict], parent_ids: set) -> List[Dict]:
     pid = int(parent["id"])
-    wake = int(parent.get("wake_product_id") or 0)
+    family = int(parent.get("family_id") or 0)
     children: List[Dict] = []
     for cand in products:
         cid = int(cand["id"])
         if cid == pid or cid in parent_ids:
             continue
-        cwake = int(cand.get("wake_product_id") or 0)
-        same_wake = wake > 0 and cwake == wake
+        cfamily = int(cand.get("family_id") or 0)
+        same_family = family > 0 and cfamily == family
         name_child = _is_name_variant_child(parent.get("nome") or "", cand.get("nome") or "")
-        if same_wake or name_child:
+        if same_family or name_child:
             children.append(cand)
     children.sort(key=lambda c: ((c.get("variante") or c.get("nome") or ""), int(c["id"])))
     return children
@@ -918,16 +595,16 @@ def _detect_variant_parent_ids_from_products(products: List[Dict]) -> set:
     ``products`` a cada request/polling.
     """
     found: set = set()
-    by_wake: Dict[int, List[Dict]] = defaultdict(list)
+    by_family: Dict[int, List[Dict]] = defaultdict(list)
     for p in products:
-        wake = int(p.get("wake_product_id") or 0)
-        if wake > 0:
-            by_wake[wake].append(p)
-    for wake, group in by_wake.items():
+        family = int(p.get("family_id") or 0)
+        if family > 0:
+            by_family[family].append(p)
+    for family, group in by_family.items():
         if len(group) < 2:
             continue
         for p in group:
-            if int(p["id"]) == wake:
+            if int(p["id"]) == family:
                 found.add(int(p["id"]))
 
     folded = [(int(p["id"]), _fold_product_name(p.get("nome") or "")) for p in products]
@@ -971,14 +648,14 @@ def prepare_catalog_variant_groups(products: List[Dict]) -> List[Dict]:
             continue
         _mark_catalog_family(parent, children, include_head=True)
 
-    by_wake: Dict[int, List[Dict]] = defaultdict(list)
+    by_family: Dict[int, List[Dict]] = defaultdict(list)
     for p in products:
         if p.get("catalog_oculto") or p.get("tem_opcoes"):
             continue
-        wake = int(p.get("wake_product_id") or 0)
-        if wake > 0:
-            by_wake[wake].append(p)
-    for _wake, group in by_wake.items():
+        family = int(p.get("family_id") or 0)
+        if family > 0:
+            by_family[family].append(p)
+    for _family, group in by_family.items():
         visible = [p for p in group if not p.get("catalog_oculto")]
         if len(visible) < 2:
             continue
@@ -1079,7 +756,7 @@ def _admin_products_library_filter_clause(
     params: List = []
     ev = "COALESCE(ev_agg.ev_stock_total, 0)"
     search_sql, search_params = _product_catalog_like_clause(
-        q, include_sku_aliases=True, include_wake_id=True
+        q, include_sku_aliases=True, include_family_id=True
     )
     if search_sql:
         parts.append(search_sql)
@@ -1170,78 +847,6 @@ def list_products_admin_slice(
     return [_admin_products_library_row_to_admin_product(r) for r in rows]
 
 
-def upsert_wake_variant(p: Dict) -> Optional[Dict]:
-    """Persiste uma variante Wake no catálogo local e retorna seu dict.
-
-    A chave local é ``productVariantId`` quando existir; o SKU-base
-    (``productId``) também pode ser gravado e vendido.
-    """
-    now = _now_iso()
-    variant_id = int(p.get("variant_id") or 0)
-    product_id = int(p.get("wake_product_id") or p.get("id") or 0)
-
-    local_id = variant_id if variant_id > 0 else product_id
-    if local_id <= 0:
-        return None
-
-    raw_sku = (p.get("sku") or "").strip()
-    name = (p.get("nome") or "").strip() or "Produto"
-    category = str(p.get("categoria") or "Geral")
-    price = float(p.get("preco") or 0)
-    image = p.get("imagem") or ""
-    description = f"{name} — {category}"
-    variant_name = (p.get("variant_name") or "").strip() or None
-    subtitle = (p.get("subtitle") or "").strip() or None
-    wake_product_id = int(p.get("wake_product_id") or p.get("id") or local_id)
-    main_variant = 1 if p.get("main_variant") else 0
-
-    try:
-        with get_conn() as conn:
-            existing = conn.execute(
-                "SELECT id, sku, name FROM products WHERE id = ?", (local_id,)
-            ).fetchone()
-
-            sku = raw_sku or _default_sku_for_id(local_id)
-            sku = _ensure_distinct_sku(conn, local_id, sku)
-
-            if existing is None:
-                conn.execute(
-                    """
-                    INSERT INTO products
-                        (id, sku, name, category, description, price, image,
-                         stock, min_stock, active, wake_product_id, variant_name,
-                         main_variant, subtitle, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, 1, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (local_id, sku, name, category, description,
-                     price, image, DEFAULT_MIN_STOCK,
-                     wake_product_id, variant_name, main_variant,
-                     subtitle, now, now),
-                )
-            else:
-                conn.execute(
-                    """
-                    UPDATE products
-                       SET sku = ?, name = ?, category = ?, description = ?,
-                           price = ?, image = ?, wake_product_id = ?,
-                           variant_name = ?, main_variant = ?, subtitle = ?,
-                           updated_at = ?
-                     WHERE id = ?
-                    """,
-                    (sku, name, category, description, price, image,
-                     wake_product_id, variant_name, main_variant,
-                     subtitle, now, local_id),
-                )
-
-            row = conn.execute(
-                "SELECT * FROM products WHERE id = ?", (local_id,)
-            ).fetchone()
-    except Exception:
-        return None
-
-    return _product_row_to_client(row) if row else None
-
-
 def get_product(product_id: int) -> Optional[Dict]:
     with get_conn() as conn:
         row = conn.execute(
@@ -1319,3 +924,237 @@ def set_product_active(product_id: int, active: bool) -> bool:
         )
         return cur.rowcount > 0
 
+
+# ---------------------------------------------------------------------------
+# Sincronização com o ERP (Sankhya)
+# ---------------------------------------------------------------------------
+
+#: Colunas de ``products`` que a sincronização do ERP pode alterar. Estoque,
+#: mínimo, ativo, família e preço do evento são do Totem e nunca são tocados.
+_ERP_SYNC_FIELDS = (
+    "name", "category", "description", "price", "brand", "erp_codvol",
+    "erp_group_code", "anvisa_code", "supplier_ref", "supplier_name",
+)
+
+
+def _erp_text(value) -> Optional[str]:
+    """Texto do ERP sem espaços sobrando (``DESCRPROD`` vem com espaços à direita)."""
+    if value is None:
+        return None
+    text = " ".join(str(value).split())
+    return text or None
+
+
+def _erp_int(value) -> Optional[int]:
+    try:
+        return int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def find_local_product_for_codprod(
+    conn: sqlite3.Connection, codprod: int
+) -> Optional[sqlite3.Row]:
+    """Produto local vinculado ao ``CODPROD``: vínculo gravado, SKU igual ou alias."""
+    code = int(codprod)
+    row = conn.execute(
+        "SELECT * FROM products WHERE erp_codprod = ?", (code,)
+    ).fetchone()
+    if row:
+        return row
+    row = conn.execute(
+        "SELECT * FROM products WHERE sku = ? AND erp_codprod IS NULL "
+        "ORDER BY active DESC, id ASC LIMIT 1",
+        (str(code),),
+    ).fetchone()
+    if row:
+        return row
+    return conn.execute(
+        """
+        SELECT p.* FROM product_sku_aliases a
+          JOIN products p ON p.id = a.product_id
+         WHERE a.sku = ? AND p.erp_codprod IS NULL
+         LIMIT 1
+        """,
+        (str(code),),
+    ).fetchone()
+
+
+def upsert_products_from_erp(
+    items: Iterable[Dict],
+    *,
+    image_writer=None,
+) -> Dict:
+    """Aplica o catálogo do ERP na biblioteca local, sem renumerar nada.
+
+    Cada item: ``codprod`` (obrigatório), ``name``, ``category``, ``group_code``,
+    ``brand``, ``codvol``, ``anvisa_code``, ``supplier_ref``, ``supplier_name``,
+    ``description``, ``price`` (``None`` = sem preço no ERP) e ``image``
+    (bytes ou ``None``).
+
+    - Produto já vinculado (``erp_codprod``, SKU = ``CODPROD`` ou alias) é
+      atualizado; o ``id`` local, estoque, eventos, vendas e promoções ficam.
+    - Produto novo recebe ``id`` gerado pelo banco (as faixas de ``CODPROD`` e
+      dos ids antigos se sobrepõem) e SKU = ``CODPROD``.
+    - Produto sem preço mantém o último preço; sem imagem mantém a foto.
+    - Produto que não veio na lista **não** é desativado.
+
+    ``image_writer(product_id, data) -> Optional[str]`` grava a imagem e devolve
+    o caminho local (padrão: ``product_images.save_image_bytes``).
+
+    Retorna contadores e até 50 avisos legíveis.
+    """
+    writer = image_writer or product_images.save_image_bytes
+    stats: Dict = {
+        "inserted": 0, "updated": 0, "unchanged": 0, "skipped": 0,
+        "images": 0, "warnings": 0, "messages": [], "inserted_ids": [],
+    }
+
+    def warn(msg: str) -> None:
+        stats["warnings"] += 1
+        if len(stats["messages"]) < 50:
+            stats["messages"].append(msg)
+
+    now = _now_iso()
+    with get_conn() as conn:
+        for item in items:
+            codprod = _erp_int(item.get("codprod"))
+            if not codprod or codprod <= 0:
+                stats["skipped"] += 1
+                continue
+            name = _erp_text(item.get("name"))
+            price = item.get("price")
+            incoming = {
+                "name": name,
+                "category": _erp_text(item.get("category")),
+                "description": _erp_text(item.get("description")),
+                "price": round(float(price), 2) if price is not None else None,
+                "brand": _erp_text(item.get("brand")),
+                "erp_codvol": _erp_text(item.get("codvol")),
+                "erp_group_code": _erp_int(item.get("group_code")),
+                "anvisa_code": _erp_text(item.get("anvisa_code")),
+                "supplier_ref": _erp_text(item.get("supplier_ref")),
+                "supplier_name": _erp_text(item.get("supplier_name")),
+            }
+            row = find_local_product_for_codprod(conn, codprod)
+
+            if row is None:
+                if not name:
+                    warn(f"CODPROD {codprod}: sem descrição, não cadastrado.")
+                    stats["skipped"] += 1
+                    continue
+                if incoming["price"] is None:
+                    warn(f"CODPROD {codprod} ({name}): novo e sem preço; cadastrado com R$ 0,00.")
+                sku = str(codprod)
+                if conn.execute("SELECT 1 FROM products WHERE sku = ?", (sku,)).fetchone():
+                    sku = f"ERP-{codprod}"
+                    warn(f"CODPROD {codprod}: SKU já usado por outro produto; cadastrado como {sku}.")
+                cur = conn.execute(
+                    """
+                    INSERT INTO products
+                        (sku, name, category, description, price, image, stock,
+                         min_stock, active, erp_codprod, erp_codvol, brand,
+                         erp_group_code, anvisa_code, supplier_ref, supplier_name,
+                         erp_synced_at, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, NULL, 0, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        sku, name, incoming["category"] or "Geral",
+                        incoming["description"], incoming["price"] or 0.0,
+                        DEFAULT_MIN_STOCK, codprod, incoming["erp_codvol"],
+                        incoming["brand"], incoming["erp_group_code"],
+                        incoming["anvisa_code"], incoming["supplier_ref"],
+                        incoming["supplier_name"], now, now, now,
+                    ),
+                )
+                local_id = int(cur.lastrowid)
+                stats["inserted"] += 1
+                stats["inserted_ids"].append(local_id)
+            else:
+                local_id = int(row["id"])
+                changes: Dict[str, object] = {}
+                for field in _ERP_SYNC_FIELDS:
+                    new = incoming[field]
+                    if new is None:
+                        continue  # ERP sem o dado: preserva o valor local
+                    old = row[field]
+                    if field == "price":
+                        if old is None or abs(float(old) - float(new)) > 0.004:
+                            changes[field] = new
+                    elif old != new:
+                        changes[field] = new
+                if row["erp_codprod"] is None:
+                    changes["erp_codprod"] = codprod
+                if incoming["price"] is None:
+                    warn(
+                        f"CODPROD {codprod} ({row['name']}): sem preço no ERP; "
+                        f"mantido R$ {float(row['price'] or 0):.2f}."
+                    )
+                if changes:
+                    changes["erp_synced_at"] = now
+                    changes["updated_at"] = now
+                    assignments = ", ".join(f"{k} = ?" for k in changes)
+                    conn.execute(
+                        f"UPDATE products SET {assignments} WHERE id = ?",
+                        (*changes.values(), local_id),
+                    )
+                    stats["updated"] += 1
+                else:
+                    conn.execute(
+                        "UPDATE products SET erp_synced_at = ? WHERE id = ?",
+                        (now, local_id),
+                    )
+                    stats["unchanged"] += 1
+
+            data = item.get("image")
+            if data:
+                saved = writer(local_id, data)
+                if saved:
+                    conn.execute(
+                        "UPDATE products SET image = ? WHERE id = ? AND COALESCE(image, '') != ?",
+                        (saved, local_id, saved),
+                    )
+                    stats["images"] += 1
+    return stats
+
+
+def get_product_erp_link_summary(limit: int = 50) -> Dict:
+    """Produtos ativos sem ``CODPROD`` (não podem ir num pedido ao ERP)."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT id, sku, name FROM products "
+            "WHERE erp_codprod IS NULL AND active = 1 ORDER BY id LIMIT ?",
+            (int(limit),),
+        ).fetchall()
+        missing = conn.execute(
+            "SELECT COUNT(*) FROM products WHERE erp_codprod IS NULL AND active = 1"
+        ).fetchone()[0]
+        linked = conn.execute(
+            "SELECT COUNT(*) FROM products WHERE erp_codprod IS NOT NULL"
+        ).fetchone()[0]
+    return {
+        "missing": int(missing),
+        "linked": int(linked),
+        "products": [dict(r) for r in rows],
+    }
+
+
+def set_product_erp_codprod(product_id: int, codprod: Optional[int]) -> None:
+    """Vincula (ou desvincula, com ``None``) um produto local a um ``CODPROD``."""
+    with get_conn() as conn:
+        if codprod is not None:
+            other = conn.execute(
+                "SELECT id, name FROM products WHERE erp_codprod = ? AND id != ?",
+                (int(codprod), int(product_id)),
+            ).fetchone()
+            if other:
+                raise ValueError(
+                    f"O CODPROD {int(codprod)} já está vinculado ao produto "
+                    f"#{int(other['id'])} ({other['name']})."
+                )
+        cur = conn.execute(
+            "UPDATE products SET erp_codprod = ?, updated_at = ? WHERE id = ?",
+            (int(codprod) if codprod is not None else None, _now_iso(), int(product_id)),
+        )
+        if cur.rowcount == 0:
+            raise ValueError("Produto não encontrado.")

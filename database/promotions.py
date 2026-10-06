@@ -226,7 +226,7 @@ _PARENT_INHERIT_RULE_TYPES = {"percent", "fixed", "min_bundle", "exact_bundle"}
 
 
 def _variant_parent_by_child(conn: sqlite3.Connection, product_ids) -> Dict[int, int]:
-    """``{product_id da variante-filha: id do produto-pai}`` via ``wake_product_id``.
+    """``{product_id da variante-filha: id do produto-pai}`` via ``family_id``.
 
     O produto-pai (a SKU "cabeça" de um grupo de Variantes) é ele mesmo um item
     comprável do catálogo — uma promoção vinculada só às variantes-filhas deve
@@ -237,13 +237,13 @@ def _variant_parent_by_child(conn: sqlite3.Connection, product_ids) -> Dict[int,
         return {}
     placeholders = ",".join("?" * len(ids))
     rows = conn.execute(
-        f"SELECT id, wake_product_id FROM products WHERE id IN ({placeholders})",
+        f"SELECT id, family_id FROM products WHERE id IN ({placeholders})",
         list(ids),
     ).fetchall()
     out: Dict[int, int] = {}
     for r in rows:
         pid = int(r["id"])
-        parent_id = _int_or_none(r["wake_product_id"])
+        parent_id = _int_or_none(r["family_id"])
         if parent_id and parent_id != pid:
             out[pid] = parent_id
     return out

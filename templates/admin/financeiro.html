@@ -354,10 +354,16 @@
             <span>
                 {% if pm.method == 'pix' %}
                 <i class="fa-brands fa-pix" aria-hidden="true"></i>
-                {% elif pm.method == 'cartao' %}
+                {% elif pm.method == 'pix_inter' %}
+                <i class="fa-solid fa-building-columns" aria-hidden="true"></i>
+                {% elif pm.method in ('cartao', 'credito') %}
                 <i class="fa-solid fa-credit-card" aria-hidden="true"></i>
+                {% elif pm.method == 'debito' %}
+                <i class="fa-regular fa-credit-card" aria-hidden="true"></i>
                 {% elif pm.method == 'dinheiro' %}
                 <i class="fa-solid fa-money-bill-wave" aria-hidden="true"></i>
+                {% elif pm.method == 'faturado' %}
+                <i class="fa-solid fa-file-invoice-dollar" aria-hidden="true"></i>
                 {% endif %}
                 {{ pm.method | paymethod(None) }}
             </span>

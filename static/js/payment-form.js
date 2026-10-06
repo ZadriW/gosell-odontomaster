@@ -18,6 +18,7 @@
     const cepLoading = document.getElementById('cepLoading');
     const addressInput = document.getElementById('paymentAddress');
     const cityInput = document.getElementById('paymentCity');
+    const neighborhoodInput = document.getElementById('paymentNeighborhood');
     const stateSelect = document.getElementById('paymentState');
 
     function load() {
@@ -82,7 +83,7 @@
             'input[name="payment_method"][form="paymentForm"]:checked, '
                 + '#paymentForm input[name="payment_method"]:checked',
         );
-        return !!(r && r.value === 'cartao');
+        return !!(r && r.value === 'credito');
     }
 
     function selectedPaymentMethod() {
@@ -90,23 +91,22 @@
             'input[name="payment_method"][form="paymentForm"]:checked, '
                 + '#paymentForm input[name="payment_method"]:checked',
         );
-        return r ? String(r.value || 'cartao').toLowerCase() : 'cartao';
+        return r ? String(r.value || 'credito').toLowerCase() : 'credito';
     }
 
     function syncPaymentMethodHint() {
         const hint = document.getElementById('paymentMethodHint');
         if (!hint) return;
         const pm = selectedPaymentMethod();
-        if (pm === 'dinheiro') {
-            hint.textContent =
-                'Pagamento em espécie: confirme o recebimento do valor na próxima etapa (sem maquininha).';
-        } else if (pm === 'pix') {
-            hint.textContent =
-                'PIX selecionado — o valor será processado na maquininha na próxima etapa.';
-        } else {
-            hint.textContent =
-                'Cartão selecionado — o valor será processado na maquininha na próxima etapa.';
-        }
+        const hints = {
+            dinheiro: 'Pagamento em espécie: confirme o recebimento do valor na próxima etapa (sem maquininha).',
+            faturado: 'Venda faturada: o cliente paga depois, pela cobrança do financeiro. Confirme na próxima etapa (sem maquininha).',
+            pix: 'PIX selecionado — o valor será processado na maquininha na próxima etapa.',
+            pix_inter: 'Pix Inter selecionado — o cliente paga pelo Pix da conta Inter; informe o código do comprovante na próxima etapa.',
+            debito: 'Débito selecionado — o valor será processado na maquininha na próxima etapa.',
+            credito: 'Crédito selecionado — o valor será processado na maquininha na próxima etapa.',
+        };
+        hint.textContent = hints[pm] || hints.credito;
     }
 
     function rebuildInstallmentsOptions(preferred) {
@@ -282,6 +282,7 @@
 
     function fillAddressFields(data) {
         if (data.logradouro) addressInput.value = data.logradouro;
+        if (data.bairro && neighborhoodInput) neighborhoodInput.value = data.bairro;
         if (data.localidade) cityInput.value = data.localidade;
         if (data.uf) stateSelect.value = data.uf.toUpperCase();
     }
@@ -293,7 +294,7 @@
     const lookupNote = document.getElementById('paymentCpfLookup');
     const LOOKUP_FIELDS = [
         'name', 'email', 'phone', 'cro_uf', 'cro_numero',
-        'zipcode', 'address', 'number', 'complement', 'city', 'state',
+        'zipcode', 'address', 'number', 'complement', 'neighborhood', 'city', 'state',
     ];
 
     // Campos preenchidos pela última consulta (usado só para saber o que limpar
@@ -535,10 +536,10 @@
             return null;
         }
         const data = new FormData(form);
-        const pmNorm = (data.get('payment_method') || 'cartao').trim().toLowerCase();
+        const pmNorm = (data.get('payment_method') || 'credito').trim().toLowerCase();
 
         let installments = 1;
-        if (pmNorm === 'cartao') {
+        if (pmNorm === 'credito') {
             const total = cartTotal();
             const max = maxParcelasPermitidas(total);
             installments = parseInt(String(data.get('installments') || '1'), 10) || 1;
@@ -575,6 +576,7 @@
             address: (data.get('address') || '').trim(),
             number: (data.get('number') || '').trim(),
             complement: (data.get('complement') || '').trim(),
+            neighborhood: (data.get('neighborhood') || '').trim(),
             city: (data.get('city') || '').trim(),
             state: (data.get('state') || '').trim(),
             payment_method: pmNorm,
@@ -618,12 +620,16 @@
         if (stored.number && numEl) numEl.value = stored.number;
         const compEl = form.querySelector('[name="complement"]');
         if (stored.complement && compEl) compEl.value = stored.complement;
+        const hoodEl = form.querySelector('[name="neighborhood"]');
+        if (stored.neighborhood && hoodEl) hoodEl.value = stored.neighborhood;
         const cityEl = form.querySelector('[name="city"]');
         if (stored.city && cityEl) cityEl.value = stored.city;
         const stateEl = form.querySelector('[name="state"]');
         if (stored.state && stateEl) stateEl.value = stored.state;
-        const pm = (stored.payment_method || 'cartao').toLowerCase();
-        const pmVal = ['pix', 'cartao', 'dinheiro'].includes(pm) ? pm : 'cartao';
+        const pm = (stored.payment_method || 'credito').toLowerCase();
+        const pmVal = ['pix', 'pix_inter', 'credito', 'debito', 'dinheiro', 'faturado'].includes(pm)
+            ? pm
+            : 'credito';
         const pmRadio = document.querySelector(
             `input[name="payment_method"][value="${pmVal}"][form="paymentForm"], #paymentForm input[name="payment_method"][value="${pmVal}"]`,
         );

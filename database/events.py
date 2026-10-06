@@ -346,22 +346,39 @@ def delete_event(event_id: int) -> Dict:
 
 
 def find_product_by_sku_or_id(q: str) -> Optional[Dict]:
-    """Busca produto por ID numérico ou SKU exato. Retorna dict ou None."""
-    q = (q or "").strip()
+    """Busca produto ativo por SKU, ``CODPROD`` do ERP, SKU alternativo ou ID local.
+
+    O SKU e o ``CODPROD`` vêm antes do ID: as faixas de ``CODPROD`` e dos ids
+    locais se sobrepõem, e quem digita um código no admin quase sempre digita o
+    do ERP.
+    """
+    q = (q or "").strip().lstrip("#").strip()
     if not q:
         return None
+    try:
+        num: Optional[int] = int(q)
+    except ValueError:
+        num = None
     with get_conn() as conn:
-        row = None
-        try:
-            pid = int(q)
+        row = conn.execute(
+            "SELECT * FROM products WHERE sku = ? AND active = 1", (q,)
+        ).fetchone()
+        if row is None and num is not None:
             row = conn.execute(
-                "SELECT * FROM products WHERE id = ? AND active = 1", (pid,)
+                "SELECT * FROM products WHERE erp_codprod = ? AND active = 1", (num,)
             ).fetchone()
-        except ValueError:
-            pass
         if row is None:
             row = conn.execute(
-                "SELECT * FROM products WHERE sku = ? AND active = 1", (q,)
+                """
+                SELECT p.* FROM product_sku_aliases a
+                  JOIN products p ON p.id = a.product_id
+                 WHERE a.sku = ? AND p.active = 1
+                """,
+                (q,),
+            ).fetchone()
+        if row is None and num is not None:
+            row = conn.execute(
+                "SELECT * FROM products WHERE id = ? AND active = 1", (num,)
             ).fetchone()
         return dict(row) if row else None
 
@@ -1230,7 +1247,7 @@ def list_transactions_summary_for_event_period(
     sql = (
         "SELECT t.id, t.order_number, t.created_at, t.total, t.items_count, t.status, "
         "t.client_name, t.client_cpf, t.client_email, t.client_phone, t.client_zipcode, t.client_address, "
-        "t.client_number, t.client_complement, t.client_city, t.client_state, "
+        "t.client_number, t.client_complement, t.client_neighborhood, t.client_city, t.client_state, "
         "t.seller_id, t.seller_name, t.payment_method, t.card_installments, t.aut, "
         "t.client_cro_uf, t.client_cro_numero "
         "FROM transactions t "
@@ -1307,7 +1324,8 @@ def list_transaction_items_for_event_period(
 # Relatório Financeiro do Evento
 # ---------------------------------------------------------------------------
 
-#: O catálogo não tem campo de marca: ela vem no fim do nome ("Resina X - FGM").
+#: A marca vem do campo ``MARCA`` do Sankhya (``products.brand``). Produtos ainda
+#: não sincronizados caem no fim do nome, herdado da Wake ("Resina X - FGM").
 _BRAND_SEPARATOR = re.compile(r"\s[-–—]\s")
 UNKNOWN_BRAND_LABEL = "Sem marca identificada"
 
@@ -1333,7 +1351,8 @@ def _revenue_by_brand(rows) -> List[Dict]:
     """Agrega itens vendidos por marca, do maior faturamento para o menor."""
     groups: Dict[str, Dict] = {}
     for r in rows:
-        brand = _brand_from_product_name(r["name"])
+        erp_brand = " ".join(str(r["brand"] or "").split()).upper() if "brand" in r.keys() else ""
+        brand = erp_brand or _brand_from_product_name(r["name"])
         key = _brand_group_key(brand) if brand else ""
         g = groups.setdefault(key, {
             "spellings": {}, "revenue": 0.0, "units": 0, "orders": set(), "products": set(),
@@ -1632,12 +1651,13 @@ def get_event_financial_report(
             for r in seller_rows
         ]
 
-        # ---------- Por marca (derivada do nome do produto) -----------
+        # ---------- Por marca (MARCA do ERP; sem ela, fim do nome) -----
         # O total do pedido (já com descontos de pedido) é rateado entre os
         # itens pelo subtotal: a soma por marca bate com a receita dos KPIs.
         brand_rows = conn.execute(
             f"SELECT t.id AS tx_id, ti.product_id AS pid_raw, "
             f"COALESCE(NULLIF(TRIM(ti.product_name),''), p.name) AS name, "
+            f"p.brand AS brand, "
             f"ti.quantity AS qty, "
             f"ti.subtotal * t.total / NULLIF(("
             f"  SELECT SUM(x.subtotal) FROM transaction_items x WHERE x.transaction_id = t.id"

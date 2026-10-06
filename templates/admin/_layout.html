@@ -120,6 +120,11 @@
                     <i class="fa-solid fa-chart-pie" aria-hidden="true"></i>
                     Financeiro
                 </a>
+                <a class="admin-nav__item {% if active_section == 'erp' %}is-active{% endif %}"
+                   href="{{ url_for('admin_erp') }}">
+                    <i class="fa-solid fa-plug" aria-hidden="true"></i>
+                    Integração ERP
+                </a>
             </div>
         </nav>
         {% endif %}
@@ -232,6 +237,11 @@
            href="{{ url_for('admin_financeiro') }}">
             <i class="fa-solid fa-chart-pie" aria-hidden="true"></i>
             <span class="admin-bottom-nav__badge">Financeiro</span>
+        </a>
+        <a class="admin-bottom-nav__item {% if active_section == 'erp' %}is-active{% endif %}"
+           href="{{ url_for('admin_erp') }}">
+            <i class="fa-solid fa-plug" aria-hidden="true"></i>
+            <span class="admin-bottom-nav__badge">ERP</span>
         </a>
         {% endif %}
     </nav>

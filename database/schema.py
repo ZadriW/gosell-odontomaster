@@ -1,9 +1,12 @@
 """Initial DDL and idempotent migrations."""
 from __future__ import annotations
 
+import os
 import sqlite3
-from typing import List
+from datetime import datetime
 
+
+from . import connection
 from .connection import DEFAULT_MIN_STOCK, _now_iso, get_conn
 from .sku_helpers import _default_sku_for_id
 from .sqlutil import sql_ident
@@ -636,19 +639,213 @@ def _ensure_sellers_columns(conn: sqlite3.Connection) -> None:
         )
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_sellers_email ON sellers(email)")
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_sellers_username ON sellers(username)")
+    # Código do vendedor no Sankhya: um por vendedor, nunca compartilhado.
+    if "erp_codvend" not in cols:
+        conn.execute("ALTER TABLE sellers ADD COLUMN erp_codvend INTEGER")
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_sellers_erp_codvend "
+        "ON sellers(erp_codvend) WHERE erp_codvend IS NOT NULL"
+    )
 
 
-def _ensure_products_wake_columns(conn: sqlite3.Connection) -> None:
-    """Colunas Wake em ``products`` (variante principal, nome da variante, subtítulo)."""
+def _ensure_products_family_columns(conn: sqlite3.Connection) -> None:
+    """Famílias de variantes em ``products`` (produto-pai, nome da variante, subtítulo).
+
+    ``family_id`` é o ``id`` local do produto-pai da família. Nasceu como
+    ``wake_product_id`` (``productId`` da Wake) e foi renomeada na troca para o
+    Sankhya, preservando as famílias já existentes.
+    """
+    cols = _table_columns(conn, "products")
+    if "family_id" not in cols:
+        if "wake_product_id" in cols:
+            conn.execute("ALTER TABLE products RENAME COLUMN wake_product_id TO family_id")
+        else:
+            conn.execute("ALTER TABLE products ADD COLUMN family_id INTEGER")
     cols = _table_columns(conn, "products")
     for field, ddl in {
-        "wake_product_id": "INTEGER",
         "variant_name": "TEXT",
         "main_variant": "INTEGER NOT NULL DEFAULT 0",
         "subtitle": "TEXT",
     }.items():
         if field not in cols:
             conn.execute(f"ALTER TABLE products ADD COLUMN {sql_ident(field)} {ddl}")
+
+
+#: Migração que marca a entrada do Sankhya (usada também para o backup prévio).
+ERP_MIGRATION_NAME = "erp_sankhya_v1"
+
+
+def _ensure_products_erp_columns(conn: sqlite3.Connection) -> None:
+    """Vínculo do catálogo com o Sankhya (``CODPROD``) e dados de cadastro do ERP.
+
+    Backfill único: o SKU herdado da Wake já é o ``CODPROD`` (6 dígitos). Os
+    produtos fora desse padrão ficam sem vínculo até o admin informar o código.
+    """
+    cols = _table_columns(conn, "products")
+    for field, ddl in {
+        "erp_codprod": "INTEGER",
+        "erp_codvol": "TEXT",
+        "brand": "TEXT",
+        "erp_group_code": "INTEGER",
+        "anvisa_code": "TEXT",
+        "supplier_ref": "TEXT",
+        "supplier_name": "TEXT",
+        "erp_synced_at": "TEXT",
+    }.items():
+        if field not in cols:
+            conn.execute(f"ALTER TABLE products ADD COLUMN {sql_ident(field)} {ddl}")
+    _ensure_schema_migrations_table(conn)
+    migration_name = "products_erp_codprod_backfill"
+    if not _migration_applied(conn, migration_name):
+        conn.execute(
+            """
+            UPDATE products SET erp_codprod = CAST(sku AS INTEGER)
+             WHERE erp_codprod IS NULL
+               AND sku GLOB '[0-9][0-9][0-9][0-9][0-9][0-9]'
+               AND NOT EXISTS (
+                    SELECT 1 FROM products o
+                     WHERE o.id != products.id AND o.sku = products.sku
+               )
+            """
+        )
+        _mark_migration_applied(conn, migration_name)
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_products_erp_codprod "
+        "ON products(erp_codprod) WHERE erp_codprod IS NOT NULL"
+    )
+
+
+def _ensure_transactions_erp_columns(conn: sqlite3.Connection) -> None:
+    """Bairro do cliente (exigido pelo Sankhya) e situação do envio do pedido ao ERP.
+
+    ``erp_status``: ``nao_enviado`` · ``na_fila`` · ``enviado`` · ``erro`` ·
+    ``cancelamento_pendente`` · ``cancelado``. Vendas anteriores à integração
+    ficam ``nao_enviado`` e só vão ao ERP por ação explícita no admin.
+    """
+    cols = _table_columns(conn, "transactions")
+    for field, ddl in {
+        "client_neighborhood": "TEXT",
+        "erp_status": "TEXT NOT NULL DEFAULT 'nao_enviado'",
+        "erp_codparc": "INTEGER",
+        "erp_order_id": "TEXT",
+        "erp_sent_at": "TEXT",
+    }.items():
+        if field not in cols:
+            conn.execute(f"ALTER TABLE transactions ADD COLUMN {sql_ident(field)} {ddl}")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_transactions_erp_status "
+        "ON transactions(erp_status)"
+    )
+
+
+def _ensure_erp_tables(conn: sqlite3.Connection) -> None:
+    """Configuração, mapeamentos, fila de envio e histórico da integração Sankhya."""
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS erp_settings (
+            key        TEXT PRIMARY KEY,
+            value      TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS erp_payment_types (
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            payment_method TEXT    NOT NULL,
+            installments   INTEGER,
+            codtipvenda    INTEGER NOT NULL,
+            description    TEXT,
+            updated_at     TEXT    NOT NULL
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_erp_payment_types_rule
+            ON erp_payment_types(payment_method, COALESCE(installments, 0));
+
+        CREATE TABLE IF NOT EXISTS erp_customers (
+            cpf        TEXT PRIMARY KEY,
+            codparc    INTEGER NOT NULL,
+            name       TEXT,
+            synced_at  TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS erp_outbox (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            kind            TEXT    NOT NULL,
+            transaction_id  INTEGER NOT NULL,
+            status          TEXT    NOT NULL DEFAULT 'pendente',
+            attempts        INTEGER NOT NULL DEFAULT 0,
+            next_attempt_at TEXT,
+            payload_json    TEXT,
+            response_json   TEXT,
+            last_error      TEXT,
+            created_at      TEXT    NOT NULL,
+            updated_at      TEXT    NOT NULL,
+            UNIQUE (kind, transaction_id),
+            FOREIGN KEY (transaction_id) REFERENCES transactions(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_erp_outbox_due
+            ON erp_outbox(status, next_attempt_at);
+
+        CREATE TABLE IF NOT EXISTS erp_sync_runs (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            kind         TEXT    NOT NULL,
+            started_at   TEXT    NOT NULL,
+            finished_at  TEXT,
+            status       TEXT    NOT NULL,
+            inserted     INTEGER NOT NULL DEFAULT 0,
+            updated      INTEGER NOT NULL DEFAULT 0,
+            unchanged    INTEGER NOT NULL DEFAULT 0,
+            warnings     INTEGER NOT NULL DEFAULT 0,
+            images       INTEGER NOT NULL DEFAULT 0,
+            message      TEXT,
+            error        TEXT
+        );
+    """)
+    conn.execute(
+        "INSERT OR IGNORE INTO erp_settings (key, value, updated_at) VALUES ('codemp', '1', ?)",
+        (_now_iso(),),
+    )
+    _ensure_schema_migrations_table(conn)
+    _mark_migration_applied(conn, ERP_MIGRATION_NAME)
+    # O checkout separou "Cartão" em crédito e débito: os códigos já cadastrados
+    # por parcela eram do crédito (débito ganhou código próprio).
+    if not _migration_applied(conn, "erp_payment_types_cartao_to_credito"):
+        conn.execute(
+            "UPDATE erp_payment_types SET payment_method = 'credito' "
+            "WHERE payment_method = 'cartao'"
+        )
+        _mark_migration_applied(conn, "erp_payment_types_cartao_to_credito")
+
+
+def _backup_before_erp_migration() -> None:
+    """Cópia do banco antes da primeira migração do Sankhya (uma única vez).
+
+    Fica em ``database/backups/`` com data no nome. Bases novas (sem a tabela
+    ``products``) não precisam de backup.
+    """
+    db_path = connection.DB_PATH
+    if not os.path.isfile(db_path):
+        return
+    src = sqlite3.connect(db_path)
+    try:
+        has_products = src.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='products'"
+        ).fetchone()
+        has_migrations = src.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_migrations'"
+        ).fetchone()
+        done = has_migrations and src.execute(
+            "SELECT 1 FROM schema_migrations WHERE name = ?", (ERP_MIGRATION_NAME,)
+        ).fetchone()
+        if not has_products or done:
+            return
+        backup_dir = os.path.join(os.path.dirname(db_path), "backups")
+        os.makedirs(backup_dir, exist_ok=True)
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        dest = sqlite3.connect(os.path.join(backup_dir, f"totem-pre-sankhya-{stamp}.sqlite3"))
+        try:
+            src.backup(dest)
+        finally:
+            dest.close()
+    finally:
+        src.close()
 
 
 def _ensure_product_sku_aliases_table(conn: sqlite3.Connection) -> None:
@@ -781,6 +978,7 @@ def _ensure_min_stock_default_five(conn: sqlite3.Connection) -> None:
 
 def init_db() -> None:
     """Cria as tabelas, aplica migrações leves e remove resíduos do seed antigo."""
+    _backup_before_erp_migration()
     with get_conn() as conn:
         conn.executescript(_SCHEMA)
         _ensure_products_sku_column(conn)
@@ -792,7 +990,8 @@ def init_db() -> None:
         _ensure_transactions_aut(conn)
         _ensure_transactions_event_id(conn)
         _ensure_sellers_columns(conn)
-        _ensure_products_wake_columns(conn)
+        _ensure_products_family_columns(conn)
+        _ensure_products_erp_columns(conn)
         _ensure_product_sku_aliases_table(conn)
         _ensure_events_tables(conn)
         _ensure_promotions_extended_rule_types(conn)
@@ -810,6 +1009,8 @@ def init_db() -> None:
         _ensure_delivery_columns(conn)
         _ensure_transactions_handover_status(conn)
         _ensure_transactions_receipt_note(conn)
+        _ensure_transactions_erp_columns(conn)
+        _ensure_erp_tables(conn)
         _consolidate_legacy_movement_types(conn)
         _purge_invalid_product_ids(conn)
         _purge_legacy_demo_products(conn)
@@ -818,7 +1019,7 @@ def init_db() -> None:
 
 
 def _purge_invalid_product_ids(conn: sqlite3.Connection) -> None:
-    """Remove cadastros com ``id`` não positivo (resíduos de integrações Wake)."""
+    """Remove cadastros com ``id`` não positivo (resíduos da antiga integração Wake)."""
     rows = conn.execute("SELECT id FROM products WHERE id < 1").fetchall()
     if not rows:
         return
@@ -837,7 +1038,7 @@ def _purge_invalid_product_ids(conn: sqlite3.Connection) -> None:
 def _purge_legacy_demo_products(conn: sqlite3.Connection) -> None:
     """Remove produtos do catálogo fictício inicial (imagens picsum.photos).
 
-    O catálogo passou a vir apenas da Wake Commerce; estes registros eram
+    O catálogo passou a vir de integração (Wake, depois Sankhya); estes registros eram
     identificáveis pela URL de placeholder usada no seed antigo.
     """
     rows = conn.execute(

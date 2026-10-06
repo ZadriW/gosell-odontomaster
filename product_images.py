@@ -1,7 +1,10 @@
-"""Cache local de imagens de produto (Wake) para operação offline.
+"""Cache local de imagens de produto para operação offline.
 
 Estratégia:
-- A coluna ``products.image`` sempre guarda a URL remota original da Wake.
+- Produtos herdados da Wake guardam em ``products.image`` a URL remota original.
+- O Sankhya envia a imagem em base64 (``IMAGEM``): a sincronização grava o
+  arquivo direto em ``static/product-images/<id>.<ext>`` (``save_image_bytes``)
+  e ``products.image`` passa a guardar esse caminho local.
 - Ao baixar para offline, o arquivo é salvo em ``static/product-images/<id>.<ext>``.
 - ``resolve_image_url()`` verifica se existe cópia local; se sim retorna o path
   local, senão retorna a URL remota original.
@@ -74,6 +77,58 @@ def resolve_image_url(product_id: int, remote_url: Optional[str]) -> str:
         filename = os.path.basename(local)
         return f"{LOCAL_URL_PREFIX}{filename}"
     return (remote_url or "").strip()
+
+
+def _ext_from_bytes(data: bytes) -> Optional[str]:
+    """Extensão pela assinatura do arquivo; ``None`` se não for imagem conhecida."""
+    head = data[:16]
+    if head.startswith(b"\xff\xd8\xff"):
+        return ".jpg"
+    if head.startswith(b"\x89PNG\r\n\x1a\n"):
+        return ".png"
+    if head.startswith(b"GIF87a") or head.startswith(b"GIF89a"):
+        return ".gif"
+    if head[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return ".webp"
+    if data.lstrip()[:5].lower() in (b"<?xml", b"<svg "):
+        return ".svg"
+    return None
+
+
+def save_image_bytes(product_id: int, data: bytes) -> Optional[str]:
+    """Grava a imagem recebida do ERP e retorna o caminho público local.
+
+    Não regrava quando o conteúdo é igual ao arquivo atual. Cópias antigas do
+    mesmo produto com outra extensão são removidas para não ficarem à frente.
+    """
+    pid = int(product_id)
+    if pid <= 0 or not data or len(data) <= 32:
+        return None
+    ext = _ext_from_bytes(data)
+    if ext is None:
+        log.warning("Imagem do produto %s em formato desconhecido; ignorada.", pid)
+        return None
+    _ensure_dir()
+    filename = f"{pid}{ext}"
+    dest = os.path.join(IMAGES_DIR, filename)
+    try:
+        if os.path.isfile(dest):
+            with open(dest, "rb") as fh:
+                if fh.read() == data:
+                    return f"{LOCAL_URL_PREFIX}{filename}"
+        tmp = dest + ".tmp"
+        with open(tmp, "wb") as fh:
+            fh.write(data)
+        os.replace(tmp, dest)
+        for other in (".jpg", ".png", ".webp", ".gif", ".svg"):
+            if other != ext:
+                stale = os.path.join(IMAGES_DIR, f"{pid}{other}")
+                if os.path.isfile(stale):
+                    os.remove(stale)
+    except OSError as exc:
+        log.warning("Não foi possível gravar imagem do produto %s: %s", pid, exc)
+        return None
+    return f"{LOCAL_URL_PREFIX}{filename}"
 
 
 def download_image(product_id: int, remote_url: str, *, timeout: int = 20) -> Optional[str]:

@@ -1,17 +1,17 @@
 """Metadados do catálogo para o totem.
 
-O catálogo real vem da **Wake Commerce** (sincronização via API) e é persistido
-no SQLite. Não há mais *seed* de produtos fictícios.
+O catálogo real vem do **Sankhya** (sincronização via ``erp_sync.py``) e é
+persistido no SQLite. Não há mais *seed* de produtos fictícios.
 
-``CATEGORIES`` é preenchido em tempo de execução em ``app.py`` após a sync
-com a Wake (lista mutável compartilhada com os templates).
+``CATEGORIES`` é uma lista mutável compartilhada com os templates; as
+categorias de verdade vêm do banco (``DESCRGRUPOPROD`` do Sankhya).
 """
 
 from __future__ import annotations
 
 from typing import Dict, List
 
-# Inicialmente vazio; substituído após sync Wake em ``app.py``.
+# Inicialmente vazio; mantido por compatibilidade com ``app.py``.
 CATEGORIES: List[str] = []
 
 

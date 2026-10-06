@@ -13,11 +13,11 @@
             </p>
         </div>
         <div style="display:flex;gap:8px;flex-wrap:wrap;">
-            <form method="post" action="{{ url_for('admin_sync_catalog_wake') }}">
+            <form method="post" action="{{ url_for('admin_sync_catalog_erp') }}">
                 {% include 'partials/csrf_field.html' %}
                 <button type="submit" class="admin-btn admin-btn--ghost"
-                        title="Atualiza nomes, SKUs, preços e imagens a partir da Wake Commerce. Estoque e eventos não são alterados."
-                        onclick="return confirm('Sincronizar catálogo com a Wake Commerce?\n\nIsso atualiza nomes, SKUs, preços-base e imagens.\nEstoque, vendas e promoções NÃO serão afetados.');">
+                        title="Atualiza nomes, categorias, marcas, preços e imagens a partir do Sankhya. Estoque e eventos não são alterados."
+                        onclick="return confirm('Sincronizar catálogo com o Sankhya?\n\nIsso atualiza nomes, categorias, marcas, preços-base e imagens.\nEstoque, vendas e promoções NÃO serão afetados.');">
                     <i class="fa-solid fa-arrows-rotate" aria-hidden="true"></i>
                     Sincronizar com ERP
                 </button>
@@ -25,7 +25,7 @@
             <form method="post" action="{{ url_for('admin_products_cache_images') }}">
                 {% include 'partials/csrf_field.html' %}
                 <button type="submit" class="admin-btn admin-btn--ghost"
-                        title="Baixa as fotos da Wake para este computador. Use com internet antes do evento.">
+                        title="Baixa as fotos remotas para este computador. Use com internet antes do evento.">
                     <i class="fa-solid fa-images" aria-hidden="true"></i>
                     Salvar imagens (offline)
                 </button>

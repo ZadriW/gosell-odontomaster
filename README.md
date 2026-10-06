@@ -41,7 +41,7 @@ A interface é responsiva e funciona em navegadores modernos em desktop, tablet 
 | **Dashboard** | Indicadores gerais e atalhos. |
 | **Eventos** | Criar, editar, arquivar e restaurar eventos; cor de identificação (badge). |
 | **Estoque por evento** | Produtos do evento, entradas, saídas, ajustes, estoque mínimo, remoção. |
-| **Importação** | Adicionar produtos por SKU/ID ou importar planilha `.xls` (com consulta à Wake quando necessário). |
+| **Importação** | Adicionar produtos por SKU/ID ou importar planilha `.xls` (com consulta ao Sankhya quando necessário). |
 | **Vendedores** | Cadastro, edição, vínculo a eventos, histórico de transações. |
 | **Promoções** | Por evento, com regras: desconto %, desconto fixo, compre X leve Y, **A partir de** (pacote mínimo), **Na compra de** (pacote exato). |
 | **Movimentações** | Histórico por evento, com exportação CSV. |
@@ -61,9 +61,14 @@ A interface é responsiva e funciona em navegadores modernos em desktop, tablet 
 
 Promoções são aplicadas na cotação do carrinho (`POST /api/carrinho/cotacao`) e na persistência da transação, garantindo o mesmo valor exibido e cobrado.
 
-### Integração Wake Commerce
+### Integração Sankhya (ERP)
 
-Consulta **on-demand** à Storefront API (GraphQL) por SKU ao cadastrar ou importar produtos que ainda não existem no catálogo local. Token via variável de ambiente `WAKE_TOKEN`. Não há sincronização em massa automática do catálogo.
+Acesso pelo gateway da 4R Tech (`sankhya_api.py`), com credenciais só no `.env`. Painel em **Admin → Integração ERP**.
+
+- **Catálogo:** a sincronização traz produtos (`DESCRPROD`, grupo, marca, unidade, imagem) e preços da empresa configurada (`CODEMP`). O vínculo é `products.erp_codprod`; o `id` local, estoque, eventos, vendas e promoções não mudam. Produto que some da lista continua ativo; sem preço, mantém o último; sem imagem, mantém a foto.
+- **Pedidos:** toda venda confirmada entra na fila `erp_outbox` e é enviada em segundo plano (cliente via `clientes/create-update`, depois o pedido como orçamento). Sem internet, a fila espera; recusas do ERP ficam com erro para o admin reenviar ou descartar. Estorno de venda já enviada gera um cancelamento na fila.
+- **Vendas anteriores à integração** ficam como "não enviadas" e só vão ao Sankhya por ação no painel.
+- A migração do banco faz um backup automático em `database/backups/` antes de rodar.
 
 ### Nota de retirada
 
@@ -86,7 +91,7 @@ Link público assinado (`/nota/<pedido>`) para o cliente visualizar o comprovant
 | Banco | SQLite (`database/totem.sqlite3`) |
 | Front-end | HTML (Jinja2), CSS, JavaScript (sem framework) |
 | Servidor WSGI | Gunicorn (produção) |
-| Integração | Wake Commerce Storefront API |
+| Integração | Sankhya (gateway 4R Tech) |
 
 ---
 
@@ -97,7 +102,8 @@ Totem/
 ├── app.py                  # Aplicação Flask (rotas, auth, APIs)
 ├── main.py                 # Entrada WSGI (gunicorn main:app)
 ├── totem_env.py            # Carrega .env / totem.env
-├── wake_api.py             # Cliente Wake Commerce (GraphQL)
+├── sankhya_api.py          # Cliente HTTP do Sankhya (gateway 4R Tech)
+├── erp_sync.py             # Sincronização do catálogo e fila de pedidos do ERP
 ├── receipt_tokens.py       # Tokens assinados da nota de retirada
 ├── requirements.txt
 ├── database/               # Camada SQLite (schema, CRUD, promoções, transações)
@@ -155,7 +161,11 @@ Com SQLite, use **um worker** (`-w 1`) para evitar conflitos de escrita. Para m�
 
 | Variável | Obrigatória | Descrição |
 |----------|-------------|-----------|
-| `WAKE_TOKEN` | Para importação Wake | Token TCS-Access-Token da Storefront API |
+| `SANKHYA_API_KEY` | Para o ERP | Chave hexadecimal do caminho do gateway |
+| `SANKHYA_LOGIN` / `SANKHYA_PASSWORD` | Para o ERP | Usuário do Sankhya usado pela integração |
+| `SANKHYA_API_URL` | Não | Base do gateway (padrão: 4R Tech `portal-repres`) |
+| `SANKHYA_PRODUCT_FILTER_PARAM` | Não | Parâmetro que filtra `/products` por `CODPROD` (busca avulsa) |
+| `TOTEM_ERP_WORKER` | Não | `0` desliga o envio automático da fila (testes) |
 | `TOTEM_SECRET_KEY` | **Sim em produção** | Chave de sessão Flask e assinatura de notas |
 | `TOTEM_DEBUG` | Não | `1` liga o debugger Werkzeug. **Deixe desligado** em evento/produção. |
 | `TOTEM_BIND` | Não | Host do `python app.py` (padrão `0.0.0.0` na LAN). |

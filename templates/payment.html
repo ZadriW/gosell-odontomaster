@@ -154,12 +154,11 @@
 
                 <h2 class="payment__section-title payment__section-title--sub payment__section-title--address">
                     <i class="fa-solid fa-location-dot" aria-hidden="true"></i>
-                    Endereço para Retirada
-                    <span class="payment__section-optional">(opcional)</span>
+                    Endereço do cliente
                 </h2>
 
                 <label class="payment-field payment-field--half">
-                    <span class="payment-field__label">CEP</span>
+                    <span class="payment-field__label">CEP <span class="payment-field__required">*</span></span>
                     <div class="payment-field__wrap">
                         <input
                             type="text"
@@ -170,6 +169,9 @@
                             maxlength="9"
                             inputmode="numeric"
                             autocomplete="postal-code"
+                            pattern="\d{5}-?\d{3}"
+                            title="CEP com 8 dígitos"
+                            required
                         >
                         <button type="button" class="payment-field__cep-btn" id="paymentSearchCep"
                                 disabled
@@ -185,7 +187,7 @@
                 </label>
 
                 <label class="payment-field payment-field--wide">
-                    <span class="payment-field__label">Endereço</span>
+                    <span class="payment-field__label">Endereço <span class="payment-field__required">*</span></span>
                     <input
                         type="text"
                         name="address"
@@ -193,17 +195,19 @@
                         class="payment-field__input"
                         placeholder="Rua, avenida..."
                         autocomplete="street-address"
+                        required
                     >
                 </label>
 
                 <label class="payment-field payment-field--quarter">
-                    <span class="payment-field__label">Número</span>
+                    <span class="payment-field__label">Número <span class="payment-field__required">*</span></span>
                     <input
                         type="text"
                         name="number"
                         class="payment-field__input"
-                        placeholder="123"
+                        placeholder="123 ou S/N"
                         autocomplete="off"
+                        required
                     >
                 </label>
 
@@ -219,7 +223,20 @@
                 </label>
 
                 <label class="payment-field payment-field--half">
-                    <span class="payment-field__label">Cidade</span>
+                    <span class="payment-field__label">Bairro <span class="payment-field__required">*</span></span>
+                    <input
+                        type="text"
+                        name="neighborhood"
+                        id="paymentNeighborhood"
+                        class="payment-field__input"
+                        placeholder="Ex.: Centro"
+                        autocomplete="off"
+                        required
+                    >
+                </label>
+
+                <label class="payment-field payment-field--half">
+                    <span class="payment-field__label">Cidade <span class="payment-field__required">*</span></span>
                     <input
                         type="text"
                         name="city"
@@ -227,12 +244,13 @@
                         class="payment-field__input"
                         placeholder="Ex.: São Paulo"
                         autocomplete="address-level2"
+                        required
                     >
                 </label>
 
                 <label class="payment-field payment-field--half">
-                    <span class="payment-field__label">Estado</span>
-                    <select name="state" id="paymentState" class="payment-field__input" autocomplete="address-level1">
+                    <span class="payment-field__label">Estado <span class="payment-field__required">*</span></span>
+                    <select name="state" id="paymentState" class="payment-field__input" autocomplete="address-level1" required>
                         <option value="">Selecione...</option>
                         <option value="AC">Acre</option>
                         <option value="AL">Alagoas</option>
@@ -279,7 +297,7 @@
                     Forma de pagamento
                 </h2>
                 <p class="payment-method__hint payment-method__hint--sidebar" id="paymentMethodHint">
-                    Escolha a forma de pagamento antes de continuar. PIX e cartão são processados na maquininha; dinheiro é confirmado na próxima etapa.
+                    Escolha a forma de pagamento antes de continuar. PIX e cartão são processados na maquininha; dinheiro e faturado são confirmados na próxima etapa.
                 </p>
                 <fieldset class="payment-method" form="paymentForm">
                     <legend class="payment-method__legend">Opção <span class="payment-field__required">*</span></legend>
@@ -292,10 +310,24 @@
                             </span>
                         </label>
                         <label class="payment-method__choice">
-                            <input type="radio" name="payment_method" form="paymentForm" value="cartao" checked>
+                            <input type="radio" name="payment_method" form="paymentForm" value="pix_inter">
+                            <span class="payment-method__box">
+                                <i class="fa-solid fa-building-columns" aria-hidden="true"></i>
+                                <span class="payment-method__label">Pix Inter</span>
+                            </span>
+                        </label>
+                        <label class="payment-method__choice">
+                            <input type="radio" name="payment_method" form="paymentForm" value="credito" checked>
                             <span class="payment-method__box">
                                 <i class="fa-solid fa-credit-card" aria-hidden="true"></i>
-                                <span class="payment-method__label">Cartão</span>
+                                <span class="payment-method__label">Crédito</span>
+                            </span>
+                        </label>
+                        <label class="payment-method__choice">
+                            <input type="radio" name="payment_method" form="paymentForm" value="debito">
+                            <span class="payment-method__box">
+                                <i class="fa-regular fa-credit-card" aria-hidden="true"></i>
+                                <span class="payment-method__label">Débito</span>
                             </span>
                         </label>
                         <label class="payment-method__choice">
@@ -303,6 +335,13 @@
                             <span class="payment-method__box">
                                 <i class="fa-solid fa-money-bill-wave" aria-hidden="true"></i>
                                 <span class="payment-method__label">Dinheiro</span>
+                            </span>
+                        </label>
+                        <label class="payment-method__choice">
+                            <input type="radio" name="payment_method" form="paymentForm" value="faturado">
+                            <span class="payment-method__box">
+                                <i class="fa-solid fa-file-invoice-dollar" aria-hidden="true"></i>
+                                <span class="payment-method__label">Faturado</span>
                             </span>
                         </label>
                     </div>
@@ -315,7 +354,7 @@
                 >
                     <div class="payment-installments__inner">
                         <label class="payment-installments__field" for="paymentInstallments">
-                            <span class="payment-installments__label">Parcelamento no cartão</span>
+                            <span class="payment-installments__label">Parcelamento no crédito</span>
                             <select
                                 id="paymentInstallments"
                                 class="payment-installments__select"

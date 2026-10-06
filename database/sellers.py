@@ -73,11 +73,37 @@ def ensure_seller_account(
     return dict(created)
 
 
+def normalize_seller_codvend(raw) -> Optional[int]:
+    """``CODVEND`` do Sankhya digitado no admin: vazio = sem código; só dígitos."""
+    text = str(raw if raw is not None else "").strip()
+    if not text:
+        return None
+    if not text.isdigit() or int(text) <= 0:
+        raise ValueError("O CODVEND deve ser um número inteiro positivo.")
+    return int(text)
+
+
+def _check_codvend_free(conn, codvend: Optional[int], seller_id: Optional[int] = None) -> None:
+    if codvend is None:
+        return
+    other = conn.execute(
+        "SELECT id, name FROM sellers WHERE erp_codvend = ? AND id != ?",
+        (int(codvend), int(seller_id or 0)),
+    ).fetchone()
+    if other:
+        raise ValueError(
+            f"O CODVEND {int(codvend)} já pertence ao vendedor {other['name']}. "
+            "Cada vendedor precisa do seu próprio código no Sankhya."
+        )
+
+
 def create_seller_account(
     name: str,
     username: str,
     password_hash: str,
     pin_hash: Optional[str] = None,
+    *,
+    erp_codvend: Optional[int] = None,
 ) -> Dict:
     """Cria uma conta de vendedor, falhando se o usuário já estiver em uso."""
     login = validate_seller_username(username)
@@ -99,13 +125,15 @@ def create_seller_account(
         ).fetchone()
         if exists:
             raise ValueError("Já existe um vendedor com este usuário.")
+        _check_codvend_free(conn, erp_codvend)
         cur = conn.execute(
             """
             INSERT INTO sellers
-                (name, email, username, password_hash, pin_hash, active, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, 1, ?, ?)
+                (name, email, username, password_hash, pin_hash, active, created_at,
+                 updated_at, erp_codvend)
+            VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?)
             """,
-            (seller_name, login, login, password_hash, ph, now, now),
+            (seller_name, login, login, password_hash, ph, now, now, erp_codvend),
         )
         row = conn.execute(
             "SELECT * FROM sellers WHERE id = ?",
@@ -210,6 +238,22 @@ def get_seller_by_email(email: str) -> Optional[Dict]:
     return get_seller_by_username(email)
 
 
+def list_sellers_without_codvend() -> List[Dict]:
+    """Vendedores ativos sem ``CODVEND``: as vendas deles ficam presas na fila do ERP."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT s.id, s.name, s.username,
+                   (SELECT COUNT(*) FROM transactions t
+                     WHERE t.seller_id = s.id AND t.status = 'confirmado') AS confirmed
+              FROM sellers s
+             WHERE s.active = 1 AND s.erp_codvend IS NULL
+             ORDER BY LOWER(s.name)
+            """
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def get_seller(seller_id: int) -> Optional[Dict]:
     with get_conn() as conn:
         row = conn.execute(
@@ -256,6 +300,7 @@ def update_seller_account(
     pin_hash: Optional[str] = None,
     clear_pin_hash: bool = False,
     email: Optional[str] = None,
+    erp_codvend: Optional[int] = None,
 ) -> Dict:
     """Atualiza dados principais do vendedor e opcionalmente redefine a senha."""
     login = validate_seller_username(username or email or "")
@@ -274,13 +319,15 @@ def update_seller_account(
         ).fetchone()
         if exists:
             raise ValueError("Já existe outro vendedor com este usuário.")
+        _check_codvend_free(conn, erp_codvend, int(seller_id))
         updates = [
             "name = ?",
             "email = ?",
             "username = ?",
             "active = ?",
+            "erp_codvend = ?",
         ]
-        params: List = [seller_name, login, login, 1 if active else 0]
+        params: List = [seller_name, login, login, 1 if active else 0, erp_codvend]
         if password_hash:
             updates.append("password_hash = ?")
             params.append(password_hash)

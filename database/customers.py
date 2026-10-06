@@ -184,6 +184,7 @@ _AUTOFILL_FIELDS = {
     "address": "client_address",
     "number": "client_number",
     "complement": "client_complement",
+    "neighborhood": "client_neighborhood",
     "city": "client_city",
     "state": "client_state",
 }

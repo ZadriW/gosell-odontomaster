@@ -227,12 +227,14 @@
     {% if seller_form is not none %}
         {% set v_name = seller_form.name %}
         {% set v_username = seller_form.username %}
+        {% set v_codvend = seller_form.erp_codvend %}
         {% set v_active = seller_form.active %}
         {% set v_password = seller_form.password %}
         {% set v_event_id = seller_form.event_id %}
     {% else %}
         {% set v_name = seller.name %}
         {% set v_username = seller.username or seller.email %}
+        {% set v_codvend = seller.erp_codvend if seller.erp_codvend is not none else '' %}
         {% set v_active = seller.active %}
         {% set v_password = '' %}
         {% set v_event_id = seller_primary_event_id|string if seller_primary_event_id else '' %}
@@ -273,6 +275,23 @@
                     {% if fe.username %}aria-invalid="true" aria-describedby="detail-seller-username-err"{% endif %}
                 >
                 {% if fe.username %}<p class="admin-field__error" id="detail-seller-username-err">{{ fe.username }}</p>{% endif %}
+            </div>
+            <div class="admin-field">
+                <label class="admin-field__label" for="detail-seller-codvend">Código no Sankhya (CODVEND)</label>
+                <input
+                    id="detail-seller-codvend"
+                    class="admin-field__input{% if fe.erp_codvend %} admin-field__input--invalid{% endif %}"
+                    type="text"
+                    name="erp_codvend"
+                    inputmode="numeric"
+                    pattern="[0-9]*"
+                    maxlength="10"
+                    placeholder="ex.: 29"
+                    value="{{ v_codvend }}"
+                    {% if fe.erp_codvend %}aria-invalid="true" aria-describedby="detail-seller-codvend-err"{% endif %}
+                >
+                <p class="admin-field__hint">As vendas deste vendedor vão ao Sankhya com este código. Sem ele, ficam na fila com erro até ser preenchido.</p>
+                {% if fe.erp_codvend %}<p class="admin-field__error" id="detail-seller-codvend-err">{{ fe.erp_codvend }}</p>{% endif %}
             </div>
             <div class="admin-field">
                 <label class="admin-field__label" for="seller-active">Status</label>
