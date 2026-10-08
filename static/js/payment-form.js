@@ -43,7 +43,7 @@
 
     const MIN_TOTAL_PARCELAMENTO_REAIS = 120;
     const MIN_PARCELA_REAIS = 120;
-    const MAX_PARCELAS_UI = 24;
+    const MAX_PARCELAS_UI = 12;  // = MAX_CARD_INSTALLMENTS (database/payment_methods.py)
 
     function formatBRL(value) {
         if (window.Cart && typeof window.Cart.formatBRL === 'function') {
@@ -523,6 +523,31 @@
                     searchCepBtn.click();
                 }
             }
+        });
+    }
+
+    /* -------------------------------------------------------------------- */
+    /* Endereço da loja (botão "Loja")                                       */
+    /* -------------------------------------------------------------------- */
+    const storeBtn = document.getElementById('paymentStoreAddress');
+    const STORE_FIELDS = ['zipcode', 'address', 'number', 'complement', 'neighborhood', 'city', 'state'];
+    let storeAddress = null;
+    try {
+        storeAddress = JSON.parse((storeBtn && storeBtn.dataset.storeAddress) || 'null');
+    } catch (_) {
+        storeAddress = null;
+    }
+    if (storeBtn && storeAddress) {
+        storeBtn.addEventListener('click', () => {
+            STORE_FIELDS.forEach(field => {
+                const el = form.querySelector(`[name="${field}"]`);
+                if (!el || !storeAddress[field]) return;
+                el.value = formatLookupValue(field, String(storeAddress[field]));
+                el.setCustomValidity('');
+                // Conta como preenchido à mão: a consulta por CPF sem cliente não apaga.
+                autofilled.delete(field);
+            });
+            syncCepButton();
         });
     }
 

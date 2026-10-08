@@ -35,7 +35,9 @@ def fold_search_text(text: Optional[str]) -> str:
 
 def _connect() -> sqlite3.Connection:
     _ensure_dir()
-    conn = sqlite3.connect(DB_PATH)
+    # Espera a vez de escrever (worker do ERP, sincronização do catálogo) em vez
+    # de falhar com "database is locked" após os 5 s padrão.
+    conn = sqlite3.connect(DB_PATH, timeout=15)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     from .products import _fold_product_search_text

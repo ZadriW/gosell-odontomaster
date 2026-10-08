@@ -1,6 +1,7 @@
 """Orquestração da integração Sankhya: catálogo e fila de pedidos.
 
-- ``sync_catalog``: produtos + preços (+ imagens) do ERP para a biblioteca.
+- ``sync_catalog``: esvazia as filas de preço e de cadastro do gateway (lotes
+  de 20, cada um confirmado depois de gravado) para a biblioteca.
 - ``import_single_product``: traz um ``CODPROD`` que ainda não existe aqui.
 - ``process_outbox_once`` / ``start_worker``: envia clientes e pedidos da fila
   em segundo plano, sem travar o pagamento no estande.
@@ -13,12 +14,18 @@ import logging
 import os
 import threading
 import time
+from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 
 import sankhya_api
 from database import erp as erp_db
 from database.connection import get_conn
-from database.products import find_local_product_for_codprod, upsert_products_from_erp
+from database.products import (
+    apply_erp_prices,
+    find_local_product_for_codprod,
+    get_erp_prices,
+    upsert_products_from_erp,
+)
 
 log = logging.getLogger(__name__)
 
@@ -83,32 +90,140 @@ def _codemp() -> int:
     return int(raw) if raw.isdigit() else 1
 
 
-_PRICE_CACHE_SECONDS = 600
-_price_cache: Dict[str, object] = {"at": 0.0, "rows": None}
+#: Teto de lotes por fila numa sincronização (20 itens cada = 40 mil itens).
+MAX_QUEUE_BATCHES = 2000
 
 
-def _price_rows_cached() -> List[Dict]:
-    """Lista de preços para buscas avulsas (importação de planilha chama várias vezes)."""
-    now = time.time()
-    if _price_cache["rows"] is None or now - float(_price_cache["at"]) > _PRICE_CACHE_SECONDS:
-        _price_cache["rows"] = sankhya_api.fetch_prices()
-        _price_cache["at"] = now
-    return _price_cache["rows"]  # type: ignore[return-value]
+class QueueStuckError(sankhya_api.SankhyaError):
+    """O gateway devolveu de novo um lote já confirmado: a confirmação não pegou."""
+
+
+def _drain_queue(fetch, ack, handle, label: str, on_batch=None) -> int:
+    """Esvazia uma fila do gateway: busca um lote, grava aqui, confirma, repete.
+
+    A confirmação só sai depois que o lote foi gravado no banco: se algo cair
+    no meio, o lote continua "Aguard. Integração" no Sankhya e volta na próxima
+    sincronização (gravar de novo é inofensivo). Devolve quantos itens vieram.
+    ``on_batch(lotes, itens)`` é chamado depois de cada lote confirmado.
+    """
+    acked: set = set()
+    total = 0
+    for batch_no in range(1, MAX_QUEUE_BATCHES + 1):
+        batch = fetch()
+        if not batch:
+            return total
+        codes = set()
+        for row in batch:
+            try:
+                codes.add(int(row.get("CODPROD")))
+            except (TypeError, ValueError):
+                continue
+        if not codes:
+            raise QueueStuckError(f"Fila de {label} do Sankhya devolveu itens sem CODPROD.")
+        if codes <= acked:
+            raise QueueStuckError(
+                f"A fila de {label} do Sankhya devolveu de novo produtos já confirmados "
+                f"({len(codes)}): a confirmação de integração não foi registrada no gateway."
+            )
+        handle(batch)
+        ack(codes)
+        acked |= codes
+        total += len(batch)
+        if on_batch:
+            on_batch(batch_no, total)
+    log.warning("Fila de %s do Sankhya: parou no teto de %d lotes.", label, MAX_QUEUE_BATCHES)
+    return total
 
 
 def sync_catalog(run_id: Optional[int] = None) -> Dict:
-    """Sincronização completa. Não mexe em estoque, eventos, vendas nem promoções."""
+    """Esvazia as filas de preço, cadastro e estoque do Sankhya. Não mexe no
+    estoque dos eventos, em vendas nem em promoções.
+
+    - Preços primeiro: ficam guardados (``erp_prices``) e o produto novo que
+      vier depois pela fila de cadastro já entra com preço, em vez de inativo.
+    - Estoque: só os lotes (``CONTROLE``) por local, em ``erp_stock``, para o
+      pedido informar de onde sai cada item.
+    - Cada fila roda mesmo que outra falhe (ex.: rota de confirmação ausente
+      no gateway); a sincronização termina com erro listando as que falharam.
+    """
     run_id = run_id or erp_db.start_sync_run("catalogo")
-    try:
-        products = sankhya_api.fetch_products()
-        prices = _prices_for_company(sankhya_api.fetch_prices(), _codemp())
-        stats = upsert_products_from_erp(_to_items(products, prices))
-    except Exception as exc:
-        log.exception("Sincronização do catálogo Sankhya falhou")
-        erp_db.finish_sync_run(run_id, "erro", error=str(exc))
-        raise
-    stats["received"] = len(products)
-    message = "\n".join(stats["messages"]) or None
+    codemp = _codemp()
+    stats: Dict = {
+        "inserted": 0, "updated": 0, "unchanged": 0, "skipped": 0, "images": 0,
+        "activated": 0, "warnings": 0, "messages": [], "inserted_ids": [],
+        "received": 0, "prices": 0, "price_changed": 0, "price_orphans": 0,
+        "stock_rows": 0,
+    }
+    stock_replaced: set = set()
+
+    def handle_stock(rows: List[Dict]) -> None:
+        stats["stock_rows"] += erp_db.apply_erp_stock(rows, stock_replaced)
+
+    def handle_prices(rows: List[Dict]) -> None:
+        result = apply_erp_prices(_prices_for_company(rows, codemp))
+        for key in ("prices", "price_changed", "activated", "price_orphans"):
+            stats[key] += result[key]
+
+    def handle_products(rows: List[Dict]) -> None:
+        cached = get_erp_prices(
+            int(p["CODPROD"]) for p in rows if str(p.get("CODPROD") or "").strip().isdigit()
+        )
+        result = upsert_products_from_erp(_to_items(rows, cached))
+        for key in ("inserted", "updated", "unchanged", "skipped", "images", "activated", "warnings"):
+            stats[key] += result[key]
+        stats["inserted_ids"].extend(result["inserted_ids"])
+        room = 50 - len(stats["messages"])
+        if room > 0:
+            stats["messages"].extend(result["messages"][:room])
+
+    def progress(step: str):
+        """Etapa atual gravada no histórico, para o painel acompanhar ao vivo."""
+        def report(batch_no: int, items: int) -> None:
+            try:
+                erp_db.update_sync_progress(
+                    run_id, stats, f"{step}: lote {batch_no} ({items} item(ns) recebido(s))…"
+                )
+            except Exception:  # progresso é só exibição; nunca derruba a sincronização
+                log.exception("Falha ao gravar o progresso da sincronização")
+        return report
+
+    queues = (
+        ("preços", "Preços", sankhya_api.fetch_prices, sankhya_api.ack_prices, handle_prices),
+        ("cadastro", "Cadastro de produtos", sankhya_api.fetch_products,
+         sankhya_api.ack_products, handle_products),
+        ("estoque", "Estoque (lotes)", sankhya_api.fetch_stock, sankhya_api.ack_stock,
+         handle_stock),
+    )
+    errors: List[str] = []
+    for key, step, fetch, ack, handle in queues:
+        erp_db.update_sync_progress(run_id, stats, f"{step}: buscando no Sankhya…")
+        try:
+            received = _drain_queue(fetch, ack, handle, key, progress(step))
+            if key == "cadastro":
+                stats["received"] = received
+        except Exception as exc:
+            log.exception("Fila de %s do Sankhya falhou", key)
+            errors.append(f"{step}: {exc}")
+    error = "\n".join(errors) or None
+
+    lines = []
+    if stats["prices"]:
+        lines.append(
+            f"{stats['prices']} preço(s) recebido(s), {stats['price_changed']} alterado(s)"
+            + (f"; {stats['price_orphans']} chegou(aram) antes do cadastro do produto e "
+               "foi(ram) guardado(s) para ele" if stats["price_orphans"] else "")
+            + "."
+        )
+    if stats["activated"]:
+        lines.append(f"{stats['activated']} produto(s) ativado(s): o preço chegou do ERP.")
+    if stats["stock_rows"]:
+        lines.append(f"{stats['stock_rows']} linha(s) de estoque (local × lote) recebida(s).")
+    lines.extend(stats["messages"])
+    message = "\n".join(lines) or None
+    # Lotes já confirmados ficam gravados mesmo quando a sincronização para no meio.
+    if error:
+        erp_db.finish_sync_run(run_id, "erro", stats=stats, message=message, error=error)
+        raise sankhya_api.SankhyaError(error)
     erp_db.finish_sync_run(
         run_id, "parcial" if stats["warnings"] else "ok", stats=stats, message=message
     )
@@ -123,6 +238,10 @@ def start_catalog_sync_async() -> Optional[int]:
     if not _sync_lock.acquire(blocking=False):
         return None
     try:
+        # A trava acima é deste processo; com vários workers WSGI, o banco decide.
+        if erp_db.other_sync_running("catalogo"):
+            _sync_lock.release()
+            return None
         run_id = erp_db.start_sync_run("catalogo")
     except Exception:
         _sync_lock.release()
@@ -141,7 +260,7 @@ def start_catalog_sync_async() -> Optional[int]:
 
 
 def catalog_sync_running() -> bool:
-    return _sync_lock.locked()
+    return _sync_lock.locked() or erp_db.other_sync_running("catalogo")
 
 
 def import_single_product(code: str) -> Optional[int]:
@@ -159,8 +278,8 @@ def import_single_product(code: str) -> Optional[int]:
     ]
     if not products:
         return None
-    prices = _prices_for_company(_price_rows_cached(), _codemp())
-    upsert_products_from_erp(_to_items(products, prices))
+    # A fila de preços entrega cada preço uma vez: o que vale é o último guardado.
+    upsert_products_from_erp(_to_items(products, get_erp_prices([codprod])))
     with get_conn() as conn:
         row = find_local_product_for_codprod(conn, codprod)
     return int(row["id"]) if row else None
@@ -173,8 +292,15 @@ def import_single_product(code: str) -> Optional[int]:
 def _process_order(job: Dict, settings: Dict[str, str]) -> None:
     with get_conn() as conn:
         tx = erp_db.load_transaction_for_erp(conn, int(job["transaction_id"]))
+    if tx is not None and not tx.get("erp_idpedido") and tx.get("status") == "confirmado":
+        # Venda que entrou na fila antes do IDPEDIDO numérico: ganha o número
+        # agora, antes de qualquer envio, e mantém nas próximas tentativas.
+        with get_conn() as conn:
+            tx["erp_idpedido"] = erp_db.ensure_idpedido(conn, int(tx["id"]))
     if tx is None or tx.get("status") != "confirmado":
-        erp_db.mark_job_discarded(int(job["id"]), "A venda não está mais confirmada.")
+        # Estorno enquanto o pedido saía: ele não chegou ao ERP, então o
+        # cancelamento que o estorno enfileirou também não tem o que cancelar.
+        erp_db.close_claimed_job(job, "A venda não está mais confirmada.", "nao_enviado")
         return
 
     with get_conn() as conn:
@@ -184,14 +310,17 @@ def _process_order(job: Dict, settings: Dict[str, str]) -> None:
         return
 
     codparc = tx.get("erp_codparc") or erp_db.get_cached_codparc(tx.get("client_cpf"))
-    customer, problems = erp_db.build_customer_payload(tx, settings, codparc, codvend)
-    if problems:
-        erp_db.mark_job_failed(job, "; ".join(problems), transient=False, final=True,
-                               payload={"cliente": customer})
-        return
     if not codparc:
+        # Cadastro só é exigido quando o cliente ainda não existe no ERP.
+        customer, problems = erp_db.build_customer_payload(tx, settings, codparc, codvend)
+        if problems:
+            erp_db.mark_job_failed(job, "; ".join(problems), transient=False, final=True,
+                                   payload={"cliente": customer})
+            return
         try:
             result = sankhya_api.create_update_client(customer)
+        except sankhya_api.SankhyaConfigError:
+            raise  # login/endereço: pausa a fila inteira (process_outbox_once)
         except sankhya_api.SankhyaError as exc:
             erp_db.mark_job_failed(job, f"Cliente: {exc}", transient=exc.transient,
                                    payload={"cliente": customer}, response=exc.response)
@@ -207,6 +336,19 @@ def _process_order(job: Dict, settings: Dict[str, str]) -> None:
         return
     try:
         result = sankhya_api.create_order(payload)
+    except sankhya_api.SankhyaConfigError:
+        raise  # recusado antes de processar: nada entrou no ERP
+    except sankhya_api.SankhyaUncertain as exc:
+        # Reenviar sozinho poderia duplicar o pedido no ERP. Os lotes ficam
+        # reservados: o pedido pode ter entrado e tirado esse saldo.
+        erp_db.record_allocations(int(tx["id"]), payload)
+        erp_db.mark_job_failed(
+            job,
+            f"{erp_db.UNCERTAIN_SEND_ERROR} Busque no Sankhya pelo IDPEDIDO "
+            f"{tx.get('erp_idpedido')} (pedido {tx.get('order_number')}). ({exc})",
+            transient=False, final=True, payload=payload, response=exc.response,
+        )
+        return
     except sankhya_api.SankhyaError as exc:
         erp_db.mark_job_failed(job, str(exc), transient=exc.transient,
                                payload=payload, response=exc.response)
@@ -220,15 +362,21 @@ def _process_cancel(job: Dict) -> None:
     with get_conn() as conn:
         tx = erp_db.load_transaction_for_erp(conn, int(job["transaction_id"]))
         order_job = erp_db.get_order_job(conn, int(job["transaction_id"]))
-    if tx is None or order_job is None or order_job["status"] != "enviado":
+    reached_erp = order_job is not None and (
+        order_job["status"] == "enviado"
+        or (order_job["status"] == "erro" and erp_db.is_uncertain_send(order_job))
+    )
+    if tx is None or not reached_erp:
         if order_job and order_job["status"] in ("pendente", "processando"):
             # Pedido ainda saindo: espera ele terminar antes de cancelar.
             erp_db.mark_job_failed(job, "Aguardando o envio do pedido.", transient=True)
             return
-        erp_db.mark_job_discarded(int(job["id"]), "O pedido nunca chegou ao ERP.")
+        erp_db.close_claimed_job(job, "O pedido nunca chegou ao ERP.", "nao_enviado")
         return
     try:
         result = sankhya_api.cancel_order(tx.get("erp_order_id"), tx.get("order_number"))
+    except sankhya_api.SankhyaConfigError:
+        raise
     except sankhya_api.SankhyaError as exc:
         erp_db.mark_job_failed(job, str(exc), transient=exc.transient,
                                final=not exc.transient, response=exc.response)
@@ -236,22 +384,63 @@ def _process_cancel(job: Dict) -> None:
     erp_db.mark_job_sent(job, payload=None, response=result)
 
 
+#: Login recusado ou endereço do gateway errado: a fila inteira espera este
+#: tempo. Cada venda tentando por conta própria gastaria as tentativas dela
+#: e somaria logins errados no Sankhya, que pode bloquear o usuário.
+PAUSE_ON_CONFIG_ERROR_SECONDS = 300
+_paused_until = 0.0
+_pause_reason = ""
+
+
+def resume_queue() -> None:
+    """Admin pediu envio agora: tira a pausa de login/configuração."""
+    global _paused_until, _pause_reason
+    _paused_until = 0.0
+    _pause_reason = ""
+
+
+def queue_pause() -> Optional[Dict]:
+    """Pausa em vigor (``{until, reason}``) ou ``None``. Vale para este processo."""
+    if time.time() >= _paused_until:
+        return None
+    return {"until": datetime.fromtimestamp(_paused_until), "reason": _pause_reason}
+
+
+def _pause_queue(exc: sankhya_api.SankhyaConfigError, jobs: List[Dict]) -> None:
+    global _paused_until, _pause_reason
+    _paused_until = time.time() + PAUSE_ON_CONFIG_ERROR_SECONDS
+    _pause_reason = str(exc)
+    retry_at = datetime.now() + timedelta(seconds=PAUSE_ON_CONFIG_ERROR_SECONDS)
+    erp_db.release_claimed_jobs(
+        jobs, f"Fila pausada até {retry_at:%H:%M}: {exc}", retry_at
+    )
+    log.warning(
+        "Fila do Sankhya pausada por %d min (%d item(ns) devolvido(s)): %s",
+        PAUSE_ON_CONFIG_ERROR_SECONDS // 60, len(jobs), exc,
+    )
+
+
 def process_outbox_once(limit: int = 20) -> Dict[str, int]:
     """Uma passada pela fila. Sem configuração completa, não envia nada."""
     out = {"processed": 0, "skipped": 0}
-    if not sankhya_api.is_configured():
+    if not sankhya_api.is_configured() or time.time() < _paused_until:
         return out
     settings = erp_db.get_erp_settings()
     if erp_db.orders_readiness(settings):
         return out
     erp_db.reset_stale_processing()
-    for job in erp_db.claim_due_jobs(limit):
+    jobs = erp_db.claim_due_jobs(limit)
+    for i, job in enumerate(jobs):
         try:
             if job["kind"] == "pedido":
                 _process_order(job, settings)
             else:
                 _process_cancel(job)
             out["processed"] += 1
+        except sankhya_api.SankhyaConfigError as exc:
+            # Este item e os que ainda não saíram voltam para a fila intactos.
+            _pause_queue(exc, jobs[i:])
+            break
         except Exception as exc:  # nunca derruba o worker
             log.exception("Falha inesperada ao processar item %s da fila ERP", job["id"])
             erp_db.mark_job_failed(job, f"Erro interno: {exc}", transient=False)

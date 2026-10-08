@@ -2,6 +2,10 @@
 
 {% block title %}Transações — {{ event.name }} | Dental Odonto Master{% endblock %}
 
+{% block admin_head %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/admin-tx.css') }}">
+{% endblock %}
+
 {% block admin_body %}
 {% set op_noun_l = event|op_noun(lower=True) %}
 <section class="admin-section">

@@ -10,6 +10,7 @@
 {% block head %}
 {% include 'partials/theme_init.html' %}
 <link rel="stylesheet" href="{{ url_for('static', filename='css/admin.css') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/admin-filters.css') }}">
 {% block admin_head %}{% endblock %}
 {% endblock %}
 
@@ -43,6 +44,7 @@
                         'movimentacoes': 'admin_event_movements',
                         'transacoes': 'admin_event_transactions',
                         'promocoes': 'admin_event_promotions',
+                        'clientes': 'admin_event_customers',
                     } %}
                     {% set _switch_endpoint = _event_tab_route.get(active_event_tab, 'admin_event_detail') %}
                     {% for ev in all_events %}

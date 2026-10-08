@@ -63,10 +63,10 @@ Promoções são aplicadas na cotação do carrinho (`POST /api/carrinho/cotacao
 
 ### Integração Sankhya (ERP)
 
-Acesso pelo gateway da 4R Tech (`sankhya_api.py`), com credenciais só no `.env`. Painel em **Admin → Integração ERP**.
+Acesso pelo gateway da 4R Tech (`sankhya_api.py`), com credenciais só no `.env`. Painel em **Admin → Integração ERP**, com o botão **Testar conexão** (faz um login e mostra o motivo exato de uma falha).
 
-- **Catálogo:** a sincronização traz produtos (`DESCRPROD`, grupo, marca, unidade, imagem) e preços da empresa configurada (`CODEMP`). O vínculo é `products.erp_codprod`; o `id` local, estoque, eventos, vendas e promoções não mudam. Produto que some da lista continua ativo; sem preço, mantém o último; sem imagem, mantém a foto.
-- **Pedidos:** toda venda confirmada entra na fila `erp_outbox` e é enviada em segundo plano (cliente via `clientes/create-update`, depois o pedido como orçamento). Sem internet, a fila espera; recusas do ERP ficam com erro para o admin reenviar ou descartar. Estorno de venda já enviada gera um cancelamento na fila.
+- **Catálogo:** o gateway expõe filas de alterações (manual FTAPI/Odontomaster): `GET /products/price` e `GET /products` devolvem lotes de 20 itens "Aguard. Integração", e `POST` no mesmo caminho com `{"códigos": [...]}` marca o lote como integrado. A sincronização esvazia primeiro a fila de preços (guardados em `erp_prices`) e depois a de cadastro (`DESCRPROD`, grupo, marca, unidade, imagem), confirmando cada lote só depois de gravá-lo. A fila de estoque (`/products/stock`) só alimenta `erp_stock` (lotes por local, para o pedido); o estoque do evento continua sendo do Totem. Cada fila roda mesmo que outra falhe. O vínculo é `products.erp_codprod`; o `id` local, estoque, eventos, vendas e promoções não mudam. Produto que some da lista continua ativo; sem preço, mantém o último; sem imagem, mantém a foto. Produto **novo** sem preço entra inativo e é ativado na sincronização que trouxer o preço.
+- **Pedidos:** toda venda confirmada entra na fila `erp_outbox` e é enviada em segundo plano (cliente via `clientes/create-update-geral`, com o CRO só com o número no campo `CRO`, que o gateway grava em `AD_CRO`; depois o pedido como orçamento). Endpoint `orders/create-order`. O cabeçalho leva `IDPEDIDO` = sequencial inteiro da venda (o campo no Sankhya é numérico; `transactions.erp_idpedido`, contador em `erp_counters` que o reset não volta; `TOTEM_IDPEDIDO_BASE` muda a faixa em bancos de teste); cada item leva `SEQITEMPED` ("1", "2"...), `CODLOCALORIG` (local configurado no painel) e `CONTROLE` (lote, da fila `/products/stock`; `" "` para produto sem controle de lote). Como no Sankhya, cada unidade sai de um lote com saldo no local: o item é dividido em uma linha por lote (começando pelo de maior saldo, desconto repartido pela quantidade) e, sem saldo suficiente, o pedido fica com erro. O que cada pedido enviado tirou de cada lote fica em `erp_stock_allocations` e é abatido até a sincronização seguinte trazer o saldo novo; cancelamento ou descarte devolve. Sem internet, a fila espera; recusas do ERP ficam com erro para o admin reenviar ou descartar. Login recusado ou `SANKHYA_API_URL` errado pausam a fila inteira por 5 minutos, sem gastar as tentativas das vendas ("Enviar agora" no painel tira a pausa). Estorno de venda já enviada gera um cancelamento na fila.
 - **Vendas anteriores à integração** ficam como "não enviadas" e só vão ao Sankhya por ação no painel.
 - A migração do banco faz um backup automático em `database/backups/` antes de rodar.
 
@@ -163,8 +163,9 @@ Com SQLite, use **um worker** (`-w 1`) para evitar conflitos de escrita. Para m�
 |----------|-------------|-----------|
 | `SANKHYA_API_KEY` | Para o ERP | Chave hexadecimal do caminho do gateway |
 | `SANKHYA_LOGIN` / `SANKHYA_PASSWORD` | Para o ERP | Usuário do Sankhya usado pela integração |
-| `SANKHYA_API_URL` | Não | Base do gateway (padrão: 4R Tech `portal-repres`) |
+| `SANKHYA_API_URL` | Não | Base do gateway (padrão: 4R Tech `portal-repres`), ex.: `https://<host>/ftapi/v1/portal-repres`. Sem `/autenticacao` nem a chave: o sistema acrescenta os dois |
 | `SANKHYA_PRODUCT_FILTER_PARAM` | Não | Parâmetro que filtra `/products` por `CODPROD` (busca avulsa) |
+| `TOTEM_IDPEDIDO_BASE` | Não | Somado ao sequencial do IDPEDIDO (faixa própria para banco de testes) |
 | `TOTEM_ERP_WORKER` | Não | `0` desliga o envio automático da fila (testes) |
 | `TOTEM_SECRET_KEY` | **Sim em produção** | Chave de sessão Flask e assinatura de notas |
 | `TOTEM_DEBUG` | Não | `1` liga o debugger Werkzeug. **Deixe desligado** em evento/produção. |

@@ -2,7 +2,8 @@
 
 Configuração (somente ``.env`` / ambiente — nunca no código ou no banco):
 
-- ``SANKHYA_API_URL``: base do gateway (padrão abaixo).
+- ``SANKHYA_API_URL``: base do gateway (padrão abaixo), sem endpoint nem chave;
+  ``url_problems`` aponta os erros de montagem.
 - ``SANKHYA_API_KEY``: chave hexadecimal que vai no fim de cada caminho.
 - ``SANKHYA_LOGIN`` / ``SANKHYA_PASSWORD``: usuário do próprio Sankhya.
 - ``SANKHYA_TIMEOUT``: segundos por requisição (padrão 60; catálogo usa 5x).
@@ -24,6 +25,7 @@ import time
 from typing import Any, Dict, Iterable, List, Optional
 
 import requests
+from urllib3.exceptions import NewConnectionError
 
 log = logging.getLogger(__name__)
 
@@ -33,17 +35,28 @@ _TOKEN_FALLBACK_TTL = 6 * 3600
 
 
 class SankhyaError(Exception):
-    """Falha na integração. ``transient`` = vale tentar de novo mais tarde."""
+    """Falha na integração. ``transient`` = vale tentar de novo mais tarde.
+
+    A mensagem passa por ``redact``: ela vai para o banco, o painel e os logs,
+    e o ``requests`` repete a URL (com a chave no caminho) nos erros de rede.
+    """
 
     transient = False
 
     def __init__(self, message: str, *, response: Any = None):
-        super().__init__(message)
+        super().__init__(redact(message))
         self.response = response
 
 
 class SankhyaConfigError(SankhyaError):
-    """Credenciais ou endereço do gateway ausentes no ``.env``."""
+    """Credenciais ou endereço do gateway ausentes ou errados no ``.env``.
+
+    Não é problema de um pedido: a fila inteira para até alguém corrigir.
+    """
+
+
+class SankhyaAuthError(SankhyaConfigError):
+    """O gateway recusou o login (``SANKHYA_LOGIN`` / ``SANKHYA_PASSWORD``)."""
 
 
 class SankhyaNetworkError(SankhyaError):
@@ -54,6 +67,14 @@ class SankhyaNetworkError(SankhyaError):
 
 class SankhyaRejected(SankhyaError):
     """O gateway respondeu e recusou o pedido (dado inválido, regra do ERP)."""
+
+
+class SankhyaUncertain(SankhyaError):
+    """O pedido pode ter chegado ao ERP, mas a resposta se perdeu.
+
+    Só vale para chamadas que não podem ser repetidas às cegas (``create_order``):
+    reenviar sozinho duplicaria o pedido no Sankhya. Alguém confere no ERP antes.
+    """
 
 
 # ---------------------------------------------------------------------------
@@ -80,6 +101,50 @@ def is_configured() -> bool:
     return not missing_config()
 
 
+#: Trechos que só aparecem numa URL de endpoint, nunca na base do gateway.
+_ENDPOINT_SEGMENTS = ("autenticacao", "products", "orders", "clientes")
+
+
+def url_problems() -> List[str]:
+    """Erros de montagem do ``SANKHYA_API_URL`` (vazio = ok ou padrão).
+
+    O caso clássico é colar a URL de login inteira (``.../autenticacao/<chave>``):
+    o sistema acrescenta ``/autenticacao/<chave>`` de novo e o gateway responde 404.
+    """
+    raw = _env("SANKHYA_API_URL")
+    if not raw:
+        return []
+    problems: List[str] = []
+    if not raw.lower().startswith(("https://", "http://")):
+        problems.append("SANKHYA_API_URL precisa começar com https://")
+    key = _env("SANKHYA_API_KEY")
+    if key and len(key) >= 6 and key.lower() in raw.lower():
+        problems.append(
+            "SANKHYA_API_URL contém a chave; ela vai só em SANKHYA_API_KEY"
+        )
+    path = raw.split("://", 1)[-1].split("?", 1)[0].lower()
+    segments = path.strip("/").split("/")[1:]
+    found = [s for s in _ENDPOINT_SEGMENTS if s in segments]
+    if found:
+        problems.append(
+            f"SANKHYA_API_URL termina num endpoint (/{found[0]}); use só a base, "
+            "ex.: https://<host>/ftapi/v1/portal-repres"
+        )
+    return problems
+
+
+def check_connection() -> float:
+    """Faz um login novo no gateway e devolve quanto levou (segundos).
+
+    Só o login: os endpoints de dados devolvem o catálogo inteiro. Levanta a
+    ``SankhyaError`` correspondente (endereço, login, rede).
+    """
+    started = time.monotonic()
+    with _token_lock:
+        _authenticate()
+    return time.monotonic() - started
+
+
 def product_filter_param() -> str:
     return _env("SANKHYA_PRODUCT_FILTER_PARAM")
 
@@ -91,10 +156,23 @@ def _timeout() -> float:
         return 60.0
 
 
+def redact(text: Any) -> str:
+    """Tira a ``SANKHYA_API_KEY`` de um texto que vai ser gravado ou exibido."""
+    out = str(text or "")
+    key = _env("SANKHYA_API_KEY")
+    if key and len(key) >= 6:
+        out = out.replace(key, "***")
+    return out
+
+
 def _url(path: str) -> str:
     key = _env("SANKHYA_API_KEY")
     if not key:
         raise SankhyaConfigError("SANKHYA_API_KEY não configurada no .env.")
+    problems = url_problems()
+    if problems:
+        # Falha aqui, com o motivo, em vez de um 404 confuso vindo do gateway.
+        raise SankhyaConfigError("Endereço do gateway mal configurado: " + "; ".join(problems) + ".")
     return f"{base_url()}/{path.strip('/')}/{key}"
 
 
@@ -133,6 +211,40 @@ def find_value(obj: Any, keys: Iterable[str]) -> Any:
     return None
 
 
+def _error_detail(body: Any) -> Optional[str]:
+    """Motivo da recusa: ``message`` e ``error`` juntos, sem repetição.
+
+    O gateway põe o resumo em ``message`` e o motivo real em ``error`` (texto ou
+    ``{status, message}``), ex.: "Falha ao autenticar..." + "Dados do cliente inválidos".
+    """
+    if not isinstance(body, dict):
+        return None
+    parts: List[str] = []
+
+    def add(value: Any) -> None:
+        if value in (None, "", [], {}):
+            return
+        if isinstance(value, dict):
+            inner = value.get("message") or value.get("mensagem")
+            text = inner if inner else json.dumps(value, ensure_ascii=False)
+            if not isinstance(text, str):
+                add(text)
+                return
+        elif isinstance(value, list):
+            for item in value:
+                add(item)
+            return
+        else:
+            text = str(value)
+        text = " ".join(text.split()).rstrip(".")
+        if text and text not in parts:
+            parts.append(text)
+
+    add(body.get("message"))
+    add(body.get("error"))
+    return " — ".join(parts) or None
+
+
 def _authenticate() -> str:
     global _token, _token_expires_at
     missing = missing_config()
@@ -148,11 +260,14 @@ def _authenticate() -> str:
                 "login": _env("SANKHYA_LOGIN"),
                 "senha": _env("SANKHYA_PASSWORD"),
             },
+            headers=_extra_headers(),
             timeout=_timeout(),
         )
     except requests.RequestException as exc:
-        raise SankhyaNetworkError(f"Sem conexão com o gateway do Sankhya: {exc}") from exc
-    if resp.status_code >= 500:
+        # ``from None``: a exceção original repete a URL com a chave nos logs.
+        raise SankhyaNetworkError(f"Sem conexão com o gateway do Sankhya: {exc}") from None
+    _raise_if_unreachable(resp)
+    if resp.status_code >= 500 or resp.status_code in (408, 429):
         raise SankhyaNetworkError(f"Gateway do Sankhya fora do ar (HTTP {resp.status_code}).")
     try:
         body = resp.json()
@@ -160,15 +275,79 @@ def _authenticate() -> str:
         body = None
     token = find_value(body, ("token", "accessToken", "access_token")) if body else None
     if resp.status_code >= 400 or not token:
-        msg = find_value(body, ("message", "error")) if body else None
-        raise SankhyaRejected(
+        detail = _error_detail(body)
+        raise SankhyaAuthError(
             f"Login no Sankhya recusado (HTTP {resp.status_code})"
-            + (f": {msg}" if msg else ". Confira SANKHYA_LOGIN e SANKHYA_PASSWORD."),
+            + (f": {detail}." if detail else ".")
+            + " Confira SANKHYA_LOGIN e SANKHYA_PASSWORD no .env.",
             response=body,
         )
     _token = str(token)
     _token_expires_at = _jwt_exp(_token) or (time.time() + _TOKEN_FALLBACK_TTL)
     return _token
+
+
+#: Erros do ngrok em que a requisição comprovadamente não chegou ao gateway:
+#: 3200 = túnel offline, 8012 = agente sem conexão com o gateway,
+#: 6024 = página de aviso do plano gratuito.
+_NGROK_NOT_DELIVERED = frozenset({"ERR_NGROK_3200", "ERR_NGROK_8012", "ERR_NGROK_6024"})
+
+
+def _extra_headers() -> Dict[str, str]:
+    """Túnel ngrok gratuito: pula a página de aviso que ele mostra a navegadores."""
+    if "ngrok" in base_url().lower():
+        return {"ngrok-skip-browser-warning": "1"}
+    return {}
+
+
+def _raise_if_unreachable(
+    resp: requests.Response, *, retry_safe: bool = True, endpoint: Optional[str] = None
+) -> None:
+    """Resposta que não veio do gateway: túnel fora do ar ou endereço errado.
+
+    - Erro do ngrok (cabeçalho ``ngrok-error-code``): falha temporária, tenta de
+      novo depois. Em chamada não repetível (pedido), só os códigos de
+      ``_NGROK_NOT_DELIVERED`` garantem que nada foi entregue; os outros (ex.
+      ``ERR_NGROK_3004``, resposta inválida do gateway) viram ``SankhyaUncertain``.
+    - 404 sem JSON, ou o "Cannot POST /..." (JSON) do servidor do gateway: a
+      rota não existe nesse endereço; é configuração (``SANKHYA_API_URL``).
+    """
+    ngrok_code = resp.headers.get("ngrok-error-code")
+    if ngrok_code:
+        if not retry_safe and ngrok_code not in _NGROK_NOT_DELIVERED:
+            raise SankhyaUncertain(
+                f"Túnel do gateway do Sankhya falhou depois do envio "
+                f"({ngrok_code}, HTTP {resp.status_code})."
+            )
+        raise SankhyaNetworkError(
+            f"Túnel do gateway do Sankhya fora do ar ({ngrok_code}, HTTP {resp.status_code})."
+        )
+    if resp.status_code != 404:
+        return
+    if "json" not in (resp.headers.get("Content-Type") or ""):
+        raise SankhyaConfigError(
+            "Endereço do gateway não encontrado (HTTP 404). Confira SANKHYA_API_URL no .env."
+        )
+    try:
+        body = resp.json()
+    except ValueError:
+        return
+    msg = body.get("message") if isinstance(body, dict) else None
+    if isinstance(msg, str) and msg.startswith("Cannot ") and endpoint:
+        # O login acabou de passar nesta mesma base: o endereço está certo e é
+        # só esta rota que o gateway não publica (ex.: "Cannot POST .../orders/***").
+        raise SankhyaConfigError(
+            f"O gateway do Sankhya não tem a rota /{endpoint.strip('/')} (HTTP 404: {msg}). "
+            "O SANKHYA_API_URL está certo (o login funcionou); confirme com o integrador "
+            "o caminho deste endpoint ou se ele já foi publicado."
+        )  # sem ``response``: o corpo repete o caminho com a chave
+    if isinstance(msg, str) and msg.startswith("Cannot "):
+        # Ex.: "Cannot POST /ftapi/v1/autenticacao/***/autenticacao/***".
+        raise SankhyaConfigError(
+            f"Rota inexistente no gateway do Sankhya (HTTP 404: {msg}). Confira "
+            "SANKHYA_API_URL no .env: ele leva só a base (ex.: .../ftapi/v1/portal-repres), "
+            "sem /autenticacao nem a chave."
+        )  # sem ``response``: o corpo repete o caminho com a chave
 
 
 def _get_token(force: bool = False) -> str:
@@ -182,6 +361,25 @@ def _get_token(force: bool = False) -> str:
 # Transporte
 # ---------------------------------------------------------------------------
 
+def _never_sent(exc: requests.RequestException) -> bool:
+    """A conexão nem abriu (sem internet, DNS, recusa, TLS): o corpo não saiu."""
+    if isinstance(exc, (requests.exceptions.ConnectTimeout, requests.exceptions.SSLError)):
+        return True
+    if not isinstance(exc, requests.exceptions.ConnectionError):
+        return False
+    seen = set()
+    cur: Any = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        if isinstance(cur, NewConnectionError):
+            return True
+        nested = cur.args[0] if getattr(cur, "args", None) else None
+        cur = getattr(cur, "reason", None) or (
+            nested if isinstance(nested, BaseException) else None
+        )
+    return False
+
+
 def _request(
     method: str,
     path: str,
@@ -189,8 +387,13 @@ def _request(
     json_body: Optional[Dict] = None,
     params: Optional[Dict] = None,
     timeout: Optional[float] = None,
+    retry_safe: bool = True,
 ) -> Any:
-    """Chama o gateway e devolve ``data``. Levanta ``SankhyaError`` nas falhas."""
+    """Chama o gateway e devolve ``data``. Levanta ``SankhyaError`` nas falhas.
+
+    ``retry_safe=False`` (criação de pedido): falha depois que o corpo já pode
+    ter saído vira ``SankhyaUncertain`` em vez de ``SankhyaNetworkError``.
+    """
     url = _url(path)
     for attempt in (1, 2):
         token = _get_token(force=attempt == 2)
@@ -200,29 +403,47 @@ def _request(
                 url,
                 json=json_body,
                 params=params,
-                headers={"Authorization": f"Bearer {token}"},
+                headers={"Authorization": f"Bearer {token}", **_extra_headers()},
                 timeout=timeout or _timeout(),
             )
         except requests.RequestException as exc:
-            raise SankhyaNetworkError(f"Sem conexão com o gateway do Sankhya: {exc}") from exc
+            if retry_safe or _never_sent(exc):
+                raise SankhyaNetworkError(
+                    f"Sem conexão com o gateway do Sankhya: {exc}"
+                ) from None
+            raise SankhyaUncertain(
+                f"Sem resposta do Sankhya depois do envio ({exc.__class__.__name__})."
+            ) from None
         if resp.status_code == 401 and attempt == 1:
             continue  # token vencido/revogado: renova e tenta uma vez
         break
+    _raise_if_unreachable(resp, retry_safe=retry_safe, endpoint=path)
     try:
         body = resp.json()
     except ValueError:
         body = None
     if resp.status_code >= 500 or resp.status_code in (408, 429):
+        # 408/429/503: o gateway nem processou. 500/502/504: pode ter gravado.
+        if not retry_safe and resp.status_code in (500, 502, 504):
+            raise SankhyaUncertain(
+                f"Gateway do Sankhya respondeu HTTP {resp.status_code} depois do envio.",
+                response=body,
+            )
         raise SankhyaNetworkError(
             f"Gateway do Sankhya indisponível (HTTP {resp.status_code}).", response=body
         )
+    if resp.status_code == 401:
+        # Token recém-emitido e ainda recusado: é o acesso, não o pedido.
+        detail = _error_detail(body)
+        raise SankhyaAuthError(
+            f"Sankhya recusou o acesso ({method} {path}, HTTP 401)"
+            + (f": {detail}." if detail else ".")
+            + " Confira SANKHYA_LOGIN e SANKHYA_PASSWORD no .env.",
+            response=body,
+        )
     if resp.status_code >= 400 or not isinstance(body, dict) or body.get("success") is False:
-        msg = None
-        if isinstance(body, dict):
-            msg = body.get("error") or body.get("message")
-            if isinstance(msg, (dict, list)):
-                msg = json.dumps(msg, ensure_ascii=False)
-        elif resp.text:
+        msg = _error_detail(body)
+        if msg is None and not isinstance(body, dict) and resp.text:
             msg = resp.text[:300]
         raise SankhyaRejected(
             f"Sankhya recusou ({method} {path}, HTTP {resp.status_code})"
@@ -237,7 +458,11 @@ def _request(
 # ---------------------------------------------------------------------------
 
 def fetch_products(codprod: Optional[int] = None) -> List[Dict]:
-    """Catálogo (só ativos). Com ``codprod``, exige ``SANKHYA_PRODUCT_FILTER_PARAM``."""
+    """Lote de produtos com cadastro "Aguard. Integração" (até 20; só ativos).
+
+    Confirme com ``ack_products`` para receber o próximo lote. Com ``codprod``
+    (busca avulsa), exige ``SANKHYA_PRODUCT_FILTER_PARAM``.
+    """
     params = None
     if codprod is not None:
         name = product_filter_param()
@@ -251,14 +476,62 @@ def fetch_products(codprod: Optional[int] = None) -> List[Dict]:
 
 
 def fetch_prices() -> List[Dict]:
-    """Linhas ``{CODPROD, CODEMP, PRECO}``: uma por produto × empresa."""
+    """Lote de preços "Aguard. Integração": ``{CODPROD, CODEMP, PRECO}``.
+
+    Confirme com ``ack_prices`` para receber o próximo lote.
+    """
     data = _request("GET", "products/price", timeout=_timeout() * 5)
     return [d for d in (data or []) if isinstance(d, dict)]
 
 
+# Filas de integração (manual FTAPI / Odontomaster, 06/10/2026)
+# ---------------------------------------------------------------------------
+# Cada produto tem no Sankhya um status por assunto (cadastro, estoque, preço).
+# Toda alteração o põe em "Aguard. Integração"; o GET do assunto devolve um
+# lote (20 itens) desses pendentes e o POST com os ``códigos`` marca o lote
+# como "Integrado". Sem a confirmação, o GET devolve sempre o mesmo lote.
+
+def _ack(path: str, codes: Iterable[int]) -> None:
+    unique = sorted({int(c) for c in codes})
+    if unique:
+        # Chave com acento, como no manual do integrador.
+        _request("POST", path, json_body={"códigos": unique})
+
+
+def ack_products(codes: Iterable[int]) -> None:
+    """Marca o cadastro dos ``CODPROD`` como integrado (some de ``fetch_products``)."""
+    _ack("products", codes)
+
+
+def ack_prices(codes: Iterable[int]) -> None:
+    """Marca o preço dos ``CODPROD`` como integrado (some de ``fetch_prices``)."""
+    _ack("products/price", codes)
+
+
+def fetch_stock() -> List[Dict]:
+    """Lote de estoque "Aguard. Integração": ``{CODPROD, CODLOCAL, DESCRLOCAL,
+    CONTROLE, ESTOQUE, RESERVADO, DISPONIVEL}``, uma linha por local × lote.
+
+    ``CONTROLE`` é o lote (``" "`` = produto sem controle de lote). Confirme
+    com ``ack_stock`` para receber o próximo lote.
+    """
+    data = _request("GET", "products/stock", timeout=_timeout() * 5)
+    return [d for d in (data or []) if isinstance(d, dict)]
+
+
+def ack_stock(codes: Iterable[int]) -> None:
+    """Marca o estoque dos ``CODPROD`` como integrado (some de ``fetch_stock``)."""
+    _ack("products/stock", codes)
+
+
 def create_update_client(payload: Dict) -> Dict:
-    """Cria ou atualiza o parceiro (o gateway acha pelo CPF). Devolve ``{codparc, raw}``."""
-    data = _request("POST", "clientes/create-update", json_body=payload)
+    """Cria ou atualiza o parceiro (o gateway acha pelo CPF). Devolve ``{codparc, raw}``.
+
+    ``create-update-geral``: a versão que preenche os campos de controle do
+    gateway (``AD_FTPRTREP*``) e grava ``CRO`` em ``AD_CRO``. A resposta traz
+    ``data: [{CODPARC: "76139", ...}]``.
+    """
+    data = _request("POST", "clientes/create-update-geral", json_body=payload)
     codparc = find_value(data, ("CODPARC",))
     try:
         codparc = int(codparc)
@@ -270,9 +543,17 @@ def create_update_client(payload: Dict) -> Dict:
 
 
 def create_order(payload: Dict) -> Dict:
-    """Cadastra o pedido como orçamento. Devolve ``{order_id, raw}``."""
-    data = _request("POST", "orders", json_body=payload)
-    order_id = find_value(data, ("NUNOTA", "nunota", "NUMNOTA", "numnota", "id"))
+    """Cadastra o pedido como orçamento. Devolve ``{order_id, raw}``.
+
+    Não é repetível: falha depois do envio levanta ``SankhyaUncertain``.
+    ``order_id`` só sai de ``NUNOTA``; um ``id`` genérico poderia ser de um item.
+    Caminho ``orders/create-order`` confirmado pelo integrador em 08/10/2026
+    (o ``orders`` do primeiro exemplo responde 404 no gateway).
+    """
+    data = _request("POST", "orders/create-order", json_body=payload, retry_safe=False)
+    order_id = find_value(data, ("NUNOTA",))
+    if order_id is None:
+        log.warning("Pedido aceito pelo Sankhya sem NUNOTA na resposta: %r", data)
     return {"order_id": str(order_id) if order_id is not None else None, "raw": data}
 
 

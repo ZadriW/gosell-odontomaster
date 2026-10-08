@@ -9,7 +9,9 @@
 
 from __future__ import annotations
 
+import hmac
 import io
+import logging
 import os
 import re
 import secrets
@@ -60,6 +62,7 @@ from flask import (
     current_app,
     flash,
     g,
+    get_flashed_messages,
     has_request_context,
     jsonify,
     redirect,
@@ -181,6 +184,7 @@ from database import (
     restore_event,
     set_product_active,
     get_product_erp_link_summary,
+    product_awaiting_erp_price,
     list_sellers_without_codvend,
     normalize_seller_codvend,
     set_product_erp_codprod,
@@ -336,6 +340,10 @@ def handle_csrf_error(_e):
 # Credenciais do admin — sobrescreva em produção via variável de ambiente.
 ADMIN_USERNAME = os.environ.get("TOTEM_ADMIN_USER", "adminmaster")
 ADMIN_PASSWORD = os.environ.get("TOTEM_ADMIN_PASS", "adminmaster430@")
+if not os.environ.get("TOTEM_ADMIN_PASS"):
+    logging.getLogger(__name__).warning(
+        "TOTEM_ADMIN_PASS não definida: o painel admin está com a senha padrão do código."
+    )
 
 # Conta inicial do painel de vendedores. Em produção, sobrescreva por ambiente.
 SELLER_DEFAULT_NAME = os.environ.get("TOTEM_SELLER_NAME", "Vendedor")
@@ -1290,10 +1298,10 @@ def admin_login():
     if request.method == "POST":
         username = (request.form.get("username") or "").strip()
         password = request.form.get("password") or ""
-        if username == ADMIN_USERNAME and password == ADMIN_PASSWORD:
-            next_url = request.args.get("next") or _admin_home_url()
-            if not next_url.startswith("/"):
-                next_url = _admin_home_url()
+        user_ok = hmac.compare_digest(username.encode(), ADMIN_USERNAME.encode())
+        pass_ok = hmac.compare_digest(password.encode(), ADMIN_PASSWORD.encode())
+        if user_ok and pass_ok:
+            next_url = _safe_internal_url(request.args.get("next"), _admin_home_url())
             response = redirect(next_url)
             _trail_reset_scope("admin")  # cada login começa com a trilha limpa
             return _set_auth_cookie(
@@ -1340,9 +1348,9 @@ def seller_login():
             seller["password_hash"], password
         ):
             update_seller_last_login(int(seller["id"]))
-            next_url = request.args.get("next") or _seller_home_url()
-            if not next_url.startswith("/vendedor"):
-                next_url = _seller_home_url()
+            next_url = _safe_internal_url(
+                request.args.get("next"), _seller_home_url(), path_prefix="/vendedor"
+            )
             login_id = seller.get("username") or seller.get("email") or username
             response = redirect(next_url)
             _trail_reset_scope("seller")  # cada login começa com a trilha limpa
@@ -1457,9 +1465,24 @@ def _seller_totem_flow() -> dict:
     }
 
 
+#: Endereço da loja, preenchido pelo botão "Loja" do checkout. O Sankhya exige
+#: endereço no cadastro do cliente; os dados ficam aqui (e não numa consulta de
+#: CEP) para o botão funcionar sem internet no estande.
+STORE_ADDRESS = {
+    "zipcode": "41820-470",
+    "address": "Alameda das Cajazeiras",
+    "number": "430",
+    "complement": "Dental Odonto Master",
+    "neighborhood": "Caminho das Árvores",
+    "city": "Salvador",
+    "state": "BA",
+}
+
+
 def _seller_payment_page_context() -> dict:
     flow = _seller_totem_flow()
     return {
+        "store_address": STORE_ADDRESS,
         "totem_flow": flow,
         "payment_catalog_url": _url_if_registered(
             "seller_sale", fallback="/vendedor/venda"),
@@ -4427,8 +4450,9 @@ def _erp_lookup_hint(err: str | None) -> str:
     """Complemento da mensagem de "produto não encontrado" conforme a falha no ERP."""
     if err == "erp_config":
         return (
-            " A busca no Sankhya está desligada: confira SANKHYA_* no .env "
-            "(inclusive SANKHYA_PRODUCT_FILTER_PARAM) ou rode a sincronização do catálogo."
+            " A busca no Sankhya está indisponível: confira SANKHYA_* no .env "
+            "(endereço, login e SANKHYA_PRODUCT_FILTER_PARAM; detalhes no log do sistema) "
+            "ou rode a sincronização do catálogo."
         )
     if err == "erp_offline":
         return " O Sankhya não respondeu (sem internet?)."
@@ -4437,12 +4461,24 @@ def _erp_lookup_hint(err: str | None) -> str:
     return ""
 
 
+def _product_lookup_failed_message(q: str, err: str | None) -> str:
+    """Mensagem de "não achei" para um código digitado no admin."""
+    if err == "erp_no_price":
+        return (
+            f"Produto \"{q}\" existe no Sankhya, mas sem preço na empresa configurada (CODEMP). "
+            "Ele foi cadastrado inativo e é ativado sozinho quando a sincronização do catálogo "
+            "trouxer o preço (ou defina o preço e ative-o na biblioteca)."
+        )
+    return f"Produto \"{q}\" não encontrado no catálogo nem no Sankhya." + _erp_lookup_hint(err)
+
+
 def _find_or_fetch_product(sku_or_id: str) -> tuple[dict | None, bool, str | None]:
     """Localiza um produto por SKU/CODPROD/ID, buscando no Sankhya quando ausente aqui.
 
     Retorna ``(produto_dict | None, veio_do_erp, erro)``. ``erro``:
-    ``"erp_config"`` (busca avulsa não configurada), ``"erp_offline"`` ou
-    ``"erp_rejected"``; ``None`` quando a consulta rodou (achando ou não).
+    ``"erp_config"`` (busca avulsa não configurada), ``"erp_offline"``,
+    ``"erp_rejected"`` ou ``"erp_no_price"`` (veio sem preço e ficou inativo);
+    ``None`` quando a consulta rodou (achando ou não).
     """
     q = (sku_or_id or "").strip()
     if not q:
@@ -4458,7 +4494,8 @@ def _find_or_fetch_product(sku_or_id: str) -> tuple[dict | None, bool, str | Non
         return None, False, "erp_config"
     try:
         local_id = erp_sync.import_single_product(q)
-    except sankhya_api.SankhyaConfigError:
+    except sankhya_api.SankhyaConfigError as exc:
+        app.logger.warning("Busca do produto %s no Sankhya: %s", q, exc)
         return None, False, "erp_config"
     except sankhya_api.SankhyaNetworkError:
         return None, False, "erp_offline"
@@ -4467,6 +4504,8 @@ def _find_or_fetch_product(sku_or_id: str) -> tuple[dict | None, bool, str | Non
         return None, False, "erp_rejected"
     if local_id is None:
         return None, False, None
+    if product_awaiting_erp_price(local_id):
+        return None, False, "erp_no_price"
     saved = get_product(local_id)
     if saved is None:
         return None, False, None
@@ -4489,11 +4528,7 @@ def admin_event_add_product(event_id: int):
         return redirect(_url_for_admin_event_stock_list(event_id, preserved))
     product, from_erp, lookup_err = _find_or_fetch_product(q)
     if product is None:
-        flash(
-            f"Produto \"{q}\" não encontrado no catálogo nem no Sankhya."
-            + _erp_lookup_hint(lookup_err),
-            "error",
-        )
+        flash(_product_lookup_failed_message(q, lookup_err), "error")
         return redirect(_url_for_admin_event_stock_list(event_id, preserved))
     try:
         add_product_to_event(event_id, int(product["id"]), 0)
@@ -4604,6 +4639,8 @@ def _boot_erp_worker():
         if not _erp_worker_booted:
             _erp_worker_booted = True
             try:
+                for problem in sankhya_api.url_problems():
+                    app.logger.warning("Integração Sankhya: %s", problem)
                 erp_db.abandon_running_syncs()
                 erp_sync.start_worker()
             except Exception:
@@ -4617,33 +4654,83 @@ app.add_template_global(erp_db.ERP_STATUS_LABELS, "erp_status_labels")
 @app.route("/admin/integracao-erp")
 @admin_required
 def admin_erp():
-    status_filter = (request.args.get("status") or "").strip().lower()
     settings = erp_db.get_erp_settings()
+    return render_template(
+        "admin/erp.html",
+        settings=settings,
+        payment_grid=erp_db.payment_type_grid(),
+        sellers_without_codvend=list_sellers_without_codvend(),
+        **_admin_erp_live_context(settings),
+        **_admin_shell_context(active_section="erp"),
+    )
+
+
+#: Blocos da página Integração ERP que se atualizam sozinhos (partial de cada um).
+ERP_LIVE_BLOCKS = {
+    "status": "admin/partials/erp_status.html",
+    "fila": "admin/partials/erp_queue.html",
+    "historico": "admin/partials/erp_history.html",
+    "catalogo": "admin/partials/erp_catalog.html",
+}
+
+
+def _admin_erp_live_context(settings: dict | None = None) -> dict:
+    """Dados dos blocos ao vivo: situação, fila de envio, histórico e catálogo."""
+    settings = settings or erp_db.get_erp_settings()
+    status_filter = (request.args.get("status") or "").strip().lower()
+    if status_filter not in erp_db.OUTBOX_STATUS_LABELS:
+        status_filter = ""
     events_unsent = []
     for ev in list_events(include_archived=True):
         n = erp_db.count_unsent_orders(int(ev["id"]))
         if n:
             events_unsent.append({"id": int(ev["id"]), "name": ev["name"], "count": n})
-    return render_template(
-        "admin/erp.html",
-        settings=settings,
-        api_missing=sankhya_api.missing_config(),
-        api_base_url=sankhya_api.base_url(),
-        product_filter_param=sankhya_api.product_filter_param(),
-        readiness=erp_db.orders_readiness(settings),
-        payment_grid=erp_db.payment_type_grid(),
-        counts=erp_db.outbox_counts(),
-        jobs=erp_db.list_outbox(status_filter or None, limit=200),
-        status_filter=status_filter,
-        outbox_status_labels=erp_db.OUTBOX_STATUS_LABELS,
-        sync_runs=erp_db.list_sync_runs(10),
-        sync_running=erp_sync.catalog_sync_running(),
-        link_summary=get_product_erp_link_summary(50),
-        sellers_without_codvend=list_sellers_without_codvend(),
-        unsent_total=erp_db.count_unsent_orders(),
-        events_unsent=events_unsent,
-        **_admin_shell_context(active_section="erp"),
-    )
+    counts = erp_db.outbox_counts()
+    sync_running = erp_sync.catalog_sync_running()
+    return {
+        "api_missing": sankhya_api.missing_config(),
+        "api_url_problems": sankhya_api.url_problems(),
+        "api_base_url": sankhya_api.redact(sankhya_api.base_url()),
+        "product_filter_param": sankhya_api.product_filter_param(),
+        "readiness": erp_db.orders_readiness(settings),
+        "queue_pause": erp_sync.queue_pause(),
+        "counts": counts,
+        "jobs": erp_db.list_outbox(status_filter or None, limit=200),
+        "status_filter": status_filter,
+        "outbox_status_labels": erp_db.OUTBOX_STATUS_LABELS,
+        "sync_runs": erp_db.list_sync_runs(10),
+        "sync_running": sync_running,
+        "link_summary": get_product_erp_link_summary(50),
+        "unsent_total": erp_db.count_unsent_orders(),
+        "events_unsent": events_unsent,
+        # Algo andando: o painel consulta com mais frequência.
+        "live_active": bool(sync_running or counts.get("processando") or counts.get("pendente")),
+    }
+
+
+@app.route("/admin/integracao-erp/ao-vivo")
+@admin_required
+def admin_erp_live():
+    """Blocos da página Integração ERP já renderizados, para o painel ao vivo.
+
+    ``?avisos=1`` (logo depois de uma ação do painel) devolve também as
+    mensagens que a ação deixou, que de outro modo só apareceriam ao recarregar.
+    """
+    ctx = _admin_erp_live_context()
+    payload = {
+        "blocks": {
+            name: render_template(template, **ctx) for name, template in ERP_LIVE_BLOCKS.items()
+        },
+        "active": ctx["live_active"],
+    }
+    if request.args.get("avisos") == "1":
+        payload["flashes"] = [
+            {"category": cat, "message": msg}
+            for cat, msg in get_flashed_messages(with_categories=True)
+        ]
+    response = jsonify(payload)
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @app.route("/admin/integracao-erp/configuracao", methods=["POST"])
@@ -4653,17 +4740,12 @@ def admin_erp_settings():
     values = {
         "codemp": (form.get("codemp") or "").strip(),
         "codvend": (form.get("codvend") or "").strip(),
-        "order_ref_field": (form.get("order_ref_field") or "").strip(),
-        "cro_field": (form.get("cro_field") or "").strip(),
+        "codlocalorig": (form.get("codlocalorig") or "").strip(),
         "orders_enabled": "1" if form.get("orders_enabled") else "0",
     }
-    for key, label in (("codemp", "CODEMP"), ("codvend", "CODVEND")):
+    for key, label in (("codemp", "CODEMP"), ("codvend", "CODVEND"), ("codlocalorig", "CODLOCALORIG")):
         if values[key] and not values[key].isdigit():
             flash(f"{label} deve ter só números.", "error")
-            return redirect(url_for("admin_erp"))
-    for key in ("order_ref_field", "cro_field"):
-        if values[key] and not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,59}", values[key]):
-            flash("Nome de campo do Sankhya inválido: use letras, números e _.", "error")
             return redirect(url_for("admin_erp"))
     erp_db.save_erp_settings(values)
     missing = erp_db.orders_readiness()
@@ -4728,9 +4810,37 @@ def admin_erp_job_discard(job_id: int):
 @app.route("/admin/integracao-erp/enviar-agora", methods=["POST"])
 @admin_required
 def admin_erp_process_now():
+    erp_sync.resume_queue()  # admin corrigiu o login/endereço: não espera a pausa
     erp_sync.notify_worker()
     flash("Envio da fila solicitado. Atualize a página em alguns segundos.", "success")
     return redirect(url_for("admin_erp") + "#fila")
+
+
+@app.route("/admin/integracao-erp/testar-conexao", methods=["POST"])
+@admin_required
+def admin_erp_test_connection():
+    """Login novo no gateway, com o motivo exato quando falha."""
+    target = url_for("admin_erp")
+    missing = sankhya_api.missing_config()
+    if missing:
+        flash("Integração Sankhya não configurada. Preencha no .env: " + ", ".join(missing), "error")
+        return redirect(target)
+    try:
+        elapsed = sankhya_api.check_connection()
+    except sankhya_api.SankhyaAuthError as exc:
+        flash(f"O gateway respondeu, mas recusou o login. {exc}", "error")
+    except sankhya_api.SankhyaConfigError as exc:
+        flash(f"Endereço do gateway errado. {exc}", "error")
+    except sankhya_api.SankhyaNetworkError as exc:
+        flash(f"Sem acesso ao gateway (fora do ar ou sem internet). {exc}", "error")
+    except sankhya_api.SankhyaError as exc:
+        flash(f"Falha ao testar a conexão. {exc}", "error")
+    else:
+        flash(f"Conexão OK: o Sankhya aceitou o login ({elapsed:.1f} s).", "success")
+        # Acesso confirmado: a fila não precisa esperar uma pausa de login.
+        erp_sync.resume_queue()
+        erp_sync.notify_worker()
+    return redirect(target)
 
 
 @app.route("/admin/integracao-erp/enviar-historico", methods=["POST"])
@@ -5095,6 +5205,7 @@ def admin_event_import_xls(event_id: int):
     added: list[str] = []
     already: list[str] = []
     not_found: list[str] = []
+    no_price: list[str] = []      # existem no Sankhya, mas sem preço (ficaram inativos)
     erp_fetched: list[str] = []   # SKUs trazidos do Sankhya na hora
     erp_lookup_err: str | None = None
     import_actor = _current_admin_user()
@@ -5104,6 +5215,9 @@ def admin_event_import_xls(event_id: int):
 
     for sku, unit_price, qty in sku_stock_pairs:
         product, from_erp, lookup_err = _find_or_fetch_product(sku)
+        if product is None and lookup_err == "erp_no_price":
+            no_price.append(sku)
+            continue
         if product is None:
             not_found.append(sku)
             erp_lookup_err = erp_lookup_err or lookup_err
@@ -5173,11 +5287,17 @@ def admin_event_import_xls(event_id: int):
             f"{len(not_found)} código(s) não encontrado(s) no catálogo nem no Sankhya: "
             f"{', '.join(short)}{tail}.{_erp_lookup_hint(erp_lookup_err)}"
         )
+    if no_price:
+        parts.append(
+            f"{len(no_price)} código(s) sem preço no Sankhya (cadastrado(s) inativo(s), "
+            "ativados quando a sincronização trouxer o preço): "
+            f"{', '.join(no_price[:10])}{'…' if len(no_price) > 10 else ''}"
+        )
 
     summary = " · ".join(parts) if parts else "Nenhuma alteração realizada."
     category = (
         "success" if added or price_set_count
-        else ("error" if not_found and not already else "info")
+        else ("error" if (not_found or no_price) and not already else "info")
     )
     flash(summary, category)
 
@@ -6017,11 +6137,7 @@ def admin_transaction_replace_item(tx_id: int, item_id: int):
 
     product, from_erp, lookup_err = _find_or_fetch_product(sku)
     if product is None:
-        flash(
-            f'Produto "{sku}" não encontrado no catálogo nem no Sankhya.'
-            + _erp_lookup_hint(lookup_err),
-            "error",
-        )
+        flash(_product_lookup_failed_message(sku, lookup_err), "error")
         return _redirect_back( url_for("admin_events"))
 
     expected_event = _parse_int(request.form.get("event_id") or "", 0)

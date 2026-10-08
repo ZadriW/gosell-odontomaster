@@ -3,6 +3,10 @@
 
 {% block title %}Movimentações — {{ event.name }} | Dental Odonto Master{% endblock %}
 
+{% block admin_head %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/admin-movements-table.css') }}">
+{% endblock %}
+
 {% block admin_body %}
 {% set op_noun_l = event|op_noun(lower=True) %}
 {% set qargs = {
@@ -142,9 +146,11 @@
         </div>
     </form>
 
+    {# Estilos em static/css/admin-movements-table.css (mesmo padrão do histórico do
+       produto). Linhas no mesmo markup que o admin-stock-live.js insere ao vivo. #}
     <div
         id="lista"
-        class="admin-table"
+        class="admin-table admin-movv admin-movv--products"
         role="table"
         aria-label="Movimentações de estoque deste {{ op_noun_l }}"
         data-product-movements
@@ -241,7 +247,10 @@
                 Anterior
             </a>
             {% else %}
-            <span class="admin-pagination__disabled">Anterior</span>
+            <span class="admin-pagination__disabled admin-btn admin-btn--ghost admin-btn--sm" aria-disabled="true">
+                <i class="fa-solid fa-chevron-left" aria-hidden="true"></i>
+                Anterior
+            </span>
             {% endif %}
             {% if pagination.has_next %}
             <a class="admin-btn admin-btn--ghost admin-btn--sm"
@@ -251,7 +260,10 @@
                 <i class="fa-solid fa-chevron-right" aria-hidden="true"></i>
             </a>
             {% else %}
-            <span class="admin-pagination__disabled">Próxima</span>
+            <span class="admin-pagination__disabled admin-btn admin-btn--ghost admin-btn--sm" aria-disabled="true">
+                Próxima
+                <i class="fa-solid fa-chevron-right" aria-hidden="true"></i>
+            </span>
             {% endif %}
         </div>
     </nav>

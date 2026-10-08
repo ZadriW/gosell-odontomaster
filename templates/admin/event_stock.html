@@ -12,6 +12,10 @@
 
 {% block title %}Estoque — {{ event.name }} | Dental Odonto Master{% endblock %}
 
+{% block admin_head %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/admin-stock-table.css') }}">
+{% endblock %}
+
 {% block admin_body %}
 {% set op_noun_l = event|op_noun(lower=True) %}
 <section class="admin-section">
@@ -196,13 +200,12 @@
         </div>
     </form>
 
-    {# ---- Tabela de produtos ---- #}
-    {% with show_price=true %}
-    {% include 'partials/admin_stock_legend.html' %}
-    {% endwith %}
-
-    {% if event_ops_open(event) %}
-    <div class="admin-stock__toolbar">
+    {# ---- Tabela de produtos ----
+       Estilos em static/css/admin-stock-table.css (.admin-stockv). Os atributos
+       data-stock-* e data-bulk-* são usados pelo admin-stock-live.js (estoque,
+       preço, vendas, situação, promoção e retirada ao vivo) e pela seleção em lote. #}
+    <div class="admin-stockv__toolbar">
+        {% if event_ops_open(event) %}
         <button type="button"
                 class="admin-btn admin-btn--primary"
                 id="bulk-stock-open-btn"
@@ -211,12 +214,18 @@
             <i class="fa-solid fa-boxes-packing" aria-hidden="true"></i>
             <span id="bulk-stock-open-label">Movimentar estoque</span>
         </button>
+        <span class="admin-stockv__toolbar-hint">Marque os produtos para registrar entrada ou saída em lote.</span>
+        {% endif %}
+        <ul class="admin-stockv__legend" aria-label="Situações do estoque">
+            <li><span class="admin-stockv__dot admin-stockv__dot--success"></span>OK</li>
+            <li><span class="admin-stockv__dot admin-stockv__dot--warn"></span>Abaixo do mínimo</li>
+            <li><span class="admin-stockv__dot admin-stockv__dot--danger"></span>Sem estoque</li>
+        </ul>
     </div>
-    {% endif %}
 
     <div
         id="lista"
-        class="admin-table admin-stock"
+        class="admin-table admin-stockv"
         role="table"
         aria-label="Produtos do {{ op_noun_l }} {{ event.name }}"
         data-admin-event-stock
@@ -226,29 +235,32 @@
     >
         {% from "macros/admin_stock_sort.html" import stock_sort_header %}
         {% set sort_args = {'event_id': event.id, 'q': filters.q, 'categoria': filters.categoria, 'status': filters.status, 'entrega': filters.entrega, 'per_page': filters.per_page} %}
-        <div class="admin-table__head admin-stock__row admin-event__row" role="row">
-            <span role="columnheader" class="admin-stock__product-head">
+        <div class="admin-table__head admin-stockv__head" role="row">
+            <span role="columnheader" class="admin-stockv__cell admin-stockv__cell--check">
                 {% if event_ops_open(event) %}
-                <input type="checkbox" class="admin-stock__select-checkbox" id="bulk-stock-select-all"
+                <input type="checkbox" class="admin-stockv__checkbox" id="bulk-stock-select-all"
                        data-bulk-select-all aria-label="Selecionar todos os produtos desta página">
                 {% endif %}
-                Produto
             </span>
-            {{ stock_sort_header('Preço', 'preco', 'admin_event_stock', sort_args, filters.sort, filters.dir, title='Preço de venda neste ' ~ op_noun_l) }}
-            {{ stock_sort_header('Vendas', 'vendas', 'admin_event_stock', sort_args, filters.sort, filters.dir, title='Unidades vendidas neste ' ~ op_noun_l ~ ' (pedidos confirmados)') }}
-            {{ stock_sort_header('Estoque', 'estoque', 'admin_event_stock', sort_args, filters.sort, filters.dir) }}
-            {{ stock_sort_header('Mínimo', 'minimo', 'admin_event_stock', sort_args, filters.sort, filters.dir) }}
-            <span role="columnheader">Situação</span>
-            <span role="columnheader" class="admin-stock__actions-head">Ações</span>
+            <span role="columnheader" class="admin-stockv__cell">Produto</span>
+            {{ stock_sort_header('Preço', 'preco', 'admin_event_stock', sort_args, filters.sort, filters.dir, title='Preço de venda neste ' ~ op_noun_l, col_class='admin-stockv__cell admin-stockv__cell--num') }}
+            {{ stock_sort_header('Vendas', 'vendas', 'admin_event_stock', sort_args, filters.sort, filters.dir, title='Unidades vendidas neste ' ~ op_noun_l ~ ' (pedidos confirmados)', col_class='admin-stockv__cell admin-stockv__cell--center') }}
+            {{ stock_sort_header('Estoque', 'estoque', 'admin_event_stock', sort_args, filters.sort, filters.dir, col_class='admin-stockv__cell admin-stockv__cell--center') }}
+            {{ stock_sort_header('Mínimo', 'minimo', 'admin_event_stock', sort_args, filters.sort, filters.dir, col_class='admin-stockv__cell admin-stockv__cell--center') }}
+            <span role="columnheader" class="admin-stockv__cell">Situação</span>
+            <span role="columnheader" class="admin-stockv__cell admin-stockv__cell--actions" aria-label="Ações"></span>
         </div>
 
         {% if products %}
             {% for p in products %}
-            <div class="admin-stock__row admin-event__row" data-product-id="{{ p.product_id }}">
+            {% set pending_n = p.pending_delivery_units or 0 %}
+            {% set in_promo = p.product_id in promo_product_ids %}
+            {% set promo_tip = promo_tooltips.get(p.product_id, '') %}
+            <div class="admin-stockv__row" data-product-id="{{ p.product_id }}" role="row">
 
-                <span class="admin-stock__product">
+                <span class="admin-stockv__cell admin-stockv__cell--check">
                     {% if event_ops_open(event) %}
-                    <input type="checkbox" class="admin-stock__select-checkbox"
+                    <input type="checkbox" class="admin-stockv__checkbox"
                            data-bulk-select
                            data-product-id="{{ p.product_id }}"
                            data-product-name="{{ p.name }}"
@@ -257,69 +269,64 @@
                            data-product-stock="{{ p.stock }}"
                            aria-label="Selecionar {{ p.name }} para entrada ou saída em lote">
                     {% endif %}
-                    <img class="admin-stock__thumb" src="{{ p.image or '' }}" alt="{{ p.name }}"
-                         loading="lazy" onerror="this.style.visibility='hidden'">
-                    <span>
-                        <span class="admin-stock__product-name-row">
-                            <strong>{{ p.name }}</strong>
-                            {% set pending_n = p.pending_delivery_units or 0 %}
-                            <span class="admin-stock__delivery-wrap"
+                </span>
+
+                <span class="admin-stockv__cell admin-stockv__product">
+                    <span class="admin-stockv__thumb-wrap">
+                        {% if p.image %}
+                        <img class="admin-stock__thumb admin-stockv__thumb" src="{{ p.image }}" alt="{{ p.name }}"
+                             loading="lazy" onerror="this.style.visibility='hidden'">
+                        {% endif %}
+                    </span>
+                    <span class="admin-stockv__info">
+                        <a class="admin-stockv__name"
+                           href="{{ url_for('admin_event_stock_product', event_id=event.id, product_id=p.product_id) }}"
+                           title="{{ p.name }}">{{ p.name }}</a>
+                        {# Variante/subtítulo iguais ao nome (comum em produtos vindos do ERP) não repetem. #}
+                        {% set name_key = ((p.name or '')|lower).split()|join(' ') %}
+                        {% if p.variant_name and ((p.variant_name|lower).split()|join(' ')) != name_key %}<span class="admin-stockv__variant">{{ p.variant_name }}</span>{% endif %}
+                        {% if p.subtitle and ((p.subtitle|lower).split()|join(' ')) != name_key %}
+                        <span class="admin-stockv__subtitle" title="{{ p.subtitle }}">{{ p.subtitle }}</span>
+                        {% endif %}
+                        <span class="admin-stockv__meta">
+                            <span>SKU <code class="admin-stockv__code">{{ p.sku or '—' }}</code></span>
+                            <span class="admin-stockv__meta-sep" aria-hidden="true">·</span>
+                            <span>ID {{ p.product_id }}</span>
+                            <span class="admin-stockv__delivery"
                                   data-stock-delivery-wrap
                                   {% if pending_n <= 0 %}hidden{% endif %}
                                   title="{{ pending_n }} un. aguardando retirada">
-                                <span class="admin-badge admin-badge--warn admin-tx__delivery-badge"
-                                      data-stock-delivery-badge
-                                      aria-label="Retirada pendente">
-                                    <i class="fa-solid fa-box-open" aria-hidden="true"></i>
-                                </span>
-                                <span class="admin-stock__delivery-count"
-                                      data-stock-delivery-count>{{ pending_n }}</span>
-                            </span>
-                            {% set promo_tip = promo_tooltips.get(p.product_id, '') %}
-                            <span class="admin-stock__promo-wrap"
-                                  data-stock-promo-wrap
-                                  {% if p.product_id not in promo_product_ids %}hidden{% endif %}>
-                                <span class="admin-stock__promo-tag-icon"
-                                      data-stock-promo-icon
-                                      title="{{ (promo_tip or ('Produto com promoção ativa neste ' ~ op_noun_l))|e }}"
-                                      role="img"
-                                      tabindex="0"
-                                      aria-label="{{ ('Promoções: ' ~ promo_tip)|e if promo_tip else 'Em promoção' }}">
-                                    <i class="fa-solid fa-tag" aria-hidden="true"></i>
-                                </span>
-                                <span class="admin-stock__promo-tooltip-panel {% if not promo_tip %}admin-stock__promo-tooltip-panel--empty{% endif %}"
-                                      data-stock-promo-tooltip-panel
-                                      role="tooltip">{{ promo_tip }}</span>
+                                <i class="fa-solid fa-box-open" aria-hidden="true"></i>
+                                <span data-stock-delivery-count>{{ pending_n }}</span>&nbsp;a retirar
                             </span>
                         </span>
-                        {% if p.variant_name %}<span class="admin-stock__variant">{{ p.variant_name }}</span>{% endif %}
-                        {% if p.subtitle %}<span class="admin-stock__subtitle">{{ p.subtitle }}</span>{% endif %}
-                        <small class="admin-stock__meta">
-                            ID: {{ p.product_id }} | SKU: <code class="admin-stock__sku-code">{{ p.sku or '—' }}</code>
-                        </small>
                     </span>
                 </span>
 
-                <span class="admin-table__col--num admin-stock__price"
+                <span class="admin-stockv__cell admin-stockv__cell--num admin-stockv__price"
+                      data-label="Preço"
                       data-stock-price
                       {% if p.event_price is not none %}
                       title="Preço personalizado neste {{ op_noun_l }}. Biblioteca: {{ p.library_price | brl }}"
                       {% else %}
                       title="Preço da biblioteca"
                       {% endif %}>
-                    <span data-stock-price-value>{{ p.price | brl }}</span>{% if p.event_price is not none %}<span class="admin-stock__price-flag" data-stock-price-flag aria-hidden="true" title="Preço personalizado no {{ op_noun_l }}">*</span>{% else %}<span class="admin-stock__price-flag" data-stock-price-flag hidden aria-hidden="true">*</span>{% endif %}
+                    <span class="admin-stockv__price-value" data-stock-price-value>{{ p.price | brl }}</span>
+                    <span class="admin-stockv__price-flag" data-stock-price-flag{% if p.event_price is none %} hidden{% endif %}>preço do {{ op_noun_l }}</span>
                 </span>
 
-                <span class="admin-table__col--num" data-stock-sales
+                <span class="admin-stockv__cell admin-stockv__cell--center admin-stockv__sales"
+                      data-label="Vendas"
+                      data-stock-sales
                       title="Unidades vendidas neste {{ op_noun_l }} (pedidos confirmados)">{{ p.units_sold or 0 }}</span>
 
-                <span class="admin-table__col--num admin-stock__qty" data-stock-qty>
-                    <strong>{{ p.stock }}</strong>
+                <span class="admin-stockv__cell admin-stockv__cell--center" data-label="Estoque">
+                    <span class="admin-stockv__qty" data-stock-qty><strong>{{ p.stock }}</strong></span>
                 </span>
 
-                <span class="admin-table__col--num">{{ p.min_stock }}</span>
+                <span class="admin-stockv__cell admin-stockv__cell--center admin-stockv__min" data-label="Mínimo">{{ p.min_stock }}</span>
 
-                <span class="admin-stock__status-cell" data-stock-status>
+                <span class="admin-stockv__cell admin-stockv__status" data-stock-status>
                     {% if not p.product_active %}
                         <span class="admin-badge admin-badge--neutral" data-stock-status-badge>Inativo no catálogo</span>
                     {% elif p.stock == 0 %}
@@ -329,18 +336,19 @@
                     {% else %}
                         <span class="admin-badge admin-badge--success" data-stock-status-badge>OK</span>
                     {% endif %}
-                    {% set promo_name = promo_names.get(p.product_id, '') %}
-                    <span class="admin-badge admin-badge--promo-stock admin-stock__promo-name-badge"
+                    <span class="admin-stockv__promo"
                           data-stock-promo-badge
-                          {% if p.product_id not in promo_product_ids %}hidden{% endif %}>
-                        <span data-stock-promo-badge-text>{{ promo_name }}</span>
+                          {% if not in_promo %}hidden{% endif %}
+                          title="{{ (promo_tip or ('Produto com promoção ativa neste ' ~ op_noun_l))|e }}">
+                        <i class="fa-solid fa-tag" aria-hidden="true"></i>
+                        <span data-stock-promo-badge-text>{{ promo_names.get(p.product_id, '') }}</span>
                     </span>
                 </span>
 
-                <span class="admin-stock__actions">
-                    <a class="admin-btn admin-btn--ghost admin-btn--sm"
+                <span class="admin-stockv__cell admin-stockv__cell--actions admin-stockv__actions">
+                    <a class="admin-stockv__icon-btn"
                        href="{{ url_for('admin_event_stock_product', event_id=event.id, product_id=p.product_id) }}"
-                       title="{{ 'Consultar' if not event_ops_open(event) else 'Gerenciar' }}"
+                       title="{{ 'Consultar' if not event_ops_open(event) else 'Gerenciar estoque, preço e movimentações' }}"
                        aria-label="{{ 'Consultar' if not event_ops_open(event) else 'Gerenciar' }} {{ p.name }} no {{ op_noun_l }}">
                         <i class="fa-solid fa-{{ 'eye' if not event_ops_open(event) else 'sliders' }}" aria-hidden="true"></i>
                     </a>
@@ -351,7 +359,7 @@
                         {% include 'partials/csrf_field.html' %}
                         {{ event_stock_preserved_filters(filters, pagination) }}
                         <button type="submit"
-                                class="admin-btn admin-btn--ghost admin-btn--sm admin-btn--danger"
+                                class="admin-stockv__icon-btn admin-stockv__icon-btn--danger"
                                 title="Remover do {{ op_noun_l }}"
                                 aria-label="Remover {{ p.name }} do {{ op_noun_l }}"
                                 onclick="return confirm('Remover {{ p.name|e }} deste {{ op_noun_l }}?');">
@@ -364,16 +372,16 @@
 
             {% endfor %}
         {% else %}
-            <div class="admin-empty">
+            <div class="admin-stockv__empty">
                 <i class="fa-regular fa-folder-open" aria-hidden="true"></i>
                 {% if stats.products_count == 0 %}
+                    <p class="admin-stockv__empty-title">Nenhum produto neste {{ op_noun_l }}</p>
                     {% if event_ops_open(event) %}
-                    <p>Nenhum produto neste {{ op_noun_l }}. Use o formulário acima para adicionar pelo SKU ou ID.</p>
-                    {% else %}
-                    <p>Nenhum produto neste {{ op_noun_l }}.</p>
+                    <p class="admin-stockv__empty-hint">Use o formulário acima para adicionar pelo SKU ou ID, ou importe uma planilha.</p>
                     {% endif %}
                 {% else %}
-                    <p>Nenhum produto corresponde aos filtros aplicados.</p>
+                    <p class="admin-stockv__empty-title">Nenhum produto corresponde aos filtros</p>
+                    <p class="admin-stockv__empty-hint">Ajuste ou limpe os filtros acima.</p>
                 {% endif %}
             </div>
         {% endif %}
@@ -713,7 +721,7 @@
 
     /** Estoque atual: a célula da linha (atualizada ao vivo) quando visível; senão o valor da seleção. */
     function currentStock(item) {
-        var cell = document.querySelector('[data-filter-region="tabela"] .admin-stock__row[data-product-id="' + item.id + '"] [data-stock-qty]');
+        var cell = document.querySelector('[data-filter-region="tabela"] .admin-stockv__row[data-product-id="' + item.id + '"] [data-stock-qty]');
         var live = cell ? parseInt(cell.textContent.replace(/[^\d-]/g, ''), 10) : NaN;
         return Number.isFinite(live) ? live : item.stock;
     }

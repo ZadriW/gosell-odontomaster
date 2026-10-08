@@ -2,6 +2,10 @@
 
 {% block title %}Clientes - Admin | Dental Odonto Master{% endblock %}
 
+{% block admin_head %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/admin-customers-table.css') }}">
+{% endblock %}
+
 {% block admin_body %}
 <section class="admin-section">
     <header class="admin-section__header admin-section__header--row">
@@ -136,16 +140,18 @@
         </div>
     </form>
 
-    <div class="admin-table admin-customers" role="table" aria-label="Clientes que compraram" data-filter-region="tabela">
-        <div class="admin-table__head admin-customers__row" role="row">
-            <span role="columnheader">Cliente</span>
-            <span class="admin-table__col--num" role="columnheader">Pedidos</span>
-            <span class="admin-table__col--num" role="columnheader">Faturamento</span>
-            <span class="admin-table__col--num" role="columnheader">% do total</span>
-            <span class="admin-table__col--num" role="columnheader">Ticket médio</span>
-            <span role="columnheader">Periodicidade</span>
-            <span role="columnheader">Última compra</span>
-            <span role="columnheader">Perfil</span>
+    {# Estilos em static/css/admin-customers-table.css (.admin-custv). A região
+       data-filter-region="tabela" é trocada pelo admin-filters.js ao filtrar. #}
+    <div class="admin-table admin-custv" role="table" aria-label="Clientes que compraram" data-filter-region="tabela">
+        <div class="admin-table__head admin-custv__head" role="row">
+            <span class="admin-custv__cell admin-custv__cell--center" role="columnheader" title="Posição na ordenação atual">#</span>
+            <span class="admin-custv__cell" role="columnheader">Cliente</span>
+            <span class="admin-custv__cell admin-custv__cell--center" role="columnheader">Pedidos</span>
+            <span class="admin-custv__cell" role="columnheader" title="Faturamento e participação no total da carteira">Faturamento</span>
+            <span class="admin-custv__cell admin-custv__cell--num" role="columnheader">Ticket médio</span>
+            <span class="admin-custv__cell" role="columnheader" title="Intervalo médio entre as compras do cliente">Frequência</span>
+            <span class="admin-custv__cell" role="columnheader">Última compra</span>
+            <span class="admin-custv__cell admin-custv__cell--actions" role="columnheader" aria-label="Perfil"></span>
         </div>
 
         {% if customers %}
@@ -153,53 +159,66 @@
                mesmo quando todos os clientes têm participação pequena no total. #}
             {% set max_share = (customers | map(attribute='revenue_share') | max) or 1 %}
             {% for c in customers %}
-            <div class="admin-customers__row" role="row">
-                <span class="admin-customers__person">
-                    <a class="admin-customers__name"
-                       href="{{ url_for('admin_event_customer_detail', event_id=event.id, kind=c.kind, ident=c.ident) }}">{{ c.name }}</a>
-                    <small>
-                        {% if c.cpf %}{{ c.cpf }}{% endif %}
-                        {% if c.cro_numero %}
-                            &middot; CRO {{ c.cro_uf }} {{ c.cro_numero }}
-                        {% endif %}
-                    </small>
-                </span>
-
-                <span class="admin-table__col--num" data-label="Pedidos">
-                    <strong>{{ c.orders_count }}</strong>
-                    <small class="admin-customers__sub">{{ c.units }} un.</small>
-                </span>
-
-                <span class="admin-table__col--num" data-label="Faturamento">
-                    <strong>{{ c.revenue | brl }}</strong>
-                </span>
-
-                <span class="admin-table__col--num admin-customers__share-cell" data-label="% do total">
-                    <strong>{{ c.revenue_share | pct }}%</strong>
-                    <span class="admin-customers__bar" aria-hidden="true">
-                        <span class="admin-customers__bar-fill"
-                              style="width: {{ (c.revenue_share / max_share * 100) | round(1) }}%"></span>
+            {% set rank = pagination.showing_from + loop.index0 %}
+            {% set name_parts = (c.name or '').split() %}
+            {% set rel = c.days_since_last | desdeontem %}
+            {% set profile_url = url_for('admin_event_customer_detail', event_id=event.id, kind=c.kind, ident=c.ident) %}
+            <div class="admin-custv__row{% if filters.sort == 'revenue' and rank <= 3 %} admin-custv__row--top{{ rank }}{% endif %}" role="row">
+                <span class="admin-custv__cell admin-custv__cell--center">
+                    <span class="admin-custv__rank" title="{{ rank }}º na ordenação atual">
+                        {% if filters.sort == 'revenue' and rank <= 3 %}<i class="fa-solid fa-crown" aria-hidden="true"></i>{% endif %}{{ rank }}
                     </span>
                 </span>
 
-                <span class="admin-table__col--num" data-label="Ticket médio">{{ c.avg_ticket | brl }}</span>
+                <span class="admin-custv__cell admin-custv__person">
+                    <span class="admin-custv__avatar" aria-hidden="true">{{ (name_parts[0][0] ~ (name_parts[-1][0] if name_parts|length > 1 else ''))|upper if name_parts else '?' }}</span>
+                    <span class="admin-custv__person-info">
+                        <a class="admin-custv__name" href="{{ profile_url }}" title="{{ c.name }}">{{ c.name }}</a>
+                        <span class="admin-custv__meta">
+                            {% if c.cpf %}<span>{{ c.cpf }}</span>{% endif %}
+                            {% if c.cro_numero %}<span class="admin-custv__tag">CRO {{ c.cro_uf }} {{ c.cro_numero }}</span>{% endif %}
+                            {% if c.city %}<span><i class="fa-solid fa-location-dot" aria-hidden="true"></i> {{ c.city }}{% if c.state %}/{{ c.state }}{% endif %}</span>{% endif %}
+                        </span>
+                    </span>
+                </span>
 
-                <span data-label="Periodicidade">
+                <span class="admin-custv__cell admin-custv__cell--center admin-custv__orders" data-label="Pedidos">
+                    <strong>{{ c.orders_count }}</strong>
+                    <small>{{ c.units }} un.</small>
+                </span>
+
+                <span class="admin-custv__cell admin-custv__revenue" data-label="Faturamento">
+                    <strong class="admin-custv__revenue-value">{{ c.revenue | brl }}</strong>
+                    <span class="admin-custv__share" title="{{ c.revenue_share | pct }}% do faturamento da carteira">
+                        <span class="admin-custv__bar" aria-hidden="true">
+                            <span class="admin-custv__bar-fill" style="width: {{ (c.revenue_share / max_share * 100) | round(1) }}%"></span>
+                        </span>
+                        <span class="admin-custv__share-pct">{{ c.revenue_share | pct }}%</span>
+                    </span>
+                </span>
+
+                <span class="admin-custv__cell admin-custv__cell--num admin-custv__ticket" data-label="Ticket médio">{{ c.avg_ticket | brl }}</span>
+
+                <span class="admin-custv__cell admin-custv__freq">
                     {% if c.is_recurring %}
-                        <span class="admin-badge admin-badge--info">{{ c.avg_interval_days | periodicidade }}</span>
+                    <span class="admin-custv__pill admin-custv__pill--recurring" title="Intervalo médio entre as compras">
+                        <i class="fa-solid fa-repeat" aria-hidden="true"></i>Recorrente · a cada {{ c.avg_interval_days | periodicidade }}
+                    </span>
                     {% else %}
-                        <span class="admin-badge admin-badge--neutral">Compra única</span>
+                    <span class="admin-custv__pill admin-custv__pill--once">
+                        <i class="fa-solid fa-1" aria-hidden="true"></i>Compra única
+                    </span>
                     {% endif %}
                 </span>
 
-                <span class="admin-customers__last" data-label="Última compra">
-                    {{ c.last_purchase_at | datahora }}
-                    <small class="admin-customers__sub">{{ c.days_since_last | desdeontem }}</small>
+                <span class="admin-custv__cell admin-custv__last">
+                    <span class="admin-custv__last-date">{{ c.last_purchase_at | datahora }}</span>
+                    <small>{{ rel if rel in ('hoje', 'ontem', '—') else 'há ' ~ rel }}</small>
                 </span>
 
-                <span class="admin-stock__actions" data-label="Perfil">
-                    <a class="admin-btn admin-btn--ghost admin-btn--sm"
-                       href="{{ url_for('admin_event_customer_detail', event_id=event.id, kind=c.kind, ident=c.ident) }}"
+                <span class="admin-custv__cell admin-custv__cell--actions">
+                    <a class="admin-custv__icon-btn"
+                       href="{{ profile_url }}"
                        title="Ver perfil analítico de {{ c.name }}"
                        aria-label="Ver perfil analítico de {{ c.name }}">
                         <i class="fa-solid fa-chart-line" aria-hidden="true"></i>
@@ -208,15 +227,15 @@
             </div>
             {% endfor %}
         {% else %}
-            <div class="admin-empty">
-                <i class="fa-regular fa-folder-open" aria-hidden="true"></i>
-                <p>
-                    {% if filters.q %}
-                        Nenhum cliente encontrado para “{{ filters.q }}”.
-                    {% else %}
-                        Nenhuma venda confirmada com cliente identificado ainda.
-                    {% endif %}
-                </p>
+            <div class="admin-custv__empty">
+                <i class="fa-regular fa-address-book" aria-hidden="true"></i>
+                {% if filters.q %}
+                <p class="admin-custv__empty-title">Nenhum cliente encontrado para “{{ filters.q }}”</p>
+                <p class="admin-custv__empty-hint">Confira a grafia ou busque por CPF, e-mail, telefone ou CRO.</p>
+                {% else %}
+                <p class="admin-custv__empty-title">Nenhum cliente identificado ainda</p>
+                <p class="admin-custv__empty-hint">Os clientes aparecem aqui depois da primeira venda confirmada com CPF.</p>
+                {% endif %}
             </div>
         {% endif %}
     </div>

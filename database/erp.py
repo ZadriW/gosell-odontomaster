@@ -13,19 +13,22 @@ Fluxo de um pedido
 3. Sucesso → ``enviado``. Falha de rede → nova tentativa mais tarde, sem
    limite (o estande pode ficar horas sem internet). Recusa do ERP → até
    ``MAX_BUSINESS_ATTEMPTS`` tentativas e depois ``erro``, à espera do admin.
+   Login recusado ou endereço do gateway errado → a fila inteira pausa, sem
+   gastar tentativas (``release_claimed_jobs``).
 4. Estorno de venda já enviada gera uma linha ``cancelamento``; se o pedido
    ainda não tinha saído, ele só é retirado da fila.
 """
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import unicodedata
 from datetime import datetime, timedelta
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from .connection import _now_iso, get_conn
-from .payment_methods import CHECKOUT_METHODS, PAYMENT_METHOD_LABELS
+from .payment_methods import CHECKOUT_METHODS, MAX_CARD_INSTALLMENTS, PAYMENT_METHOD_LABELS
 
 # ---------------------------------------------------------------------------
 # Configuração
@@ -35,14 +38,14 @@ from .payment_methods import CHECKOUT_METHODS, PAYMENT_METHOD_LABELS
 SETTINGS_DEFAULTS: Dict[str, str] = {
     "codemp": "1",
     "codvend": "",
+    # Local de estoque do Sankhya de onde saem os itens vendidos (CODLOCALORIG).
+    "codlocalorig": "",
     "orders_enabled": "0",
-    "order_ref_field": "",
-    "cro_field": "",
 }
 
-#: Formas com um único CODTIPVENDA; o crédito tem um código por parcela (1x–10x).
+#: Formas com um único CODTIPVENDA; o crédito tem um código por parcela
+#: (1x até ``MAX_CARD_INSTALLMENTS``, o mesmo limite do checkout).
 SINGLE_CODE_METHODS = tuple(m for m in CHECKOUT_METHODS if m != "credito")
-MAX_CARD_INSTALLMENTS = 10
 
 #: Situação do pedido no ERP (``transactions.erp_status``).
 ERP_STATUS_LABELS = {
@@ -51,6 +54,7 @@ ERP_STATUS_LABELS = {
     "enviado": "Enviado",
     "erro": "Erro no envio",
     "cancelamento_pendente": "Cancelamento na fila",
+    "cancelamento_erro": "Erro no cancelamento",
     "cancelado": "Cancelado no ERP",
 }
 
@@ -75,7 +79,8 @@ def get_erp_settings() -> Dict[str, str]:
     with get_conn() as conn:
         rows = conn.execute("SELECT key, value FROM erp_settings").fetchall()
     out = dict(SETTINGS_DEFAULTS)
-    out.update({r["key"]: r["value"] for r in rows})
+    # Chaves aposentadas (ex.: order_ref_field, hoje IDPEDIDO fixo) ficam de fora.
+    out.update({r["key"]: r["value"] for r in rows if r["key"] in SETTINGS_DEFAULTS})
     return out
 
 
@@ -101,6 +106,8 @@ def orders_readiness(settings: Optional[Dict[str, str]] = None) -> List[str]:
     missing: List[str] = []
     if not (cfg.get("codemp") or "").strip().isdigit():
         missing.append("Empresa (CODEMP)")
+    if not (cfg.get("codlocalorig") or "").strip().isdigit():
+        missing.append("Local de origem (CODLOCALORIG)")
     with get_conn() as conn:
         n = conn.execute("SELECT COUNT(*) FROM erp_payment_types").fetchone()[0]
     if not n:
@@ -127,7 +134,7 @@ def payment_type_grid() -> List[Dict]:
     """Uma linha por combinação que o checkout produz.
 
     PIX, Pix Inter, débito, dinheiro e faturado têm um código cada; o crédito
-    tem um por número de parcelas (1x–10x).
+    tem um por número de parcelas (1x até ``MAX_CARD_INSTALLMENTS``).
     """
     saved = {
         (r["payment_method"], r["installments"]): r for r in list_payment_types()
@@ -166,6 +173,8 @@ def save_payment_types(rows: Iterable[Dict]) -> int:
             continue
         inst = r.get("installments")
         inst = int(inst) if inst not in (None, "") else None
+        if inst is not None and not 1 <= inst <= MAX_CARD_INSTALLMENTS:
+            continue  # parcelamento fora do que o checkout permite
         code = str(r.get("codtipvenda") or "").strip()
         if not code:
             continue
@@ -305,17 +314,46 @@ def resolve_codvend(
     )
 
 
+def client_problems(tx: Dict) -> List[str]:
+    """Dados do cliente que o Sankhya exige e que faltam (ou são inválidos) na venda.
+
+    ``tx`` usa as chaves de ``transactions`` (``client_cpf``, ``client_zipcode``...).
+    Vale no checkout (antes do pagamento) e na montagem do cadastro do cliente.
+    """
+    problems: List[str] = []
+    if not _valid_cpf(_digits(tx.get("client_cpf"))):
+        problems.append("CPF válido")
+    for key, label in (
+        ("client_name", "nome"),
+        ("client_address", "endereço"),
+        ("client_neighborhood", "bairro"),
+        ("client_city", "cidade"),
+        ("client_state", "UF"),
+    ):
+        if not str(tx.get(key) or "").strip():
+            problems.append(label)
+    if len(_digits(tx.get("client_zipcode"))) != 8:
+        problems.append("CEP")
+    return problems
+
+
+def require_client_for_erp(tx: Dict) -> None:
+    """``ValueError`` legível quando a venda não teria como ir ao Sankhya."""
+    problems = client_problems(tx)
+    if problems:
+        raise ValueError("Dados do cliente incompletos: informe " + ", ".join(problems) + ".")
+
+
 def build_customer_payload(
     tx: Dict, settings: Dict[str, str], codparc: Optional[int], codvend: Optional[int] = None
 ) -> Tuple[Dict, List[str]]:
-    """Corpo de ``/clientes/create-update`` a partir dos dados gravados na venda."""
-    problems: List[str] = []
+    """Corpo de ``/clientes/create-update-geral`` a partir dos dados gravados na venda.
+
+    ``CRO`` leva só o número (o gateway grava em ``AD_CRO`` do parceiro).
+    """
+    problems = client_problems(tx)
     cpf = _digits(tx.get("client_cpf"))
     name = " ".join(str(tx.get("client_name") or "").split())
-    if not _valid_cpf(cpf):
-        problems.append("CPF do cliente ausente ou inválido")
-    if not name:
-        problems.append("nome do cliente")
     address = {
         "ENDERECO": " ".join(str(tx.get("client_address") or "").split()),
         "CEP": _digits(tx.get("client_zipcode")),
@@ -325,12 +363,6 @@ def build_customer_payload(
         "CIDADE": _erp_city(tx.get("client_city")),
         "ESTADO": str(tx.get("client_state") or "").strip().upper(),
     }
-    labels = {"ENDERECO": "endereço", "BAIRRO": "bairro", "CIDADE": "cidade", "ESTADO": "UF"}
-    for key, label in labels.items():
-        if not address[key]:
-            problems.append(label)
-    if len(address["CEP"]) != 8:
-        problems.append("CEP")
     phone = _digits(tx.get("client_phone"))
     if phone.startswith("55") and len(phone) > 11:
         phone = phone[2:]
@@ -341,21 +373,167 @@ def build_customer_payload(
         "RAZAOSOCIAL": name,
         "CGC_CPF": cpf,
         "IDENTINSCESTAD": "ISENTO",
-        "CODVEND": str(codvend) if codvend else "",
+        "CODVEND": str(codvend) if codvend else "0",
         "TELEFONE": phone if len(phone) == 10 else "",
         "CELULAR": phone if len(phone) == 11 else "",
         "EMAIL": str(tx.get("client_email") or "").strip(),
         "TIPOENDERECO": "",
         **address,
+        "CRO": " ".join(str(tx.get("client_cro_numero") or "").split()),
     }
-    cro_field = (settings.get("cro_field") or "").strip()
-    cro_num = str(tx.get("client_cro_numero") or "").strip()
-    if cro_field and cro_num:
-        cro_uf = str(tx.get("client_cro_uf") or "").strip().upper()
-        payload[cro_field] = f"{cro_uf} {cro_num}".strip()
     if problems:
         problems = ["Cadastro do cliente incompleto: " + ", ".join(problems)]
     return payload, problems
+
+
+#: CONTROLE do Sankhya para produto sem controle de lote.
+NO_LOT_CONTROLE = " "
+
+
+def allocate_lots(
+    conn: sqlite3.Connection,
+    codprod: int,
+    codlocal: Optional[int],
+    qty: int,
+    label: str = "",
+    exclude_tx: Optional[int] = None,
+    taken: Optional[Dict[Tuple[int, int, str], float]] = None,
+) -> Tuple[List[Tuple[str, int]], Optional[str]]:
+    """Reparte ``qty`` entre os lotes (``CONTROLE``) do produto no local de origem.
+
+    Como no Sankhya, cada unidade sai de um lote que tem saldo naquele local:
+    - saldo de cada lote = ``DISPONIVEL`` recebido do Sankhya menos o que pedidos
+      já enviados tiraram dele desde então (``erp_stock_allocations``; a venda
+      ``exclude_tx`` não conta contra ela mesma) e menos ``taken`` (linhas
+      anteriores deste mesmo pedido);
+    - começa pelo lote de maior saldo, para dividir o item o mínimo possível;
+    - produto sem controle de lote tem um "lote" só, o ``' '``.
+
+    Devolve ``([(controle, quantidade), ...], problema)``. Com problema (sem
+    estoque recebido, sem saldo no local, saldo menor que a venda) o pedido não
+    sai: o Sankhya recusaria.
+    """
+    name = label or str(codprod)
+    if codlocal is None:
+        return [], None  # falta o local; o problema já foi apontado no cabeçalho
+    rows = conn.execute(
+        """
+        SELECT s.controle, s.disponivel,
+               COALESCE((SELECT SUM(a.qty) FROM erp_stock_allocations a
+                          WHERE a.codprod = s.codprod AND a.codlocal = s.codlocal
+                            AND a.controle = s.controle
+                            AND a.created_at >= s.received_at
+                            AND a.transaction_id != ?), 0) AS used
+          FROM erp_stock s
+         WHERE s.codprod = ? AND s.codlocal = ?
+        """,
+        (int(exclude_tx or 0), int(codprod), int(codlocal)),
+    ).fetchall()
+    if not rows:
+        known = conn.execute(
+            "SELECT 1 FROM erp_stock WHERE codprod = ? LIMIT 1", (int(codprod),)
+        ).fetchone()
+        if not known:
+            return [], (
+                f"Produto {name} sem estoque/lote recebido do Sankhya; "
+                "sincronize o catálogo (fila de estoque)"
+            )
+        return [], f"Produto {name} sem estoque no local {codlocal}"
+    taken = taken if taken is not None else {}
+    lots = []
+    for r in rows:
+        controle = str(r["controle"])
+        free = float(r["disponivel"] or 0) - float(r["used"] or 0)
+        free -= taken.get((int(codprod), int(codlocal), controle), 0)
+        if free >= 1:
+            lots.append((controle, int(free)))
+    lots.sort(key=lambda lot: (-lot[1], lot[0]))
+    parts: List[Tuple[str, int]] = []
+    remaining = int(qty)
+    for controle, free in lots:
+        if remaining <= 0:
+            break
+        use = min(free, remaining)
+        parts.append((controle, use))
+        remaining -= use
+    if remaining > 0:
+        available = int(qty) - remaining
+        return [], (
+            f"Produto {name}: saldo insuficiente no local {codlocal} "
+            f"(disponível {available}, vendido {int(qty)}); sincronize o catálogo "
+            "ou confira o estoque no Sankhya"
+        )
+    for controle, use in parts:
+        key = (int(codprod), int(codlocal), controle)
+        taken[key] = taken.get(key, 0) + use
+    return parts, None
+
+
+def record_allocations_in_conn(conn: sqlite3.Connection, tx_id: int, payload: Dict) -> None:
+    """Grava o que o pedido enviado tirou de cada lote (substitui o registro anterior)."""
+    conn.execute("DELETE FROM erp_stock_allocations WHERE transaction_id = ?", (int(tx_id),))
+    now = _now_iso()
+    for item in (payload or {}).get("itens") or []:
+        try:
+            codprod = int(item["CODPROD"])
+            codlocal = int(item["CODLOCALORIG"])
+            qty = float(item["QTDNEG"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        conn.execute(
+            "INSERT INTO erp_stock_allocations "
+            "(transaction_id, codprod, codlocal, controle, qty, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (int(tx_id), codprod, codlocal, str(item.get("CONTROLE") or NO_LOT_CONTROLE), qty, now),
+        )
+
+
+def record_allocations(tx_id: int, payload: Dict) -> None:
+    with get_conn() as conn:
+        record_allocations_in_conn(conn, tx_id, payload)
+
+
+def release_allocations_in_conn(conn: sqlite3.Connection, tx_id: int) -> None:
+    """Pedido cancelado ou que nunca chegou ao ERP: devolve o saldo dos lotes."""
+    conn.execute("DELETE FROM erp_stock_allocations WHERE transaction_id = ?", (int(tx_id),))
+
+
+def apply_erp_stock(rows: Iterable[Dict], replaced: set) -> int:
+    """Um lote da fila de estoque (``/products/stock``) em ``erp_stock``.
+
+    Cada produto que chega traz a situação atual dele: na primeira vez que
+    aparece numa sincronização, as linhas antigas dele são apagadas (lote que
+    acabou some). ``replaced`` guarda esses produtos entre os lotes da mesma
+    sincronização, para um produto dividido em dois lotes não perder a 1ª parte.
+    """
+    now = _now_iso()
+    n = 0
+    with get_conn() as conn:
+        for r in rows:
+            try:
+                codprod = int(r.get("CODPROD"))
+                codlocal = int(r.get("CODLOCAL"))
+            except (TypeError, ValueError):
+                continue
+            raw = r.get("CONTROLE")
+            controle = str(raw) if raw is not None and str(raw).strip() else NO_LOT_CONTROLE
+            if codprod not in replaced:
+                conn.execute("DELETE FROM erp_stock WHERE codprod = ?", (codprod,))
+                replaced.add(codprod)
+            values = []
+            for key in ("ESTOQUE", "RESERVADO", "DISPONIVEL"):
+                try:
+                    values.append(float(r.get(key) or 0))
+                except (TypeError, ValueError):
+                    values.append(0.0)
+            conn.execute(
+                "INSERT OR REPLACE INTO erp_stock "
+                "(codprod, codlocal, controle, estoque, reservado, disponivel, received_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (codprod, codlocal, controle, *values, now),
+            )
+            n += 1
+    return n
 
 
 def _fmt_dtneg(created_at: Any) -> str:
@@ -374,7 +552,15 @@ def build_order_payload(
     codparc: int,
     codvend: Optional[int] = None,
 ) -> Tuple[Dict, List[str]]:
-    """Corpo de ``/orders``. Devolve ``(payload, problemas)``; com problema não envia.
+    """Corpo de ``/orders/create-order``. Devolve ``(payload, problemas)``; com problema não envia.
+
+    Formato do exemplo do integrador (08/10/2026): ``IDPEDIDO`` no cabeçalho é o
+    sequencial inteiro da venda (``ensure_idpedido``; o campo no Sankhya é
+    numérico, então o ``OM...`` não serve); cada item leva
+    ``SEQITEMPED`` ("1", "2"... na ordem da venda), ``CODLOCALORIG`` (local de
+    estoque configurado) e ``CONTROLE`` (lote, de ``allocate_lots``). Item cuja
+    quantidade não cabe num lote só é dividido em uma linha por lote, com o
+    mesmo preço e o desconto repartido pela quantidade.
 
     - ``VLRUNIT`` é o preço de lista do item (antes da promoção).
     - ``VLRDESC`` é o desconto total do item: promoção + rateio do desconto
@@ -382,6 +568,12 @@ def build_order_payload(
       modo que o pedido no ERP feche no valor que o cliente pagou.
     """
     problems: List[str] = []
+    if not tx.get("erp_idpedido"):
+        problems.append("Venda sem IDPEDIDO")
+    raw_local = str(settings.get("codlocalorig") or "").strip()
+    codlocal = int(raw_local) if raw_local.isdigit() else None
+    if codlocal is None:
+        problems.append("Local de origem (CODLOCALORIG) não configurado")
     codtipvenda = resolve_codtipvenda(
         conn, tx.get("payment_method"), tx.get("card_installments")
     )
@@ -408,6 +600,7 @@ def build_order_payload(
     ).fetchall()
 
     lines: List[Dict] = []
+    taken: Dict[Tuple[int, int, str], float] = {}  # lotes já usados neste pedido
     for it in items:
         qty = int(it["quantity"] or 0)
         if qty <= 0:
@@ -432,8 +625,14 @@ def build_order_payload(
         original = it["original_price"]
         list_price = float(original) if original is not None and float(original) >= unit else unit
         net = float(it["subtotal"] if it["subtotal"] is not None else unit * qty)
+        parts, problem = allocate_lots(
+            conn, int(codprod), codlocal, qty, label, exclude_tx=int(tx["id"]), taken=taken
+        )
+        if problem:
+            problems.append(problem)
         lines.append({
             "codprod": int(codprod),
+            "lots": parts,
             "codvol": (codvol or "").strip(),
             "qty": qty,
             "list_price": round(list_price, 2),
@@ -448,27 +647,45 @@ def build_order_payload(
     total = round(float(tx.get("total") or 0), 2)
     extra = round(net_sum - total, 2) if net_sum - total > 0.004 else 0.0
     if extra and net_sum > 0:
+        # Nenhum item recebe mais desconto do que vale; o resto dos centavos
+        # vai para os itens que ainda têm saldo (o líquido nunca fica negativo).
         remaining = extra
-        for i, line in enumerate(lines):
-            if i == len(lines) - 1:
-                share = remaining
-            else:
-                share = round(extra * line["net"] / net_sum, 2)
-                remaining = round(remaining - share, 2)
+        for line in lines:
+            share = min(round(extra * line["net"] / net_sum, 2), line["net"], remaining)
             line["net"] = round(line["net"] - share, 2)
+            remaining = round(remaining - share, 2)
+        for line in lines:
+            if remaining <= 0:
+                break
+            share = min(line["net"], remaining)
+            line["net"] = round(line["net"] - share, 2)
+            remaining = round(remaining - share, 2)
 
     itens = []
     for line in lines:
         desc = round(max(0.0, line["gross"] - line["net"]), 2)
         perc = round(desc / line["gross"] * 100, 4) if line["gross"] > 0 else 0
-        itens.append({
-            "CODPROD": str(line["codprod"]),
-            "QTDNEG": line["qty"],
-            "VLRUNIT": line["list_price"],
-            "CODVOL": line["codvol"],
-            "PERCDESC": perc,
-            "VLRDESC": desc,
-        })
+        # Uma linha por lote; o desconto acompanha a quantidade e a última
+        # parte leva os centavos que sobram (a soma fecha no desconto do item).
+        parts = line["lots"] or [(NO_LOT_CONTROLE, line["qty"])]
+        desc_left = desc
+        for i, (controle, part_qty) in enumerate(parts):
+            if i == len(parts) - 1:
+                part_desc = round(desc_left, 2)
+            else:
+                part_desc = round(desc * part_qty / line["qty"], 2)
+                desc_left = round(desc_left - part_desc, 2)
+            itens.append({
+                "CODPROD": str(line["codprod"]),
+                "CODLOCALORIG": str(codlocal or ""),
+                "CONTROLE": controle,
+                "QTDNEG": part_qty,
+                "VLRUNIT": line["list_price"],
+                "CODVOL": line["codvol"],
+                "SEQITEMPED": str(len(itens) + 1),
+                "PERCDESC": perc,
+                "VLRDESC": part_desc,
+            })
 
     payload: Dict[str, Any] = {
         "CODPARC": int(codparc) if codparc else None,
@@ -476,12 +693,10 @@ def build_order_payload(
         "CODTIPVENDA": codtipvenda,
         "CODVEND": int(codvend) if codvend else None,
         "CODEMP": int(settings["codemp"]) if str(settings.get("codemp") or "").isdigit() else None,
+        "IDPEDIDO": str(tx["erp_idpedido"]) if tx.get("erp_idpedido") else None,
         "VLRFRETE": 0,
         "itens": itens,
     }
-    ref_field = (settings.get("order_ref_field") or "").strip()
-    if ref_field:
-        payload[ref_field] = tx.get("order_number")
     return payload, problems
 
 
@@ -489,8 +704,49 @@ def build_order_payload(
 # Fila de envio (erp_outbox)
 # ---------------------------------------------------------------------------
 
+def idpedido_base() -> int:
+    """``TOTEM_IDPEDIDO_BASE``: somado ao sequencial. Banco de testes que envie ao
+    mesmo Sankhya usa outra faixa (ex.: 900000000) para não repetir IDPEDIDO."""
+    raw = (os.environ.get("TOTEM_IDPEDIDO_BASE") or "").strip()
+    return int(raw) if raw.isdigit() else 0
+
+
+def ensure_idpedido(conn: sqlite3.Connection, tx_id: int) -> int:
+    """IDPEDIDO (inteiro) da venda; cria na primeira chamada. Nunca muda depois.
+
+    O campo do Sankhya é numérico, então o número ``OM...`` não serve. O
+    sequencial fica em ``erp_counters`` e só anda para a frente: venda apagada
+    ou reset do totem não devolvem números já usados.
+    """
+    row = conn.execute(
+        "SELECT erp_idpedido FROM transactions WHERE id = ?", (int(tx_id),)
+    ).fetchone()
+    if row is None:
+        raise ValueError(f"Venda {tx_id} não existe.")
+    if row["erp_idpedido"]:
+        return int(row["erp_idpedido"])
+    conn.execute("INSERT OR IGNORE INTO erp_counters (name, value) VALUES ('idpedido', 0)")
+    base = idpedido_base()
+    while True:
+        conn.execute("UPDATE erp_counters SET value = value + 1 WHERE name = 'idpedido'")
+        value = conn.execute(
+            "SELECT value FROM erp_counters WHERE name = 'idpedido'"
+        ).fetchone()["value"]
+        candidate = base + int(value)
+        taken = conn.execute(
+            "SELECT 1 FROM transactions WHERE erp_idpedido = ?", (candidate,)
+        ).fetchone()
+        if not taken:
+            break
+    conn.execute(
+        "UPDATE transactions SET erp_idpedido = ? WHERE id = ?", (candidate, int(tx_id))
+    )
+    return candidate
+
+
 def enqueue_order_in_conn(conn: sqlite3.Connection, tx_id: int) -> bool:
     """Põe a venda confirmada na fila. Idempotente (``UNIQUE (kind, transaction_id)``)."""
+    ensure_idpedido(conn, tx_id)
     now = _now_iso()
     cur = conn.execute(
         """
@@ -513,13 +769,16 @@ def handle_refund_in_conn(conn: sqlite3.Connection, tx_id: int) -> str:
     Retorna ``'fora_da_fila'``, ``'retirado'`` ou ``'cancelamento'``.
     """
     order = conn.execute(
-        "SELECT id, status FROM erp_outbox WHERE kind = 'pedido' AND transaction_id = ?",
+        "SELECT id, status, last_error FROM erp_outbox "
+        "WHERE kind = 'pedido' AND transaction_id = ?",
         (int(tx_id),),
     ).fetchone()
     if order is None:
         return "fora_da_fila"
     now = _now_iso()
-    if order["status"] in ("pendente", "erro", "descartado"):
+    if order["status"] in ("pendente", "descartado") or (
+        order["status"] == "erro" and not is_uncertain_send(order)
+    ):
         conn.execute(
             "UPDATE erp_outbox SET status = 'descartado', last_error = ?, updated_at = ? "
             "WHERE id = ?",
@@ -548,8 +807,19 @@ def note_items_changed_in_conn(conn: sqlite3.Connection, tx_id: int) -> Optional
     """Item trocado depois da confirmação.
 
     Pedido ainda na fila: nada a fazer, o corpo é montado na hora do envio.
-    Pedido já enviado: o ERP não é atualizado sozinho; devolve um aviso.
+    Pedido saindo neste instante ou já enviado: o ERP não é atualizado
+    sozinho; devolve um aviso.
     """
+    sending = conn.execute(
+        "SELECT 1 FROM erp_outbox WHERE kind = 'pedido' AND transaction_id = ? "
+        "AND status = 'processando'",
+        (int(tx_id),),
+    ).fetchone()
+    if sending:
+        return (
+            "Este pedido estava sendo enviado ao Sankhya no momento da troca e pode "
+            "ter saído com o item antigo. Confira o pedido no ERP."
+        )
     row = conn.execute(
         "SELECT erp_status, erp_order_id FROM transactions WHERE id = ?", (int(tx_id),)
     ).fetchone()
@@ -579,6 +849,7 @@ def enqueue_unsent_orders(event_id: Optional[int] = None) -> int:
         ids = [int(r[0]) for r in conn.execute(sql, params).fetchall()]
         now = _now_iso()
         for tx_id in ids:
+            ensure_idpedido(conn, tx_id)
             conn.execute(
                 """
                 INSERT INTO erp_outbox
@@ -610,17 +881,58 @@ def count_unsent_orders(event_id: Optional[int] = None) -> int:
         return int(conn.execute(sql, params).fetchone()[0])
 
 
+#: Erro gravado quando não dá para saber se o ERP recebeu o envio.
+UNCERTAIN_SEND_ERROR = (
+    "Sem confirmação do Sankhya: o envio pode ter entrado no ERP. "
+    "Confira no Sankhya antes de reenviar (reenviar sem conferir pode duplicar)."
+)
+
+
+def is_uncertain_send(job: Any) -> bool:
+    """Item em erro porque o envio pode ter entrado no ERP sem confirmação."""
+    return str(job["last_error"] or "").startswith(UNCERTAIN_SEND_ERROR)
+
+
 def reset_stale_processing() -> int:
+    """Linhas presas em ``processando`` (o processo caiu no meio do envio).
+
+    Não voltam sozinhas para a fila: o ERP pode ter gravado antes da queda.
+    Vão para ``erro`` e esperam o admin conferir no Sankhya e reenviar.
+    """
     cutoff = (datetime.now() - timedelta(minutes=STALE_PROCESSING_MINUTES)).isoformat(
         timespec="seconds"
     )
+    now = _now_iso()
     with get_conn() as conn:
-        cur = conn.execute(
-            "UPDATE erp_outbox SET status = 'pendente', updated_at = ? "
+        rows = conn.execute(
+            "SELECT id, kind, transaction_id FROM erp_outbox "
             "WHERE status = 'processando' AND updated_at < ?",
-            (_now_iso(), cutoff),
+            (cutoff,),
+        ).fetchall()
+        for r in rows:
+            conn.execute(
+                "UPDATE erp_outbox SET status = 'erro', next_attempt_at = NULL, "
+                "last_error = ?, updated_at = ? WHERE id = ? AND status = 'processando'",
+                (UNCERTAIN_SEND_ERROR, now, int(r["id"])),
+            )
+            _set_failed_tx_status(conn, r["kind"], int(r["transaction_id"]))
+        return len(rows)
+
+
+def _set_failed_tx_status(conn: sqlite3.Connection, kind: str, tx_id: int) -> None:
+    """Venda reflete o item da fila que parou em ``erro``."""
+    if kind == "pedido":
+        conn.execute(
+            "UPDATE transactions SET erp_status = 'erro' WHERE id = ? "
+            "AND erp_status IN ('na_fila', 'erro')",
+            (tx_id,),
         )
-        return int(cur.rowcount or 0)
+    else:
+        conn.execute(
+            "UPDATE transactions SET erp_status = 'cancelamento_erro' WHERE id = ? "
+            "AND erp_status IN ('cancelamento_pendente', 'cancelamento_erro')",
+            (tx_id,),
+        )
 
 
 def claim_due_jobs(limit: int = 20) -> List[Dict]:
@@ -702,10 +1014,13 @@ def mark_job_sent(
                 "erp_sent_at = ?, erp_codparc = COALESCE(?, erp_codparc) WHERE id = ?",
                 (status, erp_order_id, now, codparc, tx_id),
             )
+            if payload is not None:
+                record_allocations_in_conn(conn, tx_id, payload)
         else:
             conn.execute(
                 "UPDATE transactions SET erp_status = 'cancelado' WHERE id = ?", (tx_id,)
             )
+            release_allocations_in_conn(conn, tx_id)
 
 
 def mark_job_failed(
@@ -747,13 +1062,50 @@ def mark_job_failed(
                 int(job["id"]),
             ),
         )
-        if give_up and job["kind"] == "pedido":
-            conn.execute(
-                "UPDATE transactions SET erp_status = 'erro' WHERE id = ? "
-                "AND erp_status IN ('na_fila', 'erro')",
-                (int(job["transaction_id"]),),
-            )
+        if give_up:
+            _set_failed_tx_status(conn, job["kind"], int(job["transaction_id"]))
     return status
+
+
+def release_claimed_jobs(jobs: Iterable[Dict], reason: str, retry_at: datetime) -> int:
+    """Devolve à fila itens que o worker pegou e não chegou a enviar.
+
+    Para falhas que não são do pedido (login recusado, endereço do gateway
+    errado): não conta tentativa nem põe a venda em erro, só guarda o motivo
+    para o painel e agenda a volta.
+    """
+    now = _now_iso()
+    next_at = retry_at.isoformat(timespec="seconds")
+    released = 0
+    with get_conn() as conn:
+        for job in jobs:
+            cur = conn.execute(
+                "UPDATE erp_outbox SET status = 'pendente', next_attempt_at = ?, "
+                "last_error = ?, updated_at = ? WHERE id = ? AND status = 'processando'",
+                (next_at, (reason or "")[:2000], now, int(job["id"])),
+            )
+            released += cur.rowcount
+    return released
+
+
+def close_claimed_job(job: Dict, reason: str, tx_erp_status: str) -> None:
+    """O worker encerra um item que ele mesmo pegou (``processando``) sem enviar.
+
+    Diferente de ``mark_job_discarded`` (ação do admin), aceita ``processando`` e
+    recebe a situação final da venda: um cancelamento cujo pedido nunca chegou
+    ao ERP deixa a venda ``nao_enviado``, não ``cancelado``.
+    """
+    with get_conn() as conn:
+        cur = conn.execute(
+            "UPDATE erp_outbox SET status = 'descartado', last_error = ?, updated_at = ? "
+            "WHERE id = ? AND status = 'processando'",
+            (reason, _now_iso(), int(job["id"])),
+        )
+        if cur.rowcount:
+            conn.execute(
+                "UPDATE transactions SET erp_status = ? WHERE id = ?",
+                (tx_erp_status, int(job["transaction_id"])),
+            )
 
 
 def mark_job_discarded(job_id: int, reason: str) -> None:
@@ -778,6 +1130,8 @@ def mark_job_discarded(job_id: int, reason: str) -> None:
             "UPDATE transactions SET erp_status = ? WHERE id = ?",
             (tx_status, int(row["transaction_id"])),
         )
+        # Pedido que não vai (ou cancelado à mão no Sankhya): o saldo dos lotes volta.
+        release_allocations_in_conn(conn, int(row["transaction_id"]))
 
 
 def retry_job(job_id: int) -> None:
@@ -820,7 +1174,7 @@ def outbox_counts() -> Dict[str, int]:
 
 def list_outbox(status: Optional[str] = None, limit: int = 100, offset: int = 0) -> List[Dict]:
     sql = (
-        "SELECT o.*, t.order_number, t.client_name, t.total, t.event_id, t.status AS tx_status, "
+        "SELECT o.*, t.order_number, t.erp_idpedido, t.client_name, t.total, t.event_id, t.status AS tx_status, "
         "t.erp_status, t.erp_order_id, e.name AS event_name "
         "FROM erp_outbox o JOIN transactions t ON t.id = o.transaction_id "
         "LEFT JOIN events e ON e.id = t.event_id"
@@ -838,8 +1192,20 @@ def list_outbox(status: Optional[str] = None, limit: int = 100, offset: int = 0)
     for r in rows:
         d = dict(r)
         d["status_label"] = OUTBOX_STATUS_LABELS.get(d["status"], d["status"])
+        d["payload_pretty"] = _pretty_json(d.get("payload_json"))
+        d["response_pretty"] = _pretty_json(d.get("response_json"))
         out.append(d)
     return out
+
+
+def _pretty_json(text: Optional[str]) -> Optional[str]:
+    """JSON gravado numa linha só, indentado para leitura no painel."""
+    if not text:
+        return None
+    try:
+        return json.dumps(json.loads(text), ensure_ascii=False, indent=2)
+    except (TypeError, ValueError):
+        return text
 
 
 # ---------------------------------------------------------------------------
@@ -879,6 +1245,46 @@ def finish_sync_run(
                 int(run_id),
             ),
         )
+
+
+def update_sync_progress(run_id: int, stats: Dict, message: Optional[str]) -> None:
+    """Contadores parciais de uma sincronização em andamento (painel ao vivo).
+
+    ``message`` descreve a etapa atual; ``finish_sync_run`` troca pelo resumo.
+    """
+    s = stats or {}
+    with get_conn() as conn:
+        conn.execute(
+            """
+            UPDATE erp_sync_runs
+               SET inserted = ?, updated = ?, unchanged = ?, warnings = ?, images = ?,
+                   message = ?
+             WHERE id = ? AND status = 'executando'
+            """,
+            (
+                int(s.get("inserted") or 0), int(s.get("updated") or 0),
+                int(s.get("unchanged") or 0), int(s.get("warnings") or 0),
+                int(s.get("images") or 0), message, int(run_id),
+            ),
+        )
+
+
+#: Sincronização ``executando`` há mais tempo que isso é considerada morta.
+SYNC_RUN_STALE_HOURS = 2
+
+
+def other_sync_running(kind: str, exclude_run_id: Optional[int] = None) -> bool:
+    """Outra sincronização do mesmo tipo em andamento, inclusive em outro processo WSGI."""
+    cutoff = (datetime.now() - timedelta(hours=SYNC_RUN_STALE_HOURS)).isoformat(
+        timespec="seconds"
+    )
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM erp_sync_runs WHERE kind = ? AND status = 'executando' "
+            "AND started_at >= ? AND id != ? LIMIT 1",
+            (kind, cutoff, int(exclude_run_id or 0)),
+        ).fetchone()
+    return row is not None
 
 
 def abandon_running_syncs() -> None:

@@ -7,9 +7,16 @@
 {% endblock %}
 
 {% block admin_body %}
+<div data-erp-live-root
+     data-api-url="{{ url_for('admin_erp_live') }}"
+     data-live-active="{{ '1' if live_active else '0' }}">
 <section class="admin-section">
     <header class="admin-section__header">
-        <h1 class="admin-section__title">Integração ERP (Sankhya)</h1>
+        <h1 class="admin-section__title">
+            Integração ERP (Sankhya)
+            <span class="erp-live-indicator" data-erp-live-indicator
+                  title="Fila de envio e sincronização do catálogo se atualizam sozinhas">ao vivo</span>
+        </h1>
         <p class="admin-section__subtitle">
             O catálogo vem do Sankhya e as vendas confirmadas vão para lá como orçamento,
             por uma fila que não trava o pagamento. Estoque do evento, promoções e
@@ -18,51 +25,8 @@
     </header>
 
     {# ---------------- Situação ---------------- #}
-    <div class="erp-status-grid">
-        <article class="admin-card erp-status">
-            <h2 class="erp-status__title"><i class="fa-solid fa-key" aria-hidden="true"></i> Acesso ao gateway</h2>
-            {% if api_missing %}
-            <p class="erp-status__state erp-status__state--bad">Não configurado</p>
-            <p class="erp-status__hint">Preencha no arquivo <code>.env</code>: {{ api_missing|join(', ') }}.</p>
-            {% else %}
-            <p class="erp-status__state erp-status__state--ok">Configurado</p>
-            <p class="erp-status__hint"><code>{{ api_base_url }}</code></p>
-            {% endif %}
-            <p class="erp-status__hint">
-                Busca de produto avulso por CODPROD:
-                {% if product_filter_param %}ligada (<code>{{ product_filter_param }}</code>){% else %}desligada (defina <code>SANKHYA_PRODUCT_FILTER_PARAM</code>){% endif %}.
-            </p>
-        </article>
-
-        <article class="admin-card erp-status">
-            <h2 class="erp-status__title"><i class="fa-solid fa-paper-plane" aria-hidden="true"></i> Envio de pedidos</h2>
-            {% if readiness or api_missing %}
-            <p class="erp-status__state erp-status__state--warn">Parado</p>
-            <p class="erp-status__hint">As vendas entram na fila, mas só saem quando estiver completo:</p>
-            <ul class="erp-status__list">
-                {% if api_missing %}<li>Acesso ao gateway (.env)</li>{% endif %}
-                {% for item in readiness %}<li>{{ item }}</li>{% endfor %}
-            </ul>
-            {% else %}
-            <p class="erp-status__state erp-status__state--ok">Ativo</p>
-            <p class="erp-status__hint">A fila é verificada a cada 30 segundos e logo após cada venda.</p>
-            {% endif %}
-        </article>
-
-        <article class="admin-card erp-status">
-            <h2 class="erp-status__title"><i class="fa-solid fa-list-check" aria-hidden="true"></i> Fila</h2>
-            <dl class="erp-counts">
-                <div><dt>Aguardando</dt><dd>{{ counts.pendente + counts.processando }}</dd></div>
-                <div><dt>Com erro</dt><dd class="{% if counts.erro %}erp-counts--bad{% endif %}">{{ counts.erro }}</dd></div>
-                <div><dt>Enviados</dt><dd>{{ counts.enviado }}</dd></div>
-            </dl>
-            <form method="post" action="{{ url_for('admin_erp_process_now') }}">
-                {% include 'partials/csrf_field.html' %}
-                <button type="submit" class="admin-btn admin-btn--ghost admin-btn--sm">
-                    <i class="fa-solid fa-play" aria-hidden="true"></i> Enviar agora
-                </button>
-            </form>
-        </article>
+    <div data-erp-live-block="status">
+        {% include 'admin/partials/erp_status.html' %}
     </div>
 </section>
 
@@ -84,19 +48,14 @@
                     <span class="admin-field__hint">Tabela de preço e empresa do pedido.</span>
                 </label>
                 <label class="admin-field">
+                    <span class="admin-field__label">Local de origem (CODLOCALORIG)</span>
+                    <input class="admin-field__input" name="codlocalorig" inputmode="numeric" value="{{ settings.codlocalorig }}" placeholder="ex.: 1030000">
+                    <span class="admin-field__hint">Local de estoque do Sankhya de onde saem os itens vendidos no Totem. O lote (CONTROLE) de cada item é escolhido nesse local.</span>
+                </label>
+                <label class="admin-field">
                     <span class="admin-field__label">CODVEND de vendedor excluído</span>
                     <input class="admin-field__input" name="codvend" inputmode="numeric" value="{{ settings.codvend }}" placeholder="opcional">
                     <span class="admin-field__hint">Cada vendedor tem o seu CODVEND no cadastro dele. Este só vale para vendas de vendedor que foi excluído do Totem.</span>
-                </label>
-                <label class="admin-field">
-                    <span class="admin-field__label">Campo de rastreio do pedido</span>
-                    <input class="admin-field__input" name="order_ref_field" value="{{ settings.order_ref_field }}" placeholder="ex.: AD_PEDTOTEM">
-                    <span class="admin-field__hint">Campo criado pelo integrador; recebe o número OM… e barra duplicados.</span>
-                </label>
-                <label class="admin-field">
-                    <span class="admin-field__label">Campo do CRO no cliente</span>
-                    <input class="admin-field__input" name="cro_field" value="{{ settings.cro_field }}" placeholder="ex.: AD_CRO">
-                    <span class="admin-field__hint">Recebe "UF número" (ex.: SP 12345). Vazio = não envia.</span>
                 </label>
             </div>
             <label class="erp-form__check">
@@ -172,163 +131,18 @@
 </section>
 
 {# ---------------- Fila ---------------- #}
-<section class="admin-section" id="fila">
-    <header class="admin-section__header admin-section__header--row">
-        <div>
-            <h2 class="admin-section__title">Fila de envio</h2>
-            <p class="admin-section__subtitle">Pedidos e cancelamentos a caminho do Sankhya.</p>
-        </div>
-        <nav class="erp-filter" aria-label="Filtrar fila">
-            <a href="{{ url_for('admin_erp') }}#fila" class="{% if not status_filter %}is-active{% endif %}">Todos</a>
-            {% for key, label in outbox_status_labels.items() %}
-            <a href="{{ url_for('admin_erp', status=key) }}#fila" class="{% if status_filter == key %}is-active{% endif %}">{{ label }} ({{ counts[key] }})</a>
-            {% endfor %}
-        </nav>
-    </header>
-    {% if jobs %}
-    <div class="erp-table-wrap">
-        <table class="erp-table erp-table--queue">
-            <thead>
-                <tr><th>Pedido</th><th>Tipo</th><th>Cliente</th><th>Evento</th><th class="num">Total</th><th>Situação</th><th>Detalhe</th><th></th></tr>
-            </thead>
-            <tbody>
-                {% for job in jobs %}
-                <tr>
-                    <td>
-                        {% if job.event_id %}
-                        <a href="{{ url_for('admin_event_transactions', event_id=job.event_id, pedido=job.order_number) }}#tx-{{ job.transaction_id }}">{{ job.order_number }}</a>
-                        {% else %}{{ job.order_number }}{% endif %}
-                        {% if job.erp_order_id %}<small>Sankhya: {{ job.erp_order_id }}</small>{% endif %}
-                    </td>
-                    <td>{{ 'Pedido' if job.kind == 'pedido' else 'Cancelamento' }}</td>
-                    <td>{{ job.client_name or '—' }}</td>
-                    <td>{{ job.event_name or '—' }}</td>
-                    <td class="num">{{ job.total | brl }}</td>
-                    <td>
-                        <span class="admin-badge {% if job.status == 'enviado' %}admin-badge--success{% elif job.status == 'erro' %}admin-badge--danger{% elif job.status == 'descartado' %}admin-badge--neutral{% else %}admin-badge--info{% endif %}">{{ job.status_label }}</span>
-                        <small>{{ job.attempts }} tentativa(s){% if job.status == 'pendente' and job.next_attempt_at %} · próxima {{ job.next_attempt_at | datahora }}{% endif %}</small>
-                    </td>
-                    <td class="erp-table__error">
-                        {% if job.last_error %}{{ job.last_error }}{% endif %}
-                        {% if job.payload_json %}
-                        <details><summary>Dados enviados</summary><pre>{{ job.payload_json }}</pre></details>
-                        {% endif %}
-                        {% if job.response_json %}
-                        <details><summary>Resposta</summary><pre>{{ job.response_json }}</pre></details>
-                        {% endif %}
-                    </td>
-                    <td class="erp-table__actions">
-                        {% if job.status in ('erro', 'pendente', 'descartado') %}
-                        <form method="post" action="{{ url_for('admin_erp_job_retry', job_id=job.id) }}">
-                            {% include 'partials/csrf_field.html' %}
-                            <button type="submit" class="admin-btn admin-btn--ghost admin-btn--sm" title="Tentar de novo agora">
-                                <i class="fa-solid fa-rotate-right" aria-hidden="true"></i> Reenviar
-                            </button>
-                        </form>
-                        {% endif %}
-                        {% if job.status in ('erro', 'pendente') %}
-                        <form method="post" action="{{ url_for('admin_erp_job_discard', job_id=job.id) }}"
-                              data-confirm="{{ ('Retirar da fila? O pedido não será enviado ao Sankhya.' if job.kind == 'pedido' else 'Marcar como cancelado? Use depois de cancelar o pedido direto no Sankhya.') | e }}">
-                            {% include 'partials/csrf_field.html' %}
-                            <button type="submit" class="admin-btn admin-btn--ghost admin-btn--sm">
-                                {% if job.kind == 'pedido' %}<i class="fa-solid fa-ban" aria-hidden="true"></i> Não enviar{% else %}<i class="fa-solid fa-check" aria-hidden="true"></i> Já cancelei no Sankhya{% endif %}
-                            </button>
-                        </form>
-                        {% endif %}
-                    </td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
-    </div>
-    {% else %}
-    <p class="erp-empty">Nenhum item na fila{% if status_filter %} com essa situação{% endif %}.</p>
-    {% endif %}
+<section class="admin-section" id="fila" data-erp-live-block="fila">
+    {% include 'admin/partials/erp_queue.html' %}
 </section>
 
 {# ---------------- Histórico ---------------- #}
-<section class="admin-section" id="historico">
-    <article class="admin-card">
-        <header class="admin-card__header">
-            <div>
-                <h2 class="admin-card__title">Vendas anteriores à integração</h2>
-                <p class="admin-card__subtitle">
-                    {{ unsent_total }} venda(s) confirmada(s) nunca foram ao Sankhya. Elas não são enviadas
-                    sozinhas. Ao enfileirar, cada uma precisa de cliente com endereço completo e bairro;
-                    as que não tiverem ficam na fila com erro.
-                </p>
-            </div>
-        </header>
-        {% if events_unsent %}
-        <ul class="erp-history">
-            {% for ev in events_unsent %}
-            <li>
-                <span>{{ ev.name }} <small>({{ ev.count }} venda(s))</small></span>
-                <form method="post" action="{{ url_for('admin_erp_enqueue_history') }}"
-                      data-confirm="{{ ('Enviar ao Sankhya as ' ~ ev.count ~ ' venda(s) de ' ~ ev.name ~ '?') | e }}">
-                    {% include 'partials/csrf_field.html' %}
-                    <input type="hidden" name="event_id" value="{{ ev.id }}">
-                    <button type="submit" class="admin-btn admin-btn--ghost admin-btn--sm">Enfileirar</button>
-                </form>
-            </li>
-            {% endfor %}
-        </ul>
-        {% else %}
-        <p class="erp-empty">Nada pendente.</p>
-        {% endif %}
-    </article>
+<section class="admin-section" id="historico" data-erp-live-block="historico">
+    {% include 'admin/partials/erp_history.html' %}
 </section>
 
 {# ---------------- Catálogo ---------------- #}
-<section class="admin-section" id="catalogo">
-    <header class="admin-section__header admin-section__header--row">
-        <div>
-            <h2 class="admin-section__title">Catálogo</h2>
-            <p class="admin-section__subtitle">
-                {{ link_summary.linked }} produto(s) vinculado(s) a um CODPROD.
-                Produto que some da lista do Sankhya continua ativo aqui; sem preço, mantém o último;
-                sem imagem, mantém a foto.
-            </p>
-        </div>
-        <form method="post" action="{{ url_for('admin_sync_catalog_erp') }}">
-            {% include 'partials/csrf_field.html' %}
-            <button type="submit" class="admin-btn admin-btn--primary" {% if sync_running or api_missing %}disabled{% endif %}>
-                <i class="fa-solid fa-arrows-rotate{% if sync_running %} fa-spin{% endif %}" aria-hidden="true"></i>
-                {% if sync_running %}Sincronizando…{% else %}Sincronizar catálogo{% endif %}
-            </button>
-        </form>
-    </header>
-    {% if sync_runs %}
-    <div class="erp-table-wrap">
-        <table class="erp-table">
-            <thead>
-                <tr><th>Início</th><th>Situação</th><th class="num">Novos</th><th class="num">Atualizados</th><th class="num">Sem mudança</th><th class="num">Imagens</th><th>Avisos</th></tr>
-            </thead>
-            <tbody>
-                {% for run in sync_runs %}
-                <tr>
-                    <td>{{ run.started_at | datahora }}</td>
-                    <td>
-                        <span class="admin-badge {% if run.status == 'ok' %}admin-badge--success{% elif run.status == 'erro' %}admin-badge--danger{% elif run.status == 'parcial' %}admin-badge--warn{% else %}admin-badge--info{% endif %}">{{ {'ok': 'Concluída', 'parcial': 'Concluída com avisos', 'erro': 'Falhou', 'executando': 'Em andamento'}.get(run.status, run.status) }}</span>
-                    </td>
-                    <td class="num">{{ run.inserted }}</td>
-                    <td class="num">{{ run.updated }}</td>
-                    <td class="num">{{ run.unchanged }}</td>
-                    <td class="num">{{ run.images }}</td>
-                    <td class="erp-table__error">
-                        {% if run.error %}{{ run.error }}{% endif %}
-                        {% if run.message %}
-                        <details><summary>{{ run.warnings }} aviso(s)</summary><pre>{{ run.message }}</pre></details>
-                        {% endif %}
-                    </td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
-    </div>
-    {% else %}
-    <p class="erp-empty">Nenhuma sincronização com o Sankhya ainda.</p>
-    {% endif %}
+<section class="admin-section" id="catalogo" data-erp-live-block="catalogo">
+    {% include 'admin/partials/erp_catalog.html' %}
 </section>
 
 {# ---------------- Vínculos ---------------- #}
@@ -358,4 +172,9 @@
         {% endif %}
     </article>
 </section>
+</div>
+{% endblock %}
+
+{% block admin_scripts %}
+<script src="{{ url_for('static', filename='js/admin-erp-live.js') }}"></script>
 {% endblock %}

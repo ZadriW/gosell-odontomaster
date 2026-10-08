@@ -1039,6 +1039,48 @@ button.payment__back {
     padding-top: 0;
 }
 
+/* Título da seção com ação ao lado (ex.: botão "Loja" no endereço). */
+.payment__section-head {
+    grid-column: 1 / -1;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin-bottom: 20px;
+}
+
+.payment__section-head > .payment__section-title {
+    margin-bottom: 0;
+}
+
+.payment-store-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 40px;
+    padding: 8px 18px;
+    border: 1.5px solid var(--color-primary);
+    border-radius: var(--radius-md);
+    background: transparent;
+    color: var(--color-primary);
+    font-size: 14px;
+    font-weight: 700;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s, transform 0.1s;
+}
+
+.payment-store-btn:hover {
+    background: var(--color-primary);
+    color: white;
+    transform: translateY(-1px);
+}
+
+.payment-store-btn:focus-visible {
+    outline: 2px solid var(--color-primary);
+    outline-offset: 2px;
+}
+
 .payment__section-optional {
     font-size: 14px;
     font-weight: 500;

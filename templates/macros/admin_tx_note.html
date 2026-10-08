@@ -4,10 +4,8 @@
 {% if note or writable %}
 <div class="admin-tx__note" data-tx-note>
     {% if note %}
-    <p class="admin-tx__note-preview">
-        <i class="fa-regular fa-comment-dots" aria-hidden="true"></i>
-        {{ note }}
-    </p>
+    {# Numa linha só: o preview preserva quebras (pre-wrap) e a indentação viraria espaço. #}
+    <p class="admin-tx__note-preview"><i class="fa-regular fa-comment-dots" aria-hidden="true"></i>{{ note }}</p>
     {% endif %}
     {% if writable %}
     <div class="admin-tx__note-toolbar">

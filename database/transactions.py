@@ -1,15 +1,28 @@
 """Orders / transactions."""
 from __future__ import annotations
 
+import logging
 import math
+import os
 import random
+import re
 import sqlite3
 from datetime import datetime
 from typing import Dict, Iterable, List, Optional, Tuple
 
 from .connection import DEFAULT_MIN_STOCK, _now_iso, get_conn
-from .erp import enqueue_order_in_conn, handle_refund_in_conn, note_items_changed_in_conn
-from .payment_methods import INTERNAL_AUT, accepts_installments, normalize_payment_method
+from .erp import (
+    enqueue_order_in_conn,
+    handle_refund_in_conn,
+    note_items_changed_in_conn,
+    require_client_for_erp,
+)
+from .payment_methods import (
+    INTERNAL_AUT,
+    MAX_CARD_INSTALLMENTS,
+    accepts_installments,
+    normalize_payment_method,
+)
 from .event_stock import _apply_event_movement
 from .promotions import (
     apply_list_prices_to_normalized_items,
@@ -21,6 +34,8 @@ from .promotions import (
 from .sku_helpers import _build_sku_by_product_id, _default_sku_for_id, _product_sku_label
 from .stock import _apply_movement, _normalize_order_reference, _order_or_client_search_sql
 
+log = logging.getLogger(__name__)
+
 TX_FILTER_STATUSES = frozenset(
     {"confirmado", "pendente", "cancelado", "estornado", "entregue"}
 )
@@ -29,34 +44,64 @@ TX_FILTER_STATUSES = frozenset(
 # Transações (vendas)
 # ---------------------------------------------------------------------------
 
+#: Prefixo padrão do número do pedido. Outra instalação que envie pedidos ao
+#: mesmo Sankhya (ex.: banco de testes) define ``TOTEM_ORDER_PREFIX`` com outro
+#: prefixo, e os números das duas nunca colidem no ERP.
+DEFAULT_ORDER_PREFIX = "OM"
+
+
+def order_number_prefix() -> str:
+    """``TOTEM_ORDER_PREFIX`` (2 a 4 letras) ou ``OM``."""
+    raw = (os.environ.get("TOTEM_ORDER_PREFIX") or "").strip().upper()
+    if not raw:
+        return DEFAULT_ORDER_PREFIX
+    if re.fullmatch(r"[A-Z]{2,4}", raw):
+        return raw
+    log.warning(
+        "TOTEM_ORDER_PREFIX=%r inválido (use 2 a 4 letras); usando %s.", raw, DEFAULT_ORDER_PREFIX
+    )
+    return DEFAULT_ORDER_PREFIX
+
+
+def _reserve_order_number(conn: sqlite3.Connection, number: str) -> bool:
+    """Reserva o número se nunca foi emitido aqui (nem por venda já apagada)."""
+    if conn.execute(
+        "SELECT 1 FROM transactions WHERE order_number = ?", (number,)
+    ).fetchone():
+        return False
+    cur = conn.execute(
+        "INSERT OR IGNORE INTO order_number_registry (order_number, issued_at) VALUES (?, ?)",
+        (number, _now_iso()),
+    )
+    return cur.rowcount == 1
+
+
 def generate_order_number(conn: Optional[sqlite3.Connection] = None) -> str:
-    """Formato ``OMyymmdd-####`` (único por data + aleatório)."""
-    now = datetime.now()
-    prefix = f"OM{now.strftime('%y%m%d')}"
+    """Formato ``<prefixo>yymmdd-####`` (ex.: ``OM261006-1234``), nunca repetido.
 
-    def _exists(c: sqlite3.Connection, number: str) -> bool:
-        return c.execute(
-            "SELECT 1 FROM transactions WHERE order_number = ?", (number,)
-        ).fetchone() is not None
-
-    if conn is not None:
-        for _ in range(10):
-            number = f"{prefix}-{random.randint(1000, 9999)}"
-            if not _exists(conn, number):
-                return number
-        return f"{prefix}-{int(datetime.now().timestamp())}"
-
-    with get_conn() as c:
-        for _ in range(10):
-            number = f"{prefix}-{random.randint(1000, 9999)}"
-            if not _exists(c, number):
-                return number
-    return f"{prefix}-{int(datetime.now().timestamp())}"
+    O número identifica a venda no recibo e no Sankhya (campo de referência do
+    pedido). Cada número emitido fica em ``order_number_registry``, que o reset
+    do totem não apaga: um número usado uma vez não volta, mesmo depois de
+    apagar as vendas. Com ``conn``, a reserva entra na mesma transação da
+    venda e é desfeita se a venda não for gravada.
+    """
+    if conn is None:
+        with get_conn() as c:
+            return generate_order_number(c)
+    day = f"{order_number_prefix()}{datetime.now().strftime('%y%m%d')}"
+    for _ in range(50):
+        number = f"{day}-{random.randint(1000, 9999)}"
+        if _reserve_order_number(conn, number):
+            return number
+    # Dia quase esgotado (milhares de pedidos): sufixo maior, ainda registrado.
+    while True:
+        number = f"{day}-{random.randint(10000, 99999)}"
+        if _reserve_order_number(conn, number):
+            return number
 
 
 _MIN_TOTAL_PARCELAS_REAIS = 120.0
 _MIN_PARCELA_REAIS = 120.0
-_MAX_PARCELAS_CARTAO = 24
 
 
 def _max_card_installments_allowed(total: float) -> int:
@@ -65,7 +110,7 @@ def _max_card_installments_allowed(total: float) -> int:
     if not math.isfinite(t) or t <= _MIN_TOTAL_PARCELAS_REAIS:
         return 1
     max_k = 1
-    for k in range(2, _MAX_PARCELAS_CARTAO + 1):
+    for k in range(2, MAX_CARD_INSTALLMENTS + 1):
         if t / k > _MIN_PARCELA_REAIS:
             max_k = k
         else:
@@ -246,6 +291,17 @@ def create_transaction(
     card_installments_store = _normalize_card_installments_for_db(
         payment_method, total, card_installments if card_installments is not None else 1,
     )
+    # Antes do pagamento: depois do AUT não há mais como pedir os dados ao cliente,
+    # e a venda ficaria travada na fila do Sankhya.
+    require_client_for_erp({
+        "client_name": client_name,
+        "client_cpf": client_cpf,
+        "client_zipcode": client_zipcode,
+        "client_address": client_address,
+        "client_neighborhood": client_neighborhood,
+        "client_city": client_city,
+        "client_state": client_state,
+    })
 
     with get_conn() as conn:
         pids = {i["product_id"] for i in normalized if i["product_id"] is not None}
@@ -607,6 +663,15 @@ def update_pending_transaction(
             tx_row.get("client_cro_uf"),
         )
         merged_cro_uf = merged_cro_uf_raw.strip().upper() if merged_cro_uf_raw else None
+        require_client_for_erp({
+            "client_name": merged_name,
+            "client_cpf": merged_cpf,
+            "client_zipcode": merged_zip,
+            "client_address": merged_addr,
+            "client_neighborhood": merged_neighborhood,
+            "client_city": merged_city,
+            "client_state": merged_state,
+        })
 
         # Preço de lista do catálogo + promoções ativas do evento.
         if event_id is not None:
@@ -1054,7 +1119,8 @@ def refund_transaction(
             if delivered > 0:
                 demand[pid] = demand.get(pid, 0) + delivered
 
-        ref = order_number if order_number.startswith("OM") else None
+        # ``#<id>`` é o rótulo de venda sem número; qualquer prefixo de pedido vale.
+        ref = order_number if not order_number.startswith("#") else None
         if event_id is not None:
             for pid, qty in demand.items():
                 _apply_event_movement(
@@ -2707,6 +2773,8 @@ def reset_totem_to_default_state() -> Dict[str, int]:
     - Apaga **todas** as movimentações de estoque.
     - Zera ``products.stock`` (cadastro) e ``event_products.stock`` (saldo por evento).
     - Não recria linhas de movimentação após o zeramento (histórico fica vazio).
+    - Mantém ``order_number_registry``: números de pedido já emitidos (e talvez
+      já enviados ao Sankhya) não voltam a ser usados.
     """
     with get_conn() as conn:
         n_tx_row = conn.execute("SELECT COUNT(*) AS c FROM transactions").fetchone()

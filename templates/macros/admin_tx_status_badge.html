@@ -28,6 +28,8 @@
 <span class="admin-badge admin-badge--danger" title="Falha no envio ao Sankhya: veja Integração ERP">ERP erro</span>
 {% elif es == 'cancelamento_pendente' %}
 <span class="admin-badge admin-badge--warn" title="Cancelamento aguardando envio ao Sankhya">ERP cancelando</span>
+{% elif es == 'cancelamento_erro' %}
+<span class="admin-badge admin-badge--danger" title="Cancelamento não concluído no Sankhya: veja Integração ERP">ERP erro cancel.</span>
 {% elif es == 'cancelado' %}
 <span class="admin-badge admin-badge--neutral" title="Pedido cancelado no Sankhya">ERP cancelado</span>
 {% endif %}

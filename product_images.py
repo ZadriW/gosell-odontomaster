@@ -3,7 +3,7 @@
 Estratégia:
 - Produtos herdados da Wake guardam em ``products.image`` a URL remota original.
 - O Sankhya envia a imagem em base64 (``IMAGEM``): a sincronização grava o
-  arquivo direto em ``static/product-images/<id>.<ext>`` (``save_image_bytes``)
+  arquivo direto em ``static/product-images/<id>.<ext>`` (``store_image_bytes``)
   e ``products.image`` passa a guardar esse caminho local.
 - Ao baixar para offline, o arquivo é salvo em ``static/product-images/<id>.<ext>``.
 - ``resolve_image_url()`` verifica se existe cópia local; se sim retorna o path
@@ -95,27 +95,30 @@ def _ext_from_bytes(data: bytes) -> Optional[str]:
     return None
 
 
-def save_image_bytes(product_id: int, data: bytes) -> Optional[str]:
-    """Grava a imagem recebida do ERP e retorna o caminho público local.
+def store_image_bytes(product_id: int, data: bytes) -> Tuple[Optional[str], bool]:
+    """Grava a imagem recebida do ERP. Devolve ``(caminho público, gravou?)``.
 
-    Não regrava quando o conteúdo é igual ao arquivo atual. Cópias antigas do
-    mesmo produto com outra extensão são removidas para não ficarem à frente.
+    Não regrava quando o conteúdo é igual ao arquivo atual (``gravou`` = False):
+    a sincronização recebe todas as fotos toda vez e só conta as que mudaram.
+    Cópias antigas do mesmo produto com outra extensão são removidas para não
+    ficarem à frente.
     """
     pid = int(product_id)
     if pid <= 0 or not data or len(data) <= 32:
-        return None
+        return None, False
     ext = _ext_from_bytes(data)
     if ext is None:
         log.warning("Imagem do produto %s em formato desconhecido; ignorada.", pid)
-        return None
+        return None, False
     _ensure_dir()
     filename = f"{pid}{ext}"
     dest = os.path.join(IMAGES_DIR, filename)
     try:
-        if os.path.isfile(dest):
+        # Tamanho antes do conteúdo: evita ler do disco a foto que mudou.
+        if os.path.isfile(dest) and os.path.getsize(dest) == len(data):
             with open(dest, "rb") as fh:
                 if fh.read() == data:
-                    return f"{LOCAL_URL_PREFIX}{filename}"
+                    return f"{LOCAL_URL_PREFIX}{filename}", False
         tmp = dest + ".tmp"
         with open(tmp, "wb") as fh:
             fh.write(data)
@@ -127,8 +130,8 @@ def save_image_bytes(product_id: int, data: bytes) -> Optional[str]:
                     os.remove(stale)
     except OSError as exc:
         log.warning("Não foi possível gravar imagem do produto %s: %s", pid, exc)
-        return None
-    return f"{LOCAL_URL_PREFIX}{filename}"
+        return None, False
+    return f"{LOCAL_URL_PREFIX}{filename}", True
 
 
 def download_image(product_id: int, remote_url: str, *, timeout: int = 20) -> Optional[str]:

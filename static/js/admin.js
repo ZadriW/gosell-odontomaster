@@ -125,6 +125,22 @@
         btn.setAttribute('aria-expanded', String(!expanded));
         btn.classList.toggle('is-open', !expanded);
         if (details) details.hidden = expanded;
+        dropClosedTxHash();
+    }
+
+    /**
+     * ``#tx-<id>`` só serve para abrir a linha ao chegar na página. Se o admin
+     * fecha essa linha (direto ou abrindo outra), o fragmento sai da URL: recarregar
+     * ou voltar no histórico não reabre o que ele fechou.
+     */
+    function dropClosedTxHash() {
+        const match = /^#tx-(\d+)$/i.exec(window.location.hash || '');
+        if (!match) return;
+        const row = document.querySelector(`.admin-tx[data-tx-id="${match[1]}"] .admin-tx__row`);
+        if (!row || row.getAttribute('aria-expanded') === 'true') return;
+        try {
+            history.replaceState(history.state, '', `${window.location.pathname}${window.location.search}`);
+        } catch (_err) { /* ignore */ }
     }
 
     document.querySelector('.admin-main')?.addEventListener('click', event => {

@@ -25,9 +25,10 @@
     }
 
     function productLabelFromRow(thumb) {
-        const row = thumb.closest('.admin-stock__row');
+        if (thumb.dataset.lightboxLabel) return thumb.dataset.lightboxLabel;
+        const row = thumb.closest('.admin-stock__row, .admin-stockv__row');
         if (!row) return '';
-        const name = row.querySelector('.admin-stock__product strong');
+        const name = row.querySelector('.admin-stock__product strong, .admin-stockv__name');
         return name ? name.textContent.trim() : '';
     }
 

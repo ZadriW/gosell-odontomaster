@@ -22,8 +22,13 @@ PAYMENT_METHOD_LABELS = {
     "cartao": "Cartão",
 }
 
-#: Métodos que aceitam parcelamento (1x a 10x).
+#: Métodos que aceitam parcelamento (1x a ``MAX_CARD_INSTALLMENTS``).
 INSTALLMENT_METHODS = frozenset({"credito", "cartao"})
+
+#: Teto de parcelas do checkout. O mapeamento de CODTIPVENDA do ERP tem uma
+#: linha por parcela até este mesmo número (``MAX_PARCELAS_UI`` em
+#: ``static/js/payment-form.js`` precisa acompanhar).
+MAX_CARD_INSTALLMENTS = 12
 
 #: Métodos confirmados sem maquininha: o AUT é gravado com este código interno.
 INTERNAL_AUT = {"dinheiro": "DINHEIRO", "faturado": "FATURADO"}

@@ -691,6 +691,9 @@ def _ensure_products_erp_columns(conn: sqlite3.Connection) -> None:
         "supplier_ref": "TEXT",
         "supplier_name": "TEXT",
         "erp_synced_at": "TEXT",
+        # 1 = veio do ERP sem preço e foi cadastrado inativo; a sincronização
+        # o ativa quando o preço chegar (a menos que o admin mexa antes).
+        "erp_awaiting_price": "INTEGER NOT NULL DEFAULT 0",
     }.items():
         if field not in cols:
             conn.execute(f"ALTER TABLE products ADD COLUMN {sql_ident(field)} {ddl}")
@@ -719,8 +722,9 @@ def _ensure_transactions_erp_columns(conn: sqlite3.Connection) -> None:
     """Bairro do cliente (exigido pelo Sankhya) e situação do envio do pedido ao ERP.
 
     ``erp_status``: ``nao_enviado`` · ``na_fila`` · ``enviado`` · ``erro`` ·
-    ``cancelamento_pendente`` · ``cancelado``. Vendas anteriores à integração
-    ficam ``nao_enviado`` e só vão ao ERP por ação explícita no admin.
+    ``cancelamento_pendente`` · ``cancelamento_erro`` · ``cancelado``. Vendas
+    anteriores à integração ficam ``nao_enviado`` e só vão ao ERP por ação
+    explícita no admin.
     """
     cols = _table_columns(conn, "transactions")
     for field, ddl in {
@@ -729,12 +733,19 @@ def _ensure_transactions_erp_columns(conn: sqlite3.Connection) -> None:
         "erp_codparc": "INTEGER",
         "erp_order_id": "TEXT",
         "erp_sent_at": "TEXT",
+        # IDPEDIDO do Sankhya (inteiro): sequencial próprio, dado na 1ª vez que
+        # a venda vai para a fila e nunca reaproveitado (``erp_counters``).
+        "erp_idpedido": "INTEGER",
     }.items():
         if field not in cols:
             conn.execute(f"ALTER TABLE transactions ADD COLUMN {sql_ident(field)} {ddl}")
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_transactions_erp_status "
         "ON transactions(erp_status)"
+    )
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_transactions_erp_idpedido "
+        "ON transactions(erp_idpedido) WHERE erp_idpedido IS NOT NULL"
     )
 
 
@@ -797,6 +808,53 @@ def _ensure_erp_tables(conn: sqlite3.Connection) -> None:
             message      TEXT,
             error        TEXT
         );
+
+        -- Último preço de cada CODPROD vindo da fila de preços do gateway. A
+        -- fila entrega cada alteração uma vez só (depois de confirmada, some):
+        -- produto que chega depois do preço dele é cadastrado com este valor.
+        -- Contadores que não podem voltar atrás (o reset do totem não mexe):
+        -- 'idpedido' = último IDPEDIDO entregue a uma venda.
+        CREATE TABLE IF NOT EXISTS erp_counters (
+            name  TEXT    PRIMARY KEY,
+            value INTEGER NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS erp_prices (
+            codprod     INTEGER PRIMARY KEY,
+            price       REAL    NOT NULL,
+            received_at TEXT    NOT NULL
+        );
+
+        -- Estoque do Sankhya por produto × local × lote (CONTROLE), da fila
+        -- /products/stock. Só serve para escolher o local/lote do item no
+        -- pedido; o estoque que vale para vender no evento é o do Totem.
+        -- CONTROLE ' ' (um espaço) = produto sem controle de lote.
+        CREATE TABLE IF NOT EXISTS erp_stock (
+            codprod     INTEGER NOT NULL,
+            codlocal    INTEGER NOT NULL,
+            controle    TEXT    NOT NULL,
+            estoque     REAL    NOT NULL DEFAULT 0,
+            reservado   REAL    NOT NULL DEFAULT 0,
+            disponivel  REAL    NOT NULL DEFAULT 0,
+            received_at TEXT    NOT NULL,
+            PRIMARY KEY (codprod, codlocal, controle)
+        );
+
+        -- Quanto cada pedido enviado tirou de cada lote. Abatido do saldo de
+        -- erp_stock até a sincronização seguinte trazer o saldo novo daquele
+        -- produto (só conta o que foi gravado depois de erp_stock.received_at).
+        CREATE TABLE IF NOT EXISTS erp_stock_allocations (
+            transaction_id INTEGER NOT NULL,
+            codprod        INTEGER NOT NULL,
+            codlocal       INTEGER NOT NULL,
+            controle       TEXT    NOT NULL,
+            qty            REAL    NOT NULL,
+            created_at     TEXT    NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_erp_stock_alloc_lot
+            ON erp_stock_allocations(codprod, codlocal, controle);
+        CREATE INDEX IF NOT EXISTS idx_erp_stock_alloc_tx
+            ON erp_stock_allocations(transaction_id);
     """)
     conn.execute(
         "INSERT OR IGNORE INTO erp_settings (key, value, updated_at) VALUES ('codemp', '1', ?)",
@@ -812,6 +870,30 @@ def _ensure_erp_tables(conn: sqlite3.Connection) -> None:
             "WHERE payment_method = 'cartao'"
         )
         _mark_migration_applied(conn, "erp_payment_types_cartao_to_credito")
+
+
+def _ensure_order_number_registry(conn: sqlite3.Connection) -> None:
+    """Números de pedido já emitidos, para nunca repetirem (vão ao Sankhya).
+
+    Sobrevive ao reset do totem, que apaga ``transactions``. Na criação, recebe
+    os números das vendas existentes.
+    """
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS order_number_registry (
+            order_number TEXT PRIMARY KEY,
+            issued_at    TEXT NOT NULL
+        )
+        """
+    )
+    _ensure_schema_migrations_table(conn)
+    migration_name = "order_number_registry_backfill"
+    if not _migration_applied(conn, migration_name):
+        conn.execute(
+            "INSERT OR IGNORE INTO order_number_registry (order_number, issued_at) "
+            "SELECT order_number, created_at FROM transactions WHERE order_number IS NOT NULL"
+        )
+        _mark_migration_applied(conn, migration_name)
 
 
 def _backup_before_erp_migration() -> None:
@@ -1011,6 +1093,7 @@ def init_db() -> None:
         _ensure_transactions_receipt_note(conn)
         _ensure_transactions_erp_columns(conn)
         _ensure_erp_tables(conn)
+        _ensure_order_number_registry(conn)
         _consolidate_legacy_movement_types(conn)
         _purge_invalid_product_ids(conn)
         _purge_legacy_demo_products(conn)

@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 import re
 import sqlite3
+import time
 import unicodedata
 from collections import defaultdict
 from typing import Dict, Iterable, List, Optional, Tuple
@@ -917,12 +918,24 @@ def update_product_price(product_id: int, price: float) -> bool:
 
 
 def set_product_active(product_id: int, active: bool) -> bool:
+    """Ativo/inativo pelo admin. A decisão dele vale sobre a ativação automática
+    de produto que veio do ERP sem preço (``erp_awaiting_price``)."""
     with get_conn() as conn:
         cur = conn.execute(
-            "UPDATE products SET active = ?, updated_at = ? WHERE id = ?",
+            "UPDATE products SET active = ?, erp_awaiting_price = 0, updated_at = ? WHERE id = ?",
             (1 if active else 0, _now_iso(), int(product_id)),
         )
         return cur.rowcount > 0
+
+
+def product_awaiting_erp_price(product_id: int) -> bool:
+    """Produto que veio do ERP sem preço e está inativo esperando o preço."""
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM products WHERE id = ? AND active = 0 AND erp_awaiting_price = 1",
+            (int(product_id),),
+        ).fetchone()
+    return row is not None
 
 
 # ---------------------------------------------------------------------------
@@ -935,6 +948,14 @@ _ERP_SYNC_FIELDS = (
     "name", "category", "description", "price", "brand", "erp_codvol",
     "erp_group_code", "anvisa_code", "supplier_ref", "supplier_name",
 )
+
+
+#: Produtos gravados por transação na sincronização do catálogo.
+_ERP_UPSERT_BATCH = 100
+#: Pausa entre lotes (s). O SQLite não enfileira quem espera para gravar: uma
+#: venda só entra se acordar no intervalo entre dois lotes, e o tempo de espera
+#: dela chega a 100 ms entre tentativas. Sem pausa, ela pode ficar segundos parada.
+_ERP_UPSERT_PAUSE = 0.15
 
 
 def _erp_text(value) -> Optional[str]:
@@ -997,17 +1018,22 @@ def upsert_products_from_erp(
     - Produto novo recebe ``id`` gerado pelo banco (as faixas de ``CODPROD`` e
       dos ids antigos se sobrepõem) e SKU = ``CODPROD``.
     - Produto sem preço mantém o último preço; sem imagem mantém a foto.
+    - Produto **novo** sem preço entra inativo (``erp_awaiting_price``) e é
+      ativado na sincronização que trouxer o preço, se o admin não tiver
+      ativado/desativado antes.
     - Produto que não veio na lista **não** é desativado.
 
-    ``image_writer(product_id, data) -> Optional[str]`` grava a imagem e devolve
-    o caminho local (padrão: ``product_images.save_image_bytes``).
+    ``image_writer(product_id, data) -> (caminho | None, gravou)`` grava a
+    imagem e devolve o caminho local (padrão: ``product_images.store_image_bytes``).
+    Os arquivos são gravados depois que o lote é confirmado no banco, fora da
+    transação. ``images`` conta só as fotos novas ou trocadas.
 
     Retorna contadores e até 50 avisos legíveis.
     """
-    writer = image_writer or product_images.save_image_bytes
+    writer = image_writer or product_images.store_image_bytes
     stats: Dict = {
         "inserted": 0, "updated": 0, "unchanged": 0, "skipped": 0,
-        "images": 0, "warnings": 0, "messages": [], "inserted_ids": [],
+        "images": 0, "activated": 0, "warnings": 0, "messages": [], "inserted_ids": [],
     }
 
     def warn(msg: str) -> None:
@@ -1016,105 +1042,205 @@ def upsert_products_from_erp(
             stats["messages"].append(msg)
 
     now = _now_iso()
-    with get_conn() as conn:
-        for item in items:
-            codprod = _erp_int(item.get("codprod"))
-            if not codprod or codprod <= 0:
-                stats["skipped"] += 1
-                continue
-            name = _erp_text(item.get("name"))
-            price = item.get("price")
-            incoming = {
-                "name": name,
-                "category": _erp_text(item.get("category")),
-                "description": _erp_text(item.get("description")),
-                "price": round(float(price), 2) if price is not None else None,
-                "brand": _erp_text(item.get("brand")),
-                "erp_codvol": _erp_text(item.get("codvol")),
-                "erp_group_code": _erp_int(item.get("group_code")),
-                "anvisa_code": _erp_text(item.get("anvisa_code")),
-                "supplier_ref": _erp_text(item.get("supplier_ref")),
-                "supplier_name": _erp_text(item.get("supplier_name")),
-            }
-            row = find_local_product_for_codprod(conn, codprod)
-
-            if row is None:
-                if not name:
-                    warn(f"CODPROD {codprod}: sem descrição, não cadastrado.")
+    items = list(items)
+    # Um lote por transação: o SQLite fica travado para escrita enquanto a
+    # transação está aberta, e o checkout não pode esperar o catálogo inteiro.
+    for start in range(0, len(items), _ERP_UPSERT_BATCH):
+        if start:
+            time.sleep(_ERP_UPSERT_PAUSE)
+        batch_images: List[Tuple[int, bytes]] = []
+        with get_conn() as conn:
+            for item in items[start:start + _ERP_UPSERT_BATCH]:
+                codprod = _erp_int(item.get("codprod"))
+                if not codprod or codprod <= 0:
                     stats["skipped"] += 1
                     continue
-                if incoming["price"] is None:
-                    warn(f"CODPROD {codprod} ({name}): novo e sem preço; cadastrado com R$ 0,00.")
-                sku = str(codprod)
-                if conn.execute("SELECT 1 FROM products WHERE sku = ?", (sku,)).fetchone():
-                    sku = f"ERP-{codprod}"
-                    warn(f"CODPROD {codprod}: SKU já usado por outro produto; cadastrado como {sku}.")
-                cur = conn.execute(
-                    """
-                    INSERT INTO products
-                        (sku, name, category, description, price, image, stock,
-                         min_stock, active, erp_codprod, erp_codvol, brand,
-                         erp_group_code, anvisa_code, supplier_ref, supplier_name,
-                         erp_synced_at, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, NULL, 0, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        sku, name, incoming["category"] or "Geral",
-                        incoming["description"], incoming["price"] or 0.0,
-                        DEFAULT_MIN_STOCK, codprod, incoming["erp_codvol"],
-                        incoming["brand"], incoming["erp_group_code"],
-                        incoming["anvisa_code"], incoming["supplier_ref"],
-                        incoming["supplier_name"], now, now, now,
-                    ),
-                )
-                local_id = int(cur.lastrowid)
-                stats["inserted"] += 1
-                stats["inserted_ids"].append(local_id)
-            else:
-                local_id = int(row["id"])
-                changes: Dict[str, object] = {}
-                for field in _ERP_SYNC_FIELDS:
-                    new = incoming[field]
-                    if new is None:
-                        continue  # ERP sem o dado: preserva o valor local
-                    old = row[field]
-                    if field == "price":
-                        if old is None or abs(float(old) - float(new)) > 0.004:
-                            changes[field] = new
-                    elif old != new:
-                        changes[field] = new
-                if row["erp_codprod"] is None:
-                    changes["erp_codprod"] = codprod
-                if incoming["price"] is None:
-                    warn(
-                        f"CODPROD {codprod} ({row['name']}): sem preço no ERP; "
-                        f"mantido R$ {float(row['price'] or 0):.2f}."
-                    )
-                if changes:
-                    changes["erp_synced_at"] = now
-                    changes["updated_at"] = now
-                    assignments = ", ".join(f"{k} = ?" for k in changes)
-                    conn.execute(
-                        f"UPDATE products SET {assignments} WHERE id = ?",
-                        (*changes.values(), local_id),
-                    )
-                    stats["updated"] += 1
-                else:
-                    conn.execute(
-                        "UPDATE products SET erp_synced_at = ? WHERE id = ?",
-                        (now, local_id),
-                    )
-                    stats["unchanged"] += 1
+                name = _erp_text(item.get("name"))
+                price = item.get("price")
+                incoming = {
+                    "name": name,
+                    "category": _erp_text(item.get("category")),
+                    "description": _erp_text(item.get("description")),
+                    "price": round(float(price), 2) if price is not None else None,
+                    "brand": _erp_text(item.get("brand")),
+                    "erp_codvol": _erp_text(item.get("codvol")),
+                    "erp_group_code": _erp_int(item.get("group_code")),
+                    "anvisa_code": _erp_text(item.get("anvisa_code")),
+                    "supplier_ref": _erp_text(item.get("supplier_ref")),
+                    "supplier_name": _erp_text(item.get("supplier_name")),
+                }
+                row = find_local_product_for_codprod(conn, codprod)
 
-            data = item.get("image")
-            if data:
-                saved = writer(local_id, data)
-                if saved:
-                    conn.execute(
-                        "UPDATE products SET image = ? WHERE id = ? AND COALESCE(image, '') != ?",
-                        (saved, local_id, saved),
+                if row is None:
+                    if not name:
+                        warn(f"CODPROD {codprod}: sem descrição, não cadastrado.")
+                        stats["skipped"] += 1
+                        continue
+                    # Sem preço, ativo ele iria ao totem por R$ 0,00 ao entrar num evento.
+                    awaiting_price = incoming["price"] is None
+                    if awaiting_price:
+                        warn(
+                            f"CODPROD {codprod} ({name}): novo e sem preço; cadastrado inativo "
+                            "até o ERP informar o preço."
+                        )
+                    sku = str(codprod)
+                    if conn.execute("SELECT 1 FROM products WHERE sku = ?", (sku,)).fetchone():
+                        sku = f"ERP-{codprod}"
+                        warn(f"CODPROD {codprod}: SKU já usado por outro produto; cadastrado como {sku}.")
+                    cur = conn.execute(
+                        """
+                        INSERT INTO products
+                            (sku, name, category, description, price, image, stock,
+                             min_stock, active, erp_awaiting_price, erp_codprod, erp_codvol,
+                             brand, erp_group_code, anvisa_code, supplier_ref, supplier_name,
+                             erp_synced_at, created_at, updated_at)
+                        VALUES (?, ?, ?, ?, ?, NULL, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            sku, name, incoming["category"] or "Geral",
+                            incoming["description"], incoming["price"] or 0.0,
+                            DEFAULT_MIN_STOCK, 0 if awaiting_price else 1,
+                            1 if awaiting_price else 0, codprod, incoming["erp_codvol"],
+                            incoming["brand"], incoming["erp_group_code"],
+                            incoming["anvisa_code"], incoming["supplier_ref"],
+                            incoming["supplier_name"], now, now, now,
+                        ),
                     )
-                    stats["images"] += 1
+                    local_id = int(cur.lastrowid)
+                    stats["inserted"] += 1
+                    stats["inserted_ids"].append(local_id)
+                else:
+                    local_id = int(row["id"])
+                    changes: Dict[str, object] = {}
+                    for field in _ERP_SYNC_FIELDS:
+                        new = incoming[field]
+                        if new is None:
+                            continue  # ERP sem o dado: preserva o valor local
+                        old = row[field]
+                        if field == "price":
+                            if old is None or abs(float(old) - float(new)) > 0.004:
+                                changes[field] = new
+                        elif old != new:
+                            changes[field] = new
+                    if row["erp_codprod"] is None:
+                        changes["erp_codprod"] = codprod
+                    awaiting = bool(row["erp_awaiting_price"])
+                    if awaiting and incoming["price"] is not None:
+                        # Cadastrado inativo por falta de preço e o preço chegou.
+                        changes["price"] = incoming["price"]
+                        changes["active"] = 1
+                        changes["erp_awaiting_price"] = 0
+                        stats["activated"] += 1
+                    elif awaiting:
+                        warn(f"CODPROD {codprod} ({row['name']}): ainda sem preço no ERP; segue inativo.")
+                    # Sem preço em produto já cadastrado é o normal: o preço vem
+                    # pela fila de preços (``apply_erp_prices``), não pela de cadastro.
+                    if changes:
+                        changes["erp_synced_at"] = now
+                        changes["updated_at"] = now
+                        assignments = ", ".join(f"{k} = ?" for k in changes)
+                        conn.execute(
+                            f"UPDATE products SET {assignments} WHERE id = ?",
+                            (*changes.values(), local_id),
+                        )
+                        stats["updated"] += 1
+                    else:
+                        conn.execute(
+                            "UPDATE products SET erp_synced_at = ? WHERE id = ?",
+                            (now, local_id),
+                        )
+                        stats["unchanged"] += 1
+
+                if item.get("image"):
+                    batch_images.append((local_id, item["image"]))
+        # Lote já confirmado: gravar os arquivos não segura o banco para as vendas.
+        stats["images"] += _apply_erp_images(batch_images, writer)
+    return stats
+
+
+def _apply_erp_images(images: List[Tuple[int, bytes]], writer) -> int:
+    """Grava as fotos de um lote e aponta ``products.image`` para elas.
+
+    Disco primeiro, fora de transação; depois uma transação curta só com os
+    caminhos. Devolve quantas fotos mudaram (arquivo novo/trocado ou produto
+    que ainda não apontava para a cópia local).
+    """
+    saved: List[Tuple[int, str, bool]] = []
+    for product_id, data in images:
+        path, written = writer(product_id, data)
+        if path:
+            saved.append((product_id, path, written))
+    if not saved:
+        return 0
+    changed = 0
+    with get_conn() as conn:
+        for product_id, path, written in saved:
+            cur = conn.execute(
+                "UPDATE products SET image = ? WHERE id = ? AND COALESCE(image, '') != ?",
+                (path, product_id, path),
+            )
+            if written or cur.rowcount:
+                changed += 1
+    return changed
+
+
+def get_erp_prices(codprods: Iterable[int]) -> Dict[int, float]:
+    """Último preço recebido do ERP para cada ``CODPROD`` (os que não têm ficam de fora)."""
+    codes = sorted({int(c) for c in codprods})
+    out: Dict[int, float] = {}
+    with get_conn() as conn:
+        for start in range(0, len(codes), 500):
+            chunk = codes[start:start + 500]
+            marks = ",".join("?" * len(chunk))
+            for r in conn.execute(
+                f"SELECT codprod, price FROM erp_prices WHERE codprod IN ({marks})", chunk
+            ):
+                out[int(r["codprod"])] = float(r["price"])
+    return out
+
+
+def apply_erp_prices(prices: Dict[int, float]) -> Dict:
+    """Um lote da fila de preços do ERP: guarda em ``erp_prices`` e aplica no catálogo.
+
+    - Produto cadastrado: preço-base atualizado (o preço por evento não muda).
+    - Produto que esperava o preço (``erp_awaiting_price``) é ativado.
+    - CODPROD ainda sem produto aqui: só fica guardado, e o produto entra com
+      esse preço quando chegar pela fila de cadastro.
+    """
+    stats = {"prices": 0, "price_changed": 0, "activated": 0, "price_orphans": 0}
+    now = _now_iso()
+    with get_conn() as conn:
+        for codprod, raw in prices.items():
+            price = round(float(raw), 2)
+            conn.execute(
+                "INSERT INTO erp_prices (codprod, price, received_at) VALUES (?, ?, ?) "
+                "ON CONFLICT(codprod) DO UPDATE SET price = excluded.price, "
+                "received_at = excluded.received_at",
+                (int(codprod), price, now),
+            )
+            stats["prices"] += 1
+            row = find_local_product_for_codprod(conn, int(codprod))
+            if row is None:
+                stats["price_orphans"] += 1
+                continue
+            changes: Dict[str, object] = {}
+            if row["price"] is None or abs(float(row["price"]) - price) > 0.004:
+                changes["price"] = price
+                stats["price_changed"] += 1
+            if row["erp_awaiting_price"] and not row["active"]:
+                changes["active"] = 1
+                changes["erp_awaiting_price"] = 0
+                stats["activated"] += 1
+            if row["erp_codprod"] is None:
+                changes["erp_codprod"] = int(codprod)
+            if changes:
+                changes["erp_synced_at"] = now
+                changes["updated_at"] = now
+                assignments = ", ".join(f"{k} = ?" for k in changes)
+                conn.execute(
+                    f"UPDATE products SET {assignments} WHERE id = ?",
+                    (*changes.values(), int(row["id"])),
+                )
     return stats
 
 

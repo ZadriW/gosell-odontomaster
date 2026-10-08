@@ -152,10 +152,20 @@
 
                 <hr class="payment__divider payment__divider--form" aria-hidden="true">
 
-                <h2 class="payment__section-title payment__section-title--sub payment__section-title--address">
-                    <i class="fa-solid fa-location-dot" aria-hidden="true"></i>
-                    Endereço do cliente
-                </h2>
+                <div class="payment__section-head">
+                    <h2 class="payment__section-title payment__section-title--sub payment__section-title--address">
+                        <i class="fa-solid fa-location-dot" aria-hidden="true"></i>
+                        Endereço do cliente
+                    </h2>
+                    {% if store_address %}
+                    <button type="button" class="payment-store-btn" id="paymentStoreAddress"
+                            data-store-address="{{ store_address|tojson|forceescape }}"
+                            title="Preencher com o endereço da loja: {{ store_address.address }}, {{ store_address.number }} - {{ store_address.city }}/{{ store_address.state }}">
+                        <i class="fa-solid fa-store" aria-hidden="true"></i>
+                        Loja
+                    </button>
+                    {% endif %}
+                </div>
 
                 <label class="payment-field payment-field--half">
                     <span class="payment-field__label">CEP <span class="payment-field__required">*</span></span>

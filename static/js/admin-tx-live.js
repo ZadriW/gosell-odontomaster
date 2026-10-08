@@ -15,6 +15,27 @@
     );
 
     let inFlight = false;
+
+    /**
+     * ``#tx-<id>`` abre a linha uma vez só. O admin.js abre no carregamento; aqui
+     * só fica pendente o pedido que ainda não estava na lista e chega numa
+     * atualização. Depois de aberto, quem manda é o admin: fechou, fica fechado.
+     */
+    function hashTxId() {
+        const match = /^#tx-(\d+)$/i.exec(window.location.hash || '');
+        return match ? match[1] : null;
+    }
+
+    function txRowExists(id) {
+        return Boolean(id && root.querySelector(`.admin-tx[data-tx-id="${id}"] .admin-tx__row`));
+    }
+
+    let pendingHashTxId = txRowExists(hashTxId()) ? null : hashTxId();
+
+    window.addEventListener('hashchange', () => {
+        const id = hashTxId();
+        pendingHashTxId = txRowExists(id) ? null : id;
+    });
     /** Incrementa quando o filtro troca a lista: descarta respostas de polls com a busca anterior. */
     let filterGeneration = 0;
     document.addEventListener('totem:admin-filter-updated', () => { filterGeneration += 1; });
@@ -76,12 +97,11 @@
             if (shouldSkipRefresh() || generation !== filterGeneration) return;
             root.innerHTML = html;
             restoreOpenRows(root, opened);
-            document.dispatchEvent(new CustomEvent('totem:admin-tx-live-updated', { detail: { root } }));
-
-            const hashMatch = /^#tx-(\d+)$/i.exec(window.location.hash || '');
-            if (hashMatch && opened.indexOf(hashMatch[1]) === -1) {
-                restoreOpenRows(root, [hashMatch[1]]);
+            if (pendingHashTxId && txRowExists(pendingHashTxId)) {
+                restoreOpenRows(root, [pendingHashTxId]);
+                pendingHashTxId = null;
             }
+            document.dispatchEvent(new CustomEvent('totem:admin-tx-live-updated', { detail: { root } }));
         } catch (_err) {
             /* rede instável: tenta de novo no próximo ciclo */
         } finally {
