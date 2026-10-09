@@ -872,6 +872,26 @@ def _ensure_erp_tables(conn: sqlite3.Connection) -> None:
         _mark_migration_applied(conn, "erp_payment_types_cartao_to_credito")
 
 
+def _ensure_erp_tipvenda_table(conn: sqlite3.Connection) -> None:
+    """Tipos de negociação liberados no Sankhya (``GET orders/payment``).
+
+    Espelho da última consulta: ``active = 0`` marca o código que sumiu da lista
+    (deixou de ser liberado). A escolha por forma de pagamento continua em
+    ``erp_payment_types``.
+    """
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS erp_tipvenda (
+            codtipvenda INTEGER PRIMARY KEY,
+            description TEXT,
+            dhalter     TEXT,
+            active      INTEGER NOT NULL DEFAULT 1,
+            synced_at   TEXT    NOT NULL
+        )
+        """
+    )
+
+
 def _ensure_order_number_registry(conn: sqlite3.Connection) -> None:
     """Números de pedido já emitidos, para nunca repetirem (vão ao Sankhya).
 
@@ -1012,6 +1032,108 @@ def _ensure_promotions_bogo_product_columns(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE promotions ADD COLUMN bogo_free_product_id INTEGER")
 
 
+_GIFT_RULES_DDL = """
+    CREATE TABLE {name} (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        event_id        INTEGER NOT NULL,
+        name            TEXT    NOT NULL,
+        rule_type       TEXT    NOT NULL CHECK (rule_type IN ('min_qty', 'kit', 'min_total')),
+        min_qty         INTEGER NOT NULL DEFAULT 1,
+        min_value       REAL,
+        gift_product_id INTEGER,
+        gift_item_id    INTEGER,
+        gift_qty        INTEGER NOT NULL DEFAULT 1,
+        max_per_order   INTEGER,
+        active          INTEGER NOT NULL DEFAULT 1,
+        created_at      TEXT    NOT NULL,
+        updated_at      TEXT    NOT NULL,
+        FOREIGN KEY (event_id)        REFERENCES events(id)     ON DELETE CASCADE,
+        FOREIGN KEY (gift_product_id) REFERENCES products(id)   ON DELETE CASCADE,
+        FOREIGN KEY (gift_item_id)    REFERENCES gift_items(id) ON DELETE CASCADE
+    )
+"""
+
+_GIFT_RULE_PRODUCTS_DDL = """
+    CREATE TABLE IF NOT EXISTS gift_rule_products (
+        gift_rule_id INTEGER NOT NULL,
+        product_id   INTEGER NOT NULL,
+        PRIMARY KEY (gift_rule_id, product_id),
+        FOREIGN KEY (gift_rule_id) REFERENCES gift_rules(id) ON DELETE CASCADE,
+        FOREIGN KEY (product_id)   REFERENCES products(id)   ON DELETE CASCADE
+    )
+"""
+
+
+def _ensure_gift_rules_tables(conn: sqlite3.Connection) -> None:
+    """Brindes por evento: regra → produto do estoque ou brinde avulso.
+
+    Ficam fora de ``promotions`` de propósito: brinde não mexe no preço dos
+    itens pagos, só acrescenta uma linha a R$ 0,00 no pedido.
+    ``transaction_items.gift_rule_id`` marca essa linha (sem FK: a venda
+    guarda a referência mesmo se a regra for excluída depois) e
+    ``gift_item_id``, quando o brinde é avulso (não é produto nem vai ao Sankhya).
+
+    ``gift_items.stock`` é o total disponível no evento (NULL = sem limite); o
+    saldo é esse total menos o que saiu em vendas confirmadas.
+    """
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS gift_items (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            event_id    INTEGER NOT NULL,
+            name        TEXT    NOT NULL,
+            description TEXT,
+            stock       INTEGER,
+            created_at  TEXT    NOT NULL,
+            updated_at  TEXT    NOT NULL,
+            FOREIGN KEY (event_id) REFERENCES events(id) ON DELETE CASCADE
+        )
+        """
+    )
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'gift_rules'"
+    ).fetchone()
+    if row is None:
+        conn.execute(_GIFT_RULES_DDL.format(name="gift_rules"))
+    elif "min_total" not in (row[0] or ""):
+        # Versão de 2026-10-09 (só produto, só quantidade): o CHECK e o NOT NULL
+        # de gift_product_id não mudam com ALTER. Recria preservando dados e
+        # vínculos; os vínculos saem antes do DROP para não sumirem em cascata.
+        conn.execute("DROP TABLE IF EXISTS gift_rules_v2")
+        conn.execute(_GIFT_RULES_DDL.format(name="gift_rules_v2"))
+        conn.execute(
+            """
+            INSERT INTO gift_rules_v2
+                (id, event_id, name, rule_type, min_qty, gift_product_id, gift_qty,
+                 max_per_order, active, created_at, updated_at)
+            SELECT id, event_id, name, rule_type, min_qty, gift_product_id, gift_qty,
+                   max_per_order, active, created_at, updated_at
+              FROM gift_rules
+            """
+        )
+        links = conn.execute(
+            "SELECT gift_rule_id, product_id FROM gift_rule_products"
+        ).fetchall() if conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'gift_rule_products'"
+        ).fetchone() else []
+        conn.execute("DROP TABLE IF EXISTS gift_rule_products")
+        conn.execute("DROP TABLE gift_rules")
+        conn.execute("ALTER TABLE gift_rules_v2 RENAME TO gift_rules")
+        conn.execute(_GIFT_RULE_PRODUCTS_DDL)
+        conn.executemany(
+            "INSERT OR IGNORE INTO gift_rule_products (gift_rule_id, product_id) VALUES (?, ?)",
+            [(int(r[0]), int(r[1])) for r in links],
+        )
+    conn.execute(_GIFT_RULE_PRODUCTS_DDL)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_gift_rules_event ON gift_rules(event_id, active)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_gift_items_event ON gift_items(event_id)")
+    cols = _table_columns(conn, "transaction_items")
+    if "gift_rule_id" not in cols:
+        conn.execute("ALTER TABLE transaction_items ADD COLUMN gift_rule_id INTEGER")
+    if "gift_item_id" not in cols:
+        conn.execute("ALTER TABLE transaction_items ADD COLUMN gift_item_id INTEGER")
+
+
 # ---------------------------------------------------------------------------
 # Conexão
 # ---------------------------------------------------------------------------
@@ -1088,12 +1210,14 @@ def init_db() -> None:
         _ensure_event_products_backorder_omit_insert_unlimited(conn)
         _ensure_event_products_price(conn)
         _ensure_transaction_items_promo_columns(conn)
+        _ensure_gift_rules_tables(conn)
         _ensure_delivery_columns(conn)
         _ensure_transactions_handover_status(conn)
         _ensure_transactions_receipt_note(conn)
         _ensure_transactions_erp_columns(conn)
         _ensure_erp_tables(conn)
         _ensure_order_number_registry(conn)
+        _ensure_erp_tipvenda_table(conn)
         _consolidate_legacy_movement_types(conn)
         _purge_invalid_product_ids(conn)
         _purge_legacy_demo_products(conn)

@@ -6744,13 +6744,6 @@ html.admin-theme--dark .admin-mov__order-link:hover code {
     font-weight: 700;
 }
 
-.admin-promo-edit-fields {
-    border: 0;
-    margin: 0;
-    padding: 0;
-    min-width: 0;
-}
-
 .admin-event-header__desc {
     margin-top: 6px;
     font-size: 14px;
@@ -7455,144 +7448,7 @@ html.admin-theme--dark .admin-mov__order-link:hover code {
     margin-top: 4px;
 }
 
-/* ---------------------------------------------------------------------------
-   Promoções — painel admin
-   --------------------------------------------------------------------------- */
-
-/* Badge de tipo de regra na listagem */
-.admin-badge--promo-type {
-    background: rgba(124, 58, 237, 0.10);
-    color: #6d28d9;
-    border: 1px solid rgba(124, 58, 237, 0.20);
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    font-size: 12px;
-    font-weight: 600;
-    padding: 3px 10px;
-    border-radius: 99px;
-    white-space: nowrap;
-}
-
-/* Grid da listagem de promoções */
-.admin-promos-list__row {
-    display: grid;
-    grid-template-columns: minmax(180px, 1.5fr) minmax(160px, 1.2fr) minmax(160px, 1.5fr) 90px 110px;
-    gap: 12px;
-    align-items: center;
-    padding: 13px 20px;
-    border-bottom: 1px solid var(--color-border);
-    font-size: 14px;
-}
-
-.admin-promos-list__row:last-child {
-    border-bottom: none;
-}
-
-.admin-promos-list__name strong {
-    color: var(--color-text);
-    font-weight: 600;
-}
-
-.admin-promos-list__products {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-}
-
-.admin-promos-list__product-count {
-    font-size: 13px;
-    font-weight: 600;
-    color: var(--color-text);
-}
-
-.admin-promos-list__product-names {
-    font-size: 11px;
-    color: var(--color-text-muted);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    max-width: 260px;
-}
-
-.admin-promos-list__actions {
-    display: flex;
-    gap: 6px;
-    align-items: center;
-}
-
-/* Formulário de criação / edição */
-.admin-promo-form {
-    margin-top: 28px;
-}
-
-.admin-promo-create-form,
-.admin-promo-edit-form {
-    display: flex;
-    flex-direction: column;
-    gap: 20px;
-}
-
-/* Lista de produtos participantes (promoções) */
-.admin-promo-product-list {
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius);
-    overflow: hidden;
-}
-
-.admin-promo-product-list__controls {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 10px;
-    padding: 10px 14px;
-    background: var(--color-bg);
-    border-bottom: 1px solid var(--color-border);
-}
-
-.admin-promo-product-filter {
-    flex: 1 1 200px;
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    min-width: 0;
-}
-
-.admin-promo-product-filter__icon {
-    color: var(--color-text-muted);
-    font-size: 14px;
-    flex-shrink: 0;
-}
-
-.admin-promo-product-filter__input {
-    flex: 1;
-    min-width: 0;
-    height: 36px;
-    padding: 0 12px;
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-sm, 8px);
-    background: var(--color-surface);
-    font-size: 14px;
-    color: var(--color-text);
-}
-
-.admin-promo-product-filter__input::placeholder {
-    color: var(--color-text-muted);
-}
-
-.admin-promo-product-filter__input:focus {
-    outline: none;
-    border-color: var(--color-primary);
-    box-shadow: 0 0 0 2px rgba(14, 22, 122, 0.12);
-}
-
-.admin-promo-product-list__actions {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
-    align-items: center;
-    flex-shrink: 0;
-}
+/* Promoções: estilos em static/css/admin-promos.css */
 
 .admin-btn--xs {
     font-size: 12px;
@@ -7601,102 +7457,18 @@ html.admin-theme--dark .admin-mov__order-link:hover code {
     min-height: unset;
 }
 
-.admin-promo-product-list__grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-    gap: 0;
-    max-height: 320px;
-    overflow-y: auto;
-}
-
-.admin-promo-product-item {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    padding: 10px 14px;
-    cursor: pointer;
-    border-bottom: 1px solid var(--color-border);
-    transition: background var(--transition, 120ms ease);
-    font-size: 13px;
-}
-
-.admin-promo-product-item:hover {
-    background: var(--color-bg);
-}
-
-.admin-promo-product-item__check {
-    flex-shrink: 0;
-    width: 16px;
-    height: 16px;
-    cursor: pointer;
-    accent-color: var(--color-primary);
-}
-
-.admin-promo-product-item__name {
-    flex: 1;
-    font-weight: 500;
-    color: var(--color-text);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-
-.admin-promo-product-item__meta {
-    font-size: 11px;
-    color: var(--color-text-muted);
-    white-space: nowrap;
-    flex-shrink: 0;
-}
-
 /* Preview BOGO */
-.admin-promo-bogo-preview {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 10px 14px;
-    background: rgba(124, 58, 237, 0.06);
-    border: 1px solid rgba(124, 58, 237, 0.15);
-    border-radius: var(--radius-sm, 6px);
-    color: #6d28d9;
-    font-size: 13px;
-    font-weight: 500;
-}
+
 
 /* Card de info na página de detalhe */
-.admin-promo-info-card .admin-card__title {
-    color: var(--color-primary);
-}
 
-.admin-promo-info-body {
-    padding: 4px 0;
-    font-size: 14px;
-    line-height: 1.6;
-    color: var(--color-text);
-}
 
 .admin-text-muted {
     color: var(--color-text-muted);
 }
 
 /* Responsivo */
-@media (max-width: 900px) {
-    .admin-promos-list__row {
-        grid-template-columns: 1fr auto;
-        grid-template-areas:
-            "name    actions"
-            "rule    rule"
-            "products products"
-            "status  status";
-        gap: 6px 12px;
-        padding: 12px 16px;
-    }
-    .admin-promos-list__row > :nth-child(1) { grid-area: name; }
-    .admin-promos-list__row > :nth-child(2) { grid-area: rule; }
-    .admin-promos-list__row > :nth-child(3) { grid-area: products; }
-    .admin-promos-list__row > :nth-child(4) { grid-area: status; }
-    .admin-promos-list__row > :nth-child(5) { grid-area: actions; justify-self: end; align-self: start; }
-    .admin-table__head.admin-promos-list__row { display: none; }
-}
+
 
 /* ---------------------------------------------------------------------------
    Catálogo — badges e preços promocionais (card do produto)
@@ -8148,11 +7920,6 @@ html.admin-theme--dark .admin-badge--info {
 html.admin-theme--dark .admin-badge--neutral {
     background: var(--admin-blue-tint-soft);
     color: var(--color-text-muted);
-}
-
-html.admin-theme--dark .admin-badge--promo-type {
-    background: rgba(240, 192, 48, 0.16);
-    color: var(--color-primary-light);
 }
 
 html.admin-theme--dark .admin-badge--promo-stock {

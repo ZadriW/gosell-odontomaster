@@ -1089,8 +1089,9 @@
         const bundleMeta = window.PromoPricing && typeof window.PromoPricing.formatBundleQtyMeta === 'function'
             ? window.PromoPricing.formatBundleQtyMeta(item, Cart.formatBRL.bind(Cart))
             : '';
+        const isGift = !!item.brinde;
         const subtotal = isFullyFree
-            ? '<strong class="line-item__free-tag">GRÁTIS</strong>'
+            ? `<strong class="line-item__free-tag">${isGift ? 'BRINDE' : 'GRÁTIS'}</strong>`
             : Cart.formatBRL(item.subtotal != null ? item.subtotal : item.preco * item.quantidade);
         const unit = Cart.formatBRL(item.preco);
         const listUnit = Number(item.preco_lista) || Number(item.preco) || 0;
@@ -1098,9 +1099,11 @@
         const unitLine = showOriginal
             ? `<span class="line-item__price-original">${Cart.formatBRL(listUnit)}</span> ${unit}`
             : unit;
-        const promoHint = item.promo_aplicada && item.promo_nome
-            ? `<p class="line-item__promo"><i class="fa-solid fa-tag" aria-hidden="true"></i> ${escapeCatalogHtml(item.promo_nome)}</p>`
-            : '';
+        const promoHint = isGift
+            ? `<p class="line-item__promo line-item__promo--gift"><i class="fa-solid fa-gift" aria-hidden="true"></i> ${item.brinde_avulso ? 'Brinde avulso' : 'Brinde'}${item.brinde_nome ? ` · ${escapeCatalogHtml(item.brinde_nome)}` : ''}</p>`
+            : (item.promo_aplicada && item.promo_nome
+                ? `<p class="line-item__promo"><i class="fa-solid fa-tag" aria-hidden="true"></i> ${escapeCatalogHtml(item.promo_nome)}</p>`
+                : '');
         const stock = Number(item.estoque);
         const missing = Number.isFinite(stock) ? item.quantidade - Math.max(0, stock) : 0;
         const bl = Number(item.backorder_limit);
@@ -1124,7 +1127,7 @@
             backorderHint = `<p class="cart-item__backorder"><i class="fa-solid fa-box-open" aria-hidden="true"></i> Unidade pendente — outro caixa está finalizando as últimas unidades</p>`;
         }
         const qtyLine = isFullyFree
-            ? `${qty} un. <strong>GRÁTIS</strong>`
+            ? `${qty} un. <strong>${isGift ? 'de brinde' : 'GRÁTIS'}</strong>`
             : (bundleMeta
                 ? `${bundleMeta} &middot; <strong>${subtotal}</strong>`
                 : `${unitLine} un. &middot; <strong>${subtotal}</strong>`);
@@ -1144,11 +1147,13 @@
             : `<button type="button" class="cart-item__remove" data-cart-action="remove" aria-label="Remover">
                         <i class="fa-solid fa-trash" aria-hidden="true"></i>
                     </button>`;
-        const freeClass = isFullyFree ? ' cart-item--free' : '';
+        const freeClass = (isFullyFree ? ' cart-item--free' : '') + (isGift ? ' cart-item--gift' : '');
         return `
             <article class="cart-item${freeClass}" data-id="${escapeCatalogHtml(item.id)}">
                 <div class="cart-item__image">
-                    <img src="${safeMediaUrl(item.imagem)}" alt="${escapeCatalogHtml(item.nome)}" loading="lazy">
+                    ${isGift && !safeMediaUrl(item.imagem)
+                        ? '<span class="line-item__gift-icon" aria-hidden="true"><i class="fa-solid fa-gift"></i></span>'
+                        : `<img src="${safeMediaUrl(item.imagem)}" alt="${escapeCatalogHtml(item.nome)}" loading="lazy">`}
                 </div>
                 <div class="cart-item__info">
                     <span class="cart-item__category">${escapeCatalogHtml(item.categoria || '')}</span>

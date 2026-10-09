@@ -6,6 +6,7 @@ from collections import defaultdict
 from typing import Dict, List, Optional
 
 from .connection import _now_iso, get_conn
+from .gifts import AVULSO_ID_PREFIX, apply_gift_rules_in_conn, is_gift_line
 
 _VALID_RULE_TYPES = {"percent", "fixed", "bogo", "min_bundle", "exact_bundle", "combo_bundle"}
 
@@ -1045,6 +1046,21 @@ def apply_promotions_to_items_in_conn(
     event_id: int,
     items: List[Dict],
 ) -> List[Dict]:
+    """Promoções de preço do evento + brindes (linhas a R$ 0,00 no fim do pedido).
+
+    Linhas de brinde recebidas são descartadas e recalculadas pelo servidor
+    (``gifts.apply_gift_rules_in_conn``); o brinde não muda o preço de nada.
+    """
+    paid = [it for it in items if not is_gift_line(it)]
+    priced = _apply_price_promotions_in_conn(conn, event_id, paid)
+    return apply_gift_rules_in_conn(conn, event_id, priced)
+
+
+def _apply_price_promotions_in_conn(
+    conn: sqlite3.Connection,
+    event_id: int,
+    items: List[Dict],
+) -> List[Dict]:
     """Aplica promoções ativas do evento sobre ``items`` normalizados.
 
     Para ``exact_bundle``: soma as quantidades de **todos** os produtos da
@@ -1286,6 +1302,8 @@ def quote_cart_items_for_event(event_id: int, cart_items: List[Dict]) -> Dict:
     """
     normalized: List[Dict] = []
     for raw in cart_items or []:
+        if is_gift_line(raw):
+            continue  # o brinde é recalculado aqui, não vem do navegador
         pid_raw = raw.get("id") if raw.get("id") is not None else raw.get("product_id")
         try:
             product_id = int(pid_raw) if pid_raw is not None else None
@@ -1343,7 +1361,11 @@ def quote_cart_items_for_event(event_id: int, cart_items: List[Dict]) -> Dict:
 
     out_items: List[Dict] = []
     for row in priced:
-        pid = int(row["product_id"])
+        # Brinde avulso não é produto: o carrinho o identifica por "avulso:<id>".
+        pid = (
+            int(row["product_id"]) if row.get("product_id") is not None
+            else f"{AVULSO_ID_PREFIX}{int(row['gift_item_id'])}"
+        )
         qty = int(row["quantity"])
         list_p = float(row.get("original_price") or row.get("unit_price") or 0)
         eff_unit = float(row.get("unit_price") or 0)
@@ -1382,6 +1404,11 @@ def quote_cart_items_for_event(event_id: int, cart_items: List[Dict]) -> Dict:
                     for row in (row_plan or [])
                 ],
                 "promo_covered_qty": int(row.get("promo_covered_qty") or 0),
+                "brinde": bool(row.get("brinde")),
+                "gift_rule_id": row.get("gift_rule_id"),
+                "brinde_nome": row.get("gift_rule_name") or "",
+                "gift_item_id": row.get("gift_item_id"),
+                "brinde_avulso": bool(row.get("gift_item_id")),
             }
         )
 

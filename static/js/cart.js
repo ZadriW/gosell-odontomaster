@@ -384,6 +384,7 @@
                 const idx = quoteRows.findIndex((row) => (
                     String(row.id) === String(item.id)
                     && !!row.bogo_auto_free === !!item.bogo_auto_free
+                    && !!row.brinde === !!item.brinde
                 ));
                 const row = idx >= 0 ? quoteRows.splice(idx, 1)[0] : null;
                 if (!row) return item;

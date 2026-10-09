@@ -1265,6 +1265,29 @@ def get_product_erp_link_summary(limit: int = 50) -> Dict:
     }
 
 
+_CODVOL_RE = re.compile(r"[A-Z0-9]{1,6}")
+
+
+def set_product_erp_codvol(product_id: int, codvol: str) -> str:
+    """Unidade de venda do Sankhya (``CODVOL``) informada à mão no admin.
+
+    Reserva para quando a fila de cadastro do ERP ainda não trouxe o produto:
+    a sincronização que trouxer o cadastro grava o valor do Sankhya por cima.
+    Devolve a unidade normalizada (maiúsculas).
+    """
+    unit = str(codvol or "").strip().upper()
+    if not _CODVOL_RE.fullmatch(unit):
+        raise ValueError("Unidade inválida: use a sigla do Sankhya (ex.: UN, CX, PC).")
+    with get_conn() as conn:
+        cur = conn.execute(
+            "UPDATE products SET erp_codvol = ?, updated_at = ? WHERE id = ?",
+            (unit, _now_iso(), int(product_id)),
+        )
+        if cur.rowcount == 0:
+            raise ValueError("Produto não encontrado.")
+    return unit
+
+
 def set_product_erp_codprod(product_id: int, codprod: Optional[int]) -> None:
     """Vincula (ou desvincula, com ``None``) um produto local a um ``CODPROD``."""
     with get_conn() as conn:

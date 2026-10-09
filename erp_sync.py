@@ -1,7 +1,8 @@
 """Orquestração da integração Sankhya: catálogo e fila de pedidos.
 
 - ``sync_catalog``: esvazia as filas de preço e de cadastro do gateway (lotes
-  de 20, cada um confirmado depois de gravado) para a biblioteca.
+  de 20, cada um confirmado depois de gravado) para a biblioteca e atualiza
+  os tipos de negociação liberados (``sync_payment_types``).
 - ``import_single_product``: traz um ``CODPROD`` que ainda não existe aqui.
 - ``process_outbox_once`` / ``start_worker``: envia clientes e pedidos da fila
   em segundo plano, sem travar o pagamento no estande.
@@ -135,6 +136,35 @@ def _drain_queue(fetch, ack, handle, label: str, on_batch=None) -> int:
     return total
 
 
+def payment_types_message(result: Dict) -> str:
+    """Resumo de ``save_sankhya_payment_types`` para o painel e o histórico."""
+    parts = [f"{result['total']} tipo(s) de negociação liberado(s) no Sankhya"]
+    if result.get("first"):
+        parts[0] += " (primeira consulta)"
+    elif result["new"]:
+        parts.append("novo(s): " + ", ".join(map(str, result["new"])))
+    if result["removed"]:
+        parts.append("deixaram de ser liberados: " + ", ".join(map(str, result["removed"])))
+    text = "; ".join(parts) + "."
+    if result["in_use_removed"]:
+        text += (
+            " Atenção: " + ", ".join(map(str, result["in_use_removed"]))
+            + " ainda está(ão) escolhido(s) numa forma de pagamento; pedidos com ele(s) "
+            "ficam na fila até você trocar em Tipos de negociação."
+        )
+    return text
+
+
+def sync_payment_types() -> Dict:
+    """Busca em ``orders/payment`` os tipos de negociação liberados e grava.
+
+    Lista completa (não é fila), então pode rodar a qualquer hora.
+    """
+    result = erp_db.save_sankhya_payment_types(sankhya_api.fetch_payment_types())
+    result["message"] = payment_types_message(result)
+    return result
+
+
 def sync_catalog(run_id: Optional[int] = None) -> Dict:
     """Esvazia as filas de preço, cadastro e estoque do Sankhya. Não mexe no
     estoque dos eventos, em vendas nem em promoções.
@@ -204,6 +234,12 @@ def sync_catalog(run_id: Optional[int] = None) -> Dict:
         except Exception as exc:
             log.exception("Fila de %s do Sankhya falhou", key)
             errors.append(f"{step}: {exc}")
+    erp_db.update_sync_progress(run_id, stats, "Tipos de negociação: buscando no Sankhya…")
+    try:
+        stats["messages"].insert(0, sync_payment_types()["message"])
+    except Exception as exc:
+        log.exception("Tipos de negociação do Sankhya falharam")
+        errors.append(f"Tipos de negociação: {exc}")
     error = "\n".join(errors) or None
 
     lines = []

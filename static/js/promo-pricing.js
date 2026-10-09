@@ -342,7 +342,8 @@
         if (next.bogo_auto_free) {
             next.preco = 0;
             next.subtotal = 0;
-            next.economia = round2(listPrice * qty);
+            // Brinde não é desconto: fica fora da "economia" do pedido.
+            next.economia = next.brinde ? 0 : round2(listPrice * qty);
             next.promo_aplicada = true;
             next.bogo_free_units = qty;
             next.em_promocao = true;
@@ -507,7 +508,7 @@
             const freeId = String(g.freeId);
             const keepKey = g.sameSku ? `same:${freeId}` : freeId;
             const existingIdx = list.findIndex((i) => {
-                if (String(i.id) !== freeId) return false;
+                if (i.brinde || String(i.id) !== freeId) return false;
                 return g.sameSku ? !!i.bogo_auto_free : true;
             });
             const existing = existingIdx >= 0 ? list[existingIdx] : null;
@@ -556,10 +557,142 @@
         });
 
         return list.filter((item) => {
-            if (!item.bogo_auto_free) return true;
+            if (!item.bogo_auto_free || item.brinde) return true;
             const id = String(item.id);
             return keepFree.has(id) || keepFree.has(`same:${id}`);
         });
+    }
+
+    // ------------------------------------------------------------- brindes
+    // Espelha database/gifts.py: regras em window.__GIFT_RULES__ (só no painel
+    // do vendedor). O servidor recalcula o brinde na venda; aqui só antecipa.
+
+    function giftRules() {
+        return Array.isArray(window.__GIFT_RULES__) ? window.__GIFT_RULES__ : [];
+    }
+
+    /**
+     * Unidades de brinde que a regra dá (espelha gift_units_for_rule).
+     * ``valueById``/``orderValue``: valor pago por produto e do pedido (regra por valor).
+     */
+    function giftUnitsForRule(rule, qtyById, valueById, orderValue) {
+        const giftQ = Math.max(1, parseInt(String(rule.gift_qty), 10) || 1);
+        const ids = [...new Set((rule.product_ids || []).map(String))];
+        if (rule.tipo === 'min_total') {
+            const target = Number(rule.min_value) || 0;
+            if (target <= 0) return 0;
+            const value = ids.length
+                ? ids.reduce((acc, id) => acc + (valueById[id] || 0), 0)
+                : orderValue;
+            return value >= target - 0.004 ? giftQ : 0;
+        }
+        const minQ = Math.max(1, parseInt(String(rule.min_qty), 10) || 1);
+        if (rule.tipo === 'kit') {
+            const kitQ = Math.max(2, minQ);
+            const kits = ids.reduce((acc, id) => acc + Math.floor((qtyById[id] || 0) / kitQ), 0);
+            let units = kits * giftQ;
+            const limit = parseInt(String(rule.max_per_order), 10) || 0;
+            if (limit > 0) units = Math.min(units, limit);
+            return Math.max(0, units);
+        }
+        const total = ids.reduce((acc, id) => acc + (qtyById[id] || 0), 0);
+        return total >= minQ ? giftQ : 0;
+    }
+
+    /**
+     * Desconto manual do vendedor no checkout, em reais (0 sem desconto).
+     * Usa o desconto e não o total gravado: se o carrinho mudar depois, o
+     * total antigo ficaria defasado.
+     */
+    function sellerDiscountReais() {
+        try {
+            const raw = sessionStorage.getItem('totem_client_data_v1');
+            const data = raw ? JSON.parse(raw) : null;
+            const v = data ? Number(data.seller_discount_reais) : NaN;
+            return Number.isFinite(v) && v > 0 ? v : 0;
+        } catch (_) {
+            return 0;
+        }
+    }
+
+    /**
+     * Linhas de brinde a partir dos itens já precificados (a regra por valor
+     * precisa do subtotal com as promoções). Brinde avulso usa id "avulso:<n>".
+     */
+    function syncGiftItems(priced) {
+        const paid = (priced || []).filter((i) => !i.brinde);
+        const rules = giftRules();
+        if (!rules.length) return paid;
+        const qtyById = {};
+        const valueById = {};
+        const used = {};
+        let paidValue = 0;
+        paid.forEach((i) => {
+            const id = String(i.id);
+            const qty = Math.max(0, parseInt(String(i.quantidade), 10) || 0);
+            used[id] = (used[id] || 0) + qty;
+            if (i.bogo_auto_free) return;
+            const sub = Number(i.subtotal) || 0;
+            qtyById[id] = (qtyById[id] || 0) + qty;
+            valueById[id] = (valueById[id] || 0) + sub;
+            paidValue += sub;
+        });
+        paidValue = round2(paidValue);
+        const discount = sellerDiscountReais();
+        if (discount > 0 && paidValue > 0) {
+            const charged = Math.max(0, round2(paidValue - discount));
+            // Desconto manual: o valor de cada item cai na mesma proporção.
+            const factor = Math.max(0, charged) / paidValue;
+            Object.keys(valueById).forEach((k) => { valueById[k] *= factor; });
+            paidValue = round2(charged);
+        }
+        const gifts = [];
+        rules.forEach((rule) => {
+            const g = rule.brinde || {};
+            const gid = String(g.id || '');
+            if (!gid) return;
+            let units = giftUnitsForRule(rule, qtyById, valueById, paidValue);
+            const bl = Number.isFinite(Number(g.backorder_limit)) ? Number(g.backorder_limit) : -1;
+            if (units > 0) {
+                if (g.avulso) {
+                    // Brinde avulso: saldo próprio (null = sem limite).
+                    if (g.estoque != null) {
+                        units = Math.min(units, Math.max(0, Number(g.estoque) - (used[gid] || 0)));
+                    }
+                } else if (bl >= 0 || !window.__SELLER_BACKORDER__) {
+                    // Sem venda futura (ou fora do painel do vendedor) o brinde fica no saldo.
+                    const stock = Math.max(0, Math.floor(Number(g.estoque)) || 0);
+                    units = Math.min(units, Math.max(0, stock - (used[gid] || 0)));
+                }
+            }
+            if (units <= 0) return;
+            used[gid] = (used[gid] || 0) + units;
+            gifts.push({
+                id: g.id,
+                sku: g.sku || '',
+                nome: g.nome,
+                variante: '',
+                categoria: g.categoria || '',
+                imagem: g.imagem || '',
+                preco_lista: Number(g.preco) || 0,
+                preco: 0,
+                estoque: g.estoque == null ? undefined : Number(g.estoque),
+                backorder_limit: bl,
+                quantidade: units,
+                subtotal: 0,
+                economia: 0,
+                em_promocao: true,
+                promo_aplicada: true,
+                promo_tipo: 'brinde',
+                promo_nome: rule.nome || '',
+                bogo_auto_free: true,
+                brinde: true,
+                brinde_avulso: !!g.avulso,
+                gift_rule_id: rule.id,
+                brinde_nome: rule.nome || '',
+            });
+        });
+        return paid.concat(gifts.map(applyPromoToItem));
     }
 
     function orderBogoGifts(items) {
@@ -718,7 +851,8 @@
     }
 
     function recalculateItems(items) {
-        const synced = syncBogoGiftItems(items || []);
+        // Brindes saem antes e voltam no fim, sobre os preços já calculados.
+        const synced = syncBogoGiftItems((items || []).filter((i) => !i.brinde));
         const all = synced.map(applyPromoToItem);
 
         applyBogoCross(all);
@@ -818,14 +952,16 @@
             });
         });
 
-        return orderBogoGifts(all);
+        return syncGiftItems(orderBogoGifts(all));
     }
 
     function getTotals(items) {
         const priced = recalculateItems(items);
         const subtotalLista = round2(
             priced.reduce(
-                (acc, i) => acc + (Number(i.preco_lista) || Number(i.preco) || 0) * (Number(i.quantidade) || 0),
+                (acc, i) => (i.brinde
+                    ? acc
+                    : acc + (Number(i.preco_lista) || Number(i.preco) || 0) * (Number(i.quantidade) || 0)),
                 0,
             ),
         );
@@ -1101,16 +1237,23 @@
         const bundleMeta = formatBundleQtyMeta(item, formatBRL);
         const unit = formatBRL(item.preco);
         const subtotalValue = item.subtotal != null ? item.subtotal : item.preco * qty;
-        const subtotal = isFullyFree ? '<strong class="line-item__free-tag">GRÁTIS</strong>' : formatBRL(subtotalValue);
+        const subtotal = isFullyFree
+            ? `<strong class="line-item__free-tag">${item.brinde ? 'BRINDE' : 'GRÁTIS'}</strong>`
+            : formatBRL(subtotalValue);
         const listUnit = Number(item.preco_lista) || Number(item.preco) || 0;
         const showOriginal = !bundleMeta && !bogoFreeMeta && item.promo_aplicada && listUnit > Number(item.preco) + 0.001;
         const unitHtml = showOriginal
             ? `<span class="line-item__price-original">${formatBRL(listUnit)}</span> ${unit}`
             : unit;
-        const qtyMeta = bogoFreeMeta || bundleMeta || `${qty} × ${unitHtml}`;
-        const promoHint = item.promo_aplicada && item.promo_nome
-            ? `<p class="line-item__promo"><i class="fa-solid fa-tag" aria-hidden="true"></i> ${escapeHtml(item.promo_nome)}</p>`
-            : '';
+        const isGift = !!item.brinde;
+        const qtyMeta = isGift
+            ? `${qty} un. de brinde`
+            : (bogoFreeMeta || bundleMeta || `${qty} × ${unitHtml}`);
+        const promoHint = isGift
+            ? `<p class="line-item__promo line-item__promo--gift"><i class="fa-solid fa-gift" aria-hidden="true"></i> ${item.brinde_avulso ? 'Brinde avulso' : 'Brinde'}${item.brinde_nome ? ` · ${escapeHtml(item.brinde_nome)}` : ''}</p>`
+            : (item.promo_aplicada && item.promo_nome
+                ? `<p class="line-item__promo"><i class="fa-solid fa-tag" aria-hidden="true"></i> ${escapeHtml(item.promo_nome)}</p>`
+                : '');
         const badge = item.promo_aplicada && item.promo_badge && !item.promo_nome
             ? `<p class="line-item__promo"><i class="fa-solid fa-tag" aria-hidden="true"></i> ${escapeHtml(item.promo_badge)}</p>`
             : '';
@@ -1118,6 +1261,7 @@
         const splitHint = splitHintHtml(item, articleClass);
         const backorderClass = (backorderIcon || splitHint) ? ` ${articleClass}--backorder` : '';
         const freeClass = (isFullyFree || item.bogo_auto_free) ? ` ${articleClass}--free` : '';
+        const giftClass = item.brinde ? ` ${articleClass}--gift` : '';
         const removable = !!options.removable && !item.bogo_auto_free;
         const removeBtn = removable
             ? `<button type="button" class="${articleClass}__remove" data-payment-action="remove" aria-label="Remover ${escapeHtml(item.nome)}">
@@ -1132,9 +1276,11 @@
             : `<div class="${articleClass}__total">${subtotal}</div>`;
 
         return `
-            <article class="${articleClass}${backorderClass}${freeClass}" data-id="${item.id}">
+            <article class="${articleClass}${backorderClass}${freeClass}${giftClass}" data-id="${item.id}">
                 <div class="${articleClass}__image">
-                    <img src="${safeMediaUrl(item.imagem)}" alt="${escapeHtml(item.nome)}" loading="lazy">
+                    ${item.brinde && !safeMediaUrl(item.imagem)
+                        ? `<span class="line-item__gift-icon" aria-hidden="true"><i class="fa-solid fa-gift"></i></span>`
+                        : `<img src="${safeMediaUrl(item.imagem)}" alt="${escapeHtml(item.nome)}" loading="lazy">`}
                 </div>
                 <div class="${articleClass}__info">
                     <span class="${articleClass}__category">${escapeHtml(item.categoria || '')}</span>

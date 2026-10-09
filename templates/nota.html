@@ -558,7 +558,7 @@
                 <span class="receipt__item-name">
                     {{ loop.index }}.
                     {%- if it.product_sku %} {{ it.product_sku }} -{% endif %}
-                    {{ it.product_name }}
+                    {{ it.product_name }}{% if it.gift_rule_id %} (BRINDE){% endif %}
                 </span>
                 <span class="receipt__item-unit">
                     R${{ "%.2f"|format(it.unit_price|float)|replace('.', ',') }}
@@ -584,7 +584,7 @@
                     <span class="receipt__item-name">
                         {{ item_num }}.
                         {%- if it.product_sku %} {{ it.product_sku }} -{% endif %}
-                        {{ it.product_name }}
+                        {{ it.product_name }}{% if it.gift_rule_id %} (BRINDE){% endif %}
                     </span>
                     <span class="receipt__item-unit">
                         {% set unit = (it.unit_price | float) if it.unit_price is not none else ((it.subtotal | float) / (it.quantity | float) if (it.quantity | float) > 0 else 0) %}

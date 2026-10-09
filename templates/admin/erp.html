@@ -95,9 +95,10 @@
 </section>
 
 {# ---------------- Tipos de negociação ---------------- #}
+{% set tv_catalog = sankhya_payment_types %}
 <section class="admin-section" id="tipos-negociacao">
     <article class="admin-card">
-        <header class="admin-card__header">
+        <header class="admin-card__header erp-tv__header">
             <div>
                 <h2 class="admin-card__title">Tipos de negociação (CODTIPVENDA)</h2>
                 <p class="admin-card__subtitle">
@@ -105,27 +106,86 @@
                     código fica na fila com erro, em vez de ir ao Sankhya com o tipo errado.
                     Débito tem um código só; crédito tem um por parcela. Vendas antigas, registradas só como "Cartão" (antes da separação), usam os códigos do crédito.
                 </p>
+                <p class="erp-tv__source">
+                    {% if tv_catalog %}
+                    <i class="fa-solid fa-circle-check" aria-hidden="true"></i>
+                    {{ tv_catalog|length }} tipo(s) liberado(s) no Sankhya, consultados em {{ sankhya_payment_types_synced_at | datahora }}.
+                    Só eles podem ser escolhidos.
+                    {% else %}
+                    <i class="fa-solid fa-circle-info" aria-hidden="true"></i>
+                    A lista do Sankhya ainda não foi consultada: os códigos são digitados à mão e não são conferidos.
+                    {% endif %}
+                </p>
             </div>
+            <form method="post" action="{{ url_for('admin_erp_payment_types_refresh') }}">
+                {% include 'partials/csrf_field.html' %}
+                <button type="submit" class="admin-btn admin-btn--ghost">
+                    <i class="fa-solid fa-rotate" aria-hidden="true"></i> Atualizar do Sankhya
+                </button>
+            </form>
         </header>
-        <form method="post" action="{{ url_for('admin_erp_payment_types') }}">
+        <form method="post" action="{{ url_for('admin_erp_payment_types') }}" data-erp-tipvenda>
             {% include 'partials/csrf_field.html' %}
             <div class="erp-table-wrap">
                 <table class="erp-table">
                     <thead>
-                        <tr><th>Pagamento no Totem</th><th>CODTIPVENDA</th><th>Descrição (opcional)</th></tr>
+                        <tr><th>Pagamento no Totem</th><th>CODTIPVENDA</th><th>{{ 'Nome no Sankhya' if tv_catalog else 'Descrição (opcional)' }}</th></tr>
                     </thead>
                     <tbody>
                         {% for row in payment_grid %}
-                        <tr>
+                        {% set stale = tv_catalog and row.codtipvenda is not none and not row.sankhya %}
+                        <tr{% if stale %} class="is-stale"{% endif %}>
                             <td>{{ row.label }}</td>
-                            <td><input class="admin-field__input erp-table__code" name="code_{{ row.key }}" inputmode="numeric" value="{{ row.codtipvenda if row.codtipvenda is not none else '' }}"></td>
-                            <td><input class="admin-field__input" name="desc_{{ row.key }}" value="{{ row.description }}"></td>
+                            <td>
+                                {% if tv_catalog %}
+                                <select class="admin-field__input erp-tv__select" name="code_{{ row.key }}"
+                                        data-suggested="{{ row.suggested or '' }}" aria-label="CODTIPVENDA de {{ row.label }}">
+                                    <option value="">— sem código —</option>
+                                    {% if stale %}
+                                    <option value="{{ row.codtipvenda }}" selected>{{ row.codtipvenda }} · não liberado no Sankhya</option>
+                                    {% endif %}
+                                    {% for t in tv_catalog %}
+                                    <option value="{{ t.codtipvenda }}" {% if row.codtipvenda == t.codtipvenda %}selected{% endif %}>{{ t.codtipvenda }} · {{ t.description }}</option>
+                                    {% endfor %}
+                                </select>
+                                {% else %}
+                                <input class="admin-field__input erp-table__code" name="code_{{ row.key }}" inputmode="numeric" value="{{ row.codtipvenda if row.codtipvenda is not none else '' }}">
+                                {% endif %}
+                            </td>
+                            <td>
+                                {% if tv_catalog %}
+                                    {% if stale %}
+                                    <span class="erp-tv__warn"><i class="fa-solid fa-triangle-exclamation" aria-hidden="true"></i> O código {{ row.codtipvenda }} não está mais liberado: pedidos com ele param na fila.</span>
+                                    {% elif row.sankhya %}
+                                    <span class="erp-tv__name">{{ row.sankhya.description }}</span>
+                                    {% else %}
+                                    <span class="erp-tv__none">—</span>
+                                    {% endif %}
+                                {% else %}
+                                <input class="admin-field__input" name="desc_{{ row.key }}" value="{{ row.description }}">
+                                {% endif %}
+                            </td>
                         </tr>
                         {% endfor %}
                     </tbody>
                 </table>
             </div>
-            <button type="submit" class="admin-btn admin-btn--primary">Salvar tipos de negociação</button>
+            {% if tv_catalog and unused_payment_types %}
+            <p class="erp-tv__unused">
+                <i class="fa-solid fa-circle-info" aria-hidden="true"></i>
+                Liberados no Sankhya e sem uso no Totem:
+                {% for t in unused_payment_types %}<span>{{ t.codtipvenda }} · {{ t.description }}</span>{% if not loop.last %}, {% endif %}{% endfor %}.
+            </p>
+            {% endif %}
+            <div class="erp-tv__actions">
+                <button type="submit" class="admin-btn admin-btn--primary">Salvar tipos de negociação</button>
+                {% if tv_catalog %}
+                <button type="button" class="admin-btn admin-btn--ghost" data-erp-tipvenda-suggest
+                        title="Escolhe, nas linhas vazias, o tipo do Sankhya com o nome correspondente (ex.: POS CARTAO 3X para crédito 3x)">
+                    <i class="fa-solid fa-wand-magic-sparkles" aria-hidden="true"></i> Preencher vazios pelos nomes
+                </button>
+                {% endif %}
+            </div>
         </form>
     </article>
 </section>
@@ -177,4 +237,5 @@
 
 {% block admin_scripts %}
 <script src="{{ url_for('static', filename='js/admin-erp-live.js') }}"></script>
+<script src="{{ url_for('static', filename='js/admin-erp-tipvenda.js') }}"></script>
 {% endblock %}

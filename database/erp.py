@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
 import unicodedata
 from datetime import datetime, timedelta
@@ -135,10 +136,15 @@ def payment_type_grid() -> List[Dict]:
 
     PIX, Pix Inter, débito, dinheiro e faturado têm um código cada; o crédito
     tem um por número de parcelas (1x até ``MAX_CARD_INSTALLMENTS``).
+
+    Com a lista do Sankhya (``erp_tipvenda``) já consultada, cada linha traz
+    ``sankhya`` (o tipo liberado com aquele código, ou ``None`` se o código
+    não está mais liberado) e ``suggested`` (código achado pelo nome).
     """
     saved = {
         (r["payment_method"], r["installments"]): r for r in list_payment_types()
     }
+    catalog = {t["codtipvenda"]: t for t in list_sankhya_payment_types()}
     grid: List[Dict] = []
     for method in SINGLE_CODE_METHODS:
         row = saved.get((method, None)) or {}
@@ -160,12 +166,23 @@ def payment_type_grid() -> List[Dict]:
             "codtipvenda": row.get("codtipvenda"),
             "description": row.get("description") or "",
         })
+    for item in grid:
+        code = item["codtipvenda"]
+        item["sankhya"] = catalog.get(int(code)) if code is not None else None
+        item["suggested"] = suggest_codtipvenda(
+            item["payment_method"], item["installments"], catalog.values()
+        )
     return grid
 
 
 def save_payment_types(rows: Iterable[Dict]) -> int:
-    """Substitui o mapeamento inteiro. Linha sem código é removida."""
+    """Substitui o mapeamento inteiro. Linha sem código é removida.
+
+    Com a lista do Sankhya consultada, só aceita códigos liberados nela e
+    grava a descrição do Sankhya (a digitada vale só sem a lista).
+    """
     now = _now_iso()
+    catalog = {t["codtipvenda"]: t for t in list_sankhya_payment_types()}
     clean: List[Tuple] = []
     for r in rows:
         method = (r.get("payment_method") or "").strip().lower()
@@ -183,7 +200,14 @@ def save_payment_types(rows: Iterable[Dict]) -> int:
                 f"CODTIPVENDA inválido para {PAYMENT_METHOD_LABELS[method]}"
                 f"{f' {inst}x' if inst else ''}: use só números."
             )
-        clean.append((method, inst, int(code), (r.get("description") or "").strip() or None, now))
+        label = f"{PAYMENT_METHOD_LABELS[method]}{f' {inst}x' if inst else ''}"
+        if catalog and int(code) not in catalog:
+            raise ValueError(
+                f"CODTIPVENDA {code} ({label}) não está entre os tipos de negociação "
+                "liberados no Sankhya. Atualize a lista ou escolha outro código."
+            )
+        desc = catalog[int(code)]["description"] if catalog else (r.get("description") or "").strip()
+        clean.append((method, inst, int(code), desc or None, now))
     with get_conn() as conn:
         conn.execute("DELETE FROM erp_payment_types")
         conn.executemany(
@@ -193,6 +217,117 @@ def save_payment_types(rows: Iterable[Dict]) -> int:
             clean,
         )
     return len(clean)
+
+
+def list_sankhya_payment_types(include_inactive: bool = False) -> List[Dict]:
+    """Tipos de negociação da última consulta a ``orders/payment``, por código."""
+    sql = "SELECT codtipvenda, description, dhalter, active, synced_at FROM erp_tipvenda"
+    if not include_inactive:
+        sql += " WHERE active = 1"
+    with get_conn() as conn:
+        rows = conn.execute(sql + " ORDER BY codtipvenda").fetchall()
+    return [dict(r) for r in rows]
+
+
+def sankhya_payment_types_synced_at() -> Optional[str]:
+    with get_conn() as conn:
+        row = conn.execute("SELECT MAX(synced_at) FROM erp_tipvenda").fetchone()
+    return row[0] if row else None
+
+
+def save_sankhya_payment_types(types: Iterable[Dict]) -> Dict[str, Any]:
+    """Grava a lista recebida do Sankhya. Código que sumiu dela fica inativo.
+
+    Devolve ``{total, first, new, removed, in_use_removed}``: ``in_use_removed`` são os
+    códigos que saíram da lista mas ainda estão escolhidos numa forma de
+    pagamento (pedido com eles para na fila até alguém trocar).
+    """
+    now = _now_iso()
+    incoming = {int(t["codtipvenda"]): t for t in types if t.get("codtipvenda") is not None}
+    if not incoming:
+        raise ValueError("O Sankhya devolveu a lista de tipos de negociação vazia; nada foi alterado.")
+    with get_conn() as conn:
+        before = {
+            int(r["codtipvenda"]): int(r["active"])
+            for r in conn.execute("SELECT codtipvenda, active FROM erp_tipvenda").fetchall()
+        }
+        conn.executemany(
+            """
+            INSERT INTO erp_tipvenda (codtipvenda, description, dhalter, active, synced_at)
+            VALUES (?, ?, ?, 1, ?)
+            ON CONFLICT(codtipvenda) DO UPDATE SET description = excluded.description,
+                                                   dhalter = excluded.dhalter,
+                                                   active = 1,
+                                                   synced_at = excluded.synced_at
+            """,
+            [(code, t.get("description"), t.get("dhalter"), now) for code, t in incoming.items()],
+        )
+        gone = [code for code, active in before.items() if active and code not in incoming]
+        if gone:
+            placeholders = ",".join("?" * len(gone))
+            conn.execute(
+                f"UPDATE erp_tipvenda SET active = 0, synced_at = ? WHERE codtipvenda IN ({placeholders})",
+                [now, *gone],
+            )
+        # Descrição dos códigos já escolhidos acompanha o nome no Sankhya.
+        for code, t in incoming.items():
+            conn.execute(
+                "UPDATE erp_payment_types SET description = ? WHERE codtipvenda = ?",
+                (t.get("description"), code),
+            )
+        in_use = {
+            int(r["codtipvenda"])
+            for r in conn.execute("SELECT DISTINCT codtipvenda FROM erp_payment_types").fetchall()
+        }
+    return {
+        "total": len(incoming),
+        "first": not before,
+        "new": sorted(code for code in incoming if code not in before or not before[code]),
+        "removed": sorted(gone),
+        "in_use_removed": sorted(code for code in in_use if code not in incoming),
+    }
+
+
+def _fold_upper(text: str) -> str:
+    norm = unicodedata.normalize("NFD", str(text or "").upper())
+    return "".join(ch for ch in norm if unicodedata.category(ch) != "Mn")
+
+
+def suggest_codtipvenda(
+    payment_method: str, installments: Optional[int], catalog: Iterable[Dict]
+) -> Optional[int]:
+    """Código do Sankhya cujo nome corresponde à forma de pagamento.
+
+    Pelos nomes vistos em 09/10/2026: "POS PIX CIELO", "PIX/TRANSF INTER",
+    "POS CARTAO DEBITO", "A VISTA", "FATURADO", "POS CARTAO 3X". Só sugere
+    quando exatamente um nome casa; senão, ``None``.
+    """
+    def matches(desc: str) -> bool:
+        d = _fold_upper(desc)
+        if payment_method == "pix":
+            return "PIX" in d and "INTER" not in d
+        if payment_method == "pix_inter":
+            return "PIX" in d and "INTER" in d
+        if payment_method == "debito":
+            return "DEBITO" in d
+        if payment_method == "dinheiro":
+            return "DINHEIRO" in d or (re.search(r"\bA VISTA\b", d) is not None and "CARTAO" not in d)
+        if payment_method == "faturado":
+            return "FATURADO" in d
+        if payment_method == "credito":
+            m = re.search(r"(\d+)\s*X\b", d)
+            return ("CARTAO" in d or "CREDITO" in d) and "DEBITO" not in d and m is not None \
+                and int(m.group(1)) == int(installments or 1)
+        return False
+
+    found = [int(t["codtipvenda"]) for t in catalog if matches(t.get("description") or "")]
+    return found[0] if len(found) == 1 else None
+
+
+def unused_sankhya_payment_types() -> List[Dict]:
+    """Tipos liberados no Sankhya que nenhuma forma de pagamento do Totem usa."""
+    used = {int(r["codtipvenda"]) for r in list_payment_types()}
+    return [t for t in list_sankhya_payment_types() if int(t["codtipvenda"]) not in used]
 
 
 def resolve_codtipvenda(
@@ -558,7 +693,9 @@ def build_order_payload(
     sequencial inteiro da venda (``ensure_idpedido``; o campo no Sankhya é
     numérico, então o ``OM...`` não serve); cada item leva
     ``SEQITEMPED`` ("1", "2"... na ordem da venda), ``CODLOCALORIG`` (local de
-    estoque configurado) e ``CONTROLE`` (lote, de ``allocate_lots``). Item cuja
+    estoque configurado) e ``CONTROLE`` (lote, de ``allocate_lots``). ``NUMAUT``
+    no cabeçalho é o AUT registrado na confirmação do pagamento. Venda com
+    retirada pendente leva ``OBSINTERNA`` (``pending_pickup_note``) no cabeçalho. Item cuja
     quantidade não cabe num lote só é dividido em uma linha por lote, com o
     mesmo preço e o desconto repartido pela quantidade.
 
@@ -585,11 +722,28 @@ def build_order_payload(
         if pm == "credito":
             label += f" {int(tx.get('card_installments') or 1)}x"
         problems.append(f"Sem CODTIPVENDA cadastrado para {label}")
+    else:
+        tv = conn.execute(
+            "SELECT active FROM erp_tipvenda WHERE codtipvenda = ?", (int(codtipvenda),)
+        ).fetchone()
+        has_catalog = conn.execute("SELECT 1 FROM erp_tipvenda LIMIT 1").fetchone() is not None
+        if has_catalog and (tv is None or not int(tv["active"])):
+            # Recusado pelo ERP de qualquer forma: para aqui, com o motivo claro.
+            problems.append(
+                f"CODTIPVENDA {codtipvenda} não está mais entre os tipos de negociação "
+                "liberados no Sankhya; troque o código em Tipos de negociação"
+            )
+    # AUT gravado na confirmação do pagamento (maquininha, comprovante do Pix
+    # Inter ou o interno DINHEIRO/FATURADO), enviado como texto.
+    numaut = str(tx.get("aut") or "").strip() or None
+    if numaut is None:
+        problems.append("Venda sem AUT (NUMAUT)")
 
     items = conn.execute(
         """
         SELECT ti.id, ti.product_id, ti.product_sku, ti.product_name,
                ti.unit_price, ti.original_price, ti.quantity, ti.subtotal,
+               ti.quantity_delivered, ti.gift_item_id,
                p.erp_codprod, p.erp_codvol
           FROM transaction_items ti
           LEFT JOIN products p ON p.id = CAST(ti.product_id AS INTEGER)
@@ -601,9 +755,15 @@ def build_order_payload(
 
     lines: List[Dict] = []
     taken: Dict[Tuple[int, int, str], float] = {}  # lotes já usados neste pedido
+    pending: List[Tuple[str, str, int]] = []  # (CODPROD, nome, qtd) a retirar depois
+    avulsos: List[Tuple[str, int]] = []  # brindes avulsos: só na observação interna
     for it in items:
         qty = int(it["quantity"] or 0)
         if qty <= 0:
+            continue
+        if it["gift_item_id"] is not None:
+            # Brinde avulso não existe no Sankhya (sem CODPROD): não vira item.
+            avulsos.append(((it["product_name"] or "Brinde").strip(), qty))
             continue
         codprod = it["erp_codprod"]
         codvol = it["erp_codvol"]
@@ -620,7 +780,10 @@ def build_order_payload(
             problems.append(f"Produto {label} sem CODPROD do ERP")
             continue
         if not (codvol or "").strip():
-            problems.append(f"Produto {label} sem unidade (CODVOL); sincronize o catálogo")
+            problems.append(
+                f"Produto {label} sem unidade (CODVOL); informe a unidade na Fila de envio "
+                "ou sincronize o catálogo"
+            )
         unit = float(it["unit_price"] or 0)
         original = it["original_price"]
         list_price = float(original) if original is not None and float(original) >= unit else unit
@@ -630,6 +793,9 @@ def build_order_payload(
         )
         if problem:
             problems.append(problem)
+        pending_qty = qty - max(0, int(it["quantity_delivered"] or 0))
+        if pending_qty > 0:
+            pending.append((str(codprod), (it["product_name"] or label).strip(), pending_qty))
         lines.append({
             "codprod": int(codprod),
             "lots": parts,
@@ -694,10 +860,53 @@ def build_order_payload(
         "CODVEND": int(codvend) if codvend else None,
         "CODEMP": int(settings["codemp"]) if str(settings.get("codemp") or "").isdigit() else None,
         "IDPEDIDO": str(tx["erp_idpedido"]) if tx.get("erp_idpedido") else None,
+        "NUMAUT": numaut,
         "VLRFRETE": 0,
         "itens": itens,
     }
+    obs = pending_pickup_note(tx, pending, avulsos)
+    if obs:
+        payload["OBSINTERNA"] = obs
     return payload, problems
+
+
+#: Tamanho máximo do texto enviado em ``OBSINTERNA`` (observação interna do pedido).
+OBSINTERNA_MAX = 4000
+
+
+def pending_pickup_note(
+    tx: Dict,
+    pending: List[Tuple[str, str, int]],
+    avulsos: Optional[List[Tuple[str, int]]] = None,
+) -> Optional[str]:
+    """Texto da observação interna: retirada pendente e brindes avulsos.
+
+    Retirada pendente: uma linha por produto, ``CODPROD - nome - quantidade``,
+    com a situação no momento em que o pedido vai ao Sankhya. Brindes avulsos
+    (cadastrados só no Go Sell, sem CODPROD): ``nome - quantidade``. Sem nenhum
+    dos dois, ``None`` (o campo nem vai no corpo).
+    """
+    if not pending and not avulsos:
+        return None
+    order = str(tx.get("order_number") or "").strip()
+    suffix = f" (Go Sell, pedido {order}):" if order else ":"
+    lines: List[str] = []
+    if pending:
+        totals: Dict[Tuple[str, str], int] = {}
+        for code, name, qty in pending:  # mesmo produto em duas linhas (ex.: brinde) soma
+            totals[(code, name)] = totals.get((code, name), 0) + int(qty)
+        lines.append("Itens com retirada pendente" + suffix)
+        lines += [f"{code} - {name} - {qty} un." for (code, name), qty in totals.items()]
+    if avulsos:
+        gift_totals: Dict[str, int] = {}
+        for name, qty in avulsos:
+            gift_totals[name] = gift_totals.get(name, 0) + int(qty)
+        lines.append("Brindes avulsos entregues, fora do Sankhya" + suffix)
+        lines += [f"{name} - {qty} un." for name, qty in gift_totals.items()]
+    text = "\n".join(lines)
+    if len(text) > OBSINTERNA_MAX:
+        text = text[: OBSINTERNA_MAX - 1].rstrip() + "…"
+    return text
 
 
 # ---------------------------------------------------------------------------
@@ -1132,6 +1341,92 @@ def mark_job_discarded(job_id: int, reason: str) -> None:
         )
         # Pedido que não vai (ou cancelado à mão no Sankhya): o saldo dos lotes volta.
         release_allocations_in_conn(conn, int(row["transaction_id"]))
+
+
+#: Unidades sugeridas no formulário, além das que já existem no catálogo.
+COMMON_CODVOL = ("UN", "CX", "PC", "KT", "FR", "PT", "CJ", "RL", "TB", "GL")
+
+
+def find_product_id_for_code(code: str) -> Optional[int]:
+    """Produto da biblioteca pelo código digitado: CODPROD, SKU ou id local."""
+    text = str(code or "").strip().lstrip("#")
+    if not text:
+        return None
+    with get_conn() as conn:
+        if text.isdigit():
+            row = conn.execute(
+                "SELECT id FROM products WHERE erp_codprod = ?", (int(text),)
+            ).fetchone()
+            if row:
+                return int(row["id"])
+        row = conn.execute(
+            "SELECT id FROM products WHERE sku = ? ORDER BY active DESC, id LIMIT 1", (text,)
+        ).fetchone()
+        if row:
+            return int(row["id"])
+        if text.isdigit():
+            row = conn.execute("SELECT id FROM products WHERE id = ?", (int(text),)).fetchone()
+            if row:
+                return int(row["id"])
+    return None
+
+
+def known_codvols() -> List[str]:
+    """Siglas de unidade já vistas no catálogo + as mais comuns (para sugestão)."""
+    with get_conn() as conn:
+        seen = [r[0] for r in conn.execute(
+            "SELECT erp_codvol FROM products WHERE COALESCE(erp_codvol, '') != '' "
+            "GROUP BY erp_codvol ORDER BY COUNT(*) DESC"
+        )]
+    return list(dict.fromkeys([*seen, *COMMON_CODVOL]))
+
+
+def products_missing_codvol_in_queue() -> List[Dict]:
+    """Produtos sem unidade (CODVOL) em pedidos que esperam na fila (pendente/erro)."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT p.id, p.sku, p.name, p.erp_codprod,
+                   GROUP_CONCAT(DISTINCT t.order_number) AS orders
+              FROM erp_outbox o
+              JOIN transactions t ON t.id = o.transaction_id
+              JOIN transaction_items ti ON ti.transaction_id = t.id
+              JOIN products p ON p.id = CAST(ti.product_id AS INTEGER)
+             WHERE o.kind = 'pedido' AND o.status IN ('pendente', 'erro')
+               AND COALESCE(p.erp_codvol, '') = ''
+             GROUP BY p.id
+             ORDER BY p.name
+            """
+        ).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["orders"] = sorted((d.get("orders") or "").split(","))
+        out.append(d)
+    return out
+
+
+def requeue_jobs_blocked_by_codvol(product_id: int) -> int:
+    """Pedidos parados por falta de unidade deste produto voltam para a fila.
+
+    Os que ainda tiverem outro problema voltam a ``erro`` na próxima passada,
+    já com o motivo novo.
+    """
+    with get_conn() as conn:
+        ids = [int(r[0]) for r in conn.execute(
+            """
+            SELECT DISTINCT o.id
+              FROM erp_outbox o
+              JOIN transaction_items ti ON ti.transaction_id = o.transaction_id
+             WHERE o.kind = 'pedido' AND o.status = 'erro'
+               AND o.last_error LIKE '%sem unidade (CODVOL)%'
+               AND CAST(ti.product_id AS INTEGER) = ?
+            """,
+            (int(product_id),),
+        )]
+    for job_id in ids:
+        retry_job(job_id)
+    return len(ids)
 
 
 def retry_job(job_id: int) -> None:

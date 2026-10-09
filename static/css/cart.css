@@ -485,3 +485,21 @@ body.cart-open {
         padding: 14px 16px;
     }
 }
+
+/* Linha de brinde (database/gifts.py): entra a R$ 0,00, sem desconto. */
+.line-item__promo--gift,
+.cart-item--gift .line-item__free-tag {
+    color: #9a7400;
+}
+
+/* Brinde sem foto (brinde avulso): ícone de presente no lugar da imagem. */
+.line-item__gift-icon {
+    display: grid;
+    place-items: center;
+    width: 100%;
+    height: 100%;
+    border-radius: inherit;
+    background: rgba(240, 192, 48, 0.18);
+    color: #9a7400;
+    font-size: 22px;
+}

@@ -950,6 +950,7 @@ def get_event_sales_dashboard(
                 WHERE m.transaction_id = t.id AND m.movement_type = 'venda'
                   AND m.event_id = ?
               )
+              AND ti.gift_item_id IS NULL
             GROUP BY ti.product_id
             ORDER BY units_sold DESC
             LIMIT 5
@@ -1102,6 +1103,7 @@ def get_event_sales_analytics(
                 WHERE m.transaction_id = t.id AND m.movement_type = 'venda'
                   AND m.event_id = ?
               )
+              AND ti.gift_item_id IS NULL
             GROUP BY ti.product_id
             ORDER BY units_sold DESC
             LIMIT ?
@@ -1539,6 +1541,7 @@ def get_event_financial_report(
             f"JOIN transactions t ON t.id = ti.transaction_id "
             f"LEFT JOIN products p ON p.id = CAST(ti.product_id AS INTEGER) "
             f"WHERE t.status = 'confirmado' AND t.event_id = ?{date_clause} "
+            f"AND ti.gift_item_id IS NULL "
             f"GROUP BY ti.product_id "
             f"ORDER BY units_sold DESC LIMIT 10",
             [eid] + date_params,
@@ -1550,7 +1553,7 @@ def get_event_financial_report(
             "SELECT ti.product_id AS pid_raw, SUM(ti.quantity) AS qty "
             "FROM transaction_items ti "
             "JOIN transactions t ON t.id = ti.transaction_id "
-            "WHERE t.status = 'estornado' AND t.event_id = ? "
+            "WHERE t.status = 'estornado' AND t.event_id = ? AND ti.gift_item_id IS NULL "
             "GROUP BY ti.product_id",
             (eid,),
         ).fetchall()

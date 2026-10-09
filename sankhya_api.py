@@ -524,6 +524,36 @@ def ack_stock(codes: Iterable[int]) -> None:
     _ack("products/stock", codes)
 
 
+def fetch_payment_types() -> List[Dict]:
+    """Tipos de negociação liberados para o portal: ``GET orders/payment``.
+
+    Lista completa a cada chamada (não é fila: não tem confirmação). Cada
+    item vem como ``{CODTIPVENDA: 122, DESCRTIPVENDA: "POS PIX CIELO   ",
+    DHALTER: "05/10/2026 17:23:25"}``; devolve
+    ``{codtipvenda, description, dhalter}`` com a descrição sem os espaços.
+    Informado pelo integrador em 09/10/2026.
+    """
+    data = _request("GET", "orders/payment")
+    if not isinstance(data, list):
+        raise SankhyaRejected(
+            "Resposta inesperada de orders/payment (esperava uma lista).", response=data
+        )
+    out: List[Dict] = []
+    for row in data:
+        if not isinstance(row, dict):
+            continue
+        try:
+            code = int(str(row.get("CODTIPVENDA")).strip())
+        except (TypeError, ValueError):
+            continue
+        out.append({
+            "codtipvenda": code,
+            "description": " ".join(str(row.get("DESCRTIPVENDA") or "").split()),
+            "dhalter": str(row.get("DHALTER") or "").strip() or None,
+        })
+    return out
+
+
 def create_update_client(payload: Dict) -> Dict:
     """Cria ou atualiza o parceiro (o gateway acha pelo CPF). Devolve ``{codparc, raw}``.
 

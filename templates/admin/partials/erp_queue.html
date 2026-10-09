@@ -28,6 +28,51 @@
     'erro': 'admin-badge--danger',
     'descartado': 'admin-badge--neutral',
 } %}
+<datalist id="erp-codvol-options">
+    {% for unit in known_codvols %}<option value="{{ unit }}">{% endfor %}
+</datalist>
+{% if codvol_missing %}
+<div class="erp-codvol" role="region" aria-label="Produtos sem unidade">
+    <p class="erp-codvol__title">
+        <i class="fa-solid fa-ruler" aria-hidden="true"></i>
+        {{ codvol_missing|length }} produto(s) sem unidade (CODVOL) travando pedidos da fila
+    </p>
+    <p class="erp-codvol__hint">
+        A unidade vem do cadastro do Sankhya, mas a sincronização ainda não trouxe estes produtos.
+        Informe a sigla da unidade de venda (a mesma do Sankhya, ex.: UN, CX, PC); os pedidos
+        parados voltam para a fila na hora. Quando o cadastro chegar do Sankhya, vale o de lá.
+    </p>
+    <ul class="erp-codvol__list">
+        {% for p in codvol_missing %}
+        <li>
+            <span class="erp-codvol__product">
+                <strong>{{ p.erp_codprod or p.sku }}</strong> {{ p.name }}
+                <small>pedido(s) {{ p.orders|join(', ') }}</small>
+            </span>
+            <form method="post" action="{{ url_for('admin_erp_set_codvol') }}" class="erp-codvol__form" data-erp-action>
+                {% include 'partials/csrf_field.html' %}
+                <input type="hidden" name="product_id" value="{{ p.id }}">
+                <input class="admin-field__input erp-codvol__input" name="codvol" list="erp-codvol-options"
+                       maxlength="6" required placeholder="UN" autocomplete="off"
+                       aria-label="Unidade (CODVOL) de {{ p.name }}">
+                <button type="submit" class="admin-btn admin-btn--primary admin-btn--sm">Gravar</button>
+            </form>
+        </li>
+        {% endfor %}
+    </ul>
+</div>
+{% endif %}
+<details class="erp-codvol-other" data-erp-keep="codvol-outro">
+    <summary><i class="fa-solid fa-ruler" aria-hidden="true"></i> Informar a unidade (CODVOL) de outro produto</summary>
+    <form method="post" action="{{ url_for('admin_erp_set_codvol') }}" class="erp-codvol__form" data-erp-action>
+        {% include 'partials/csrf_field.html' %}
+        <input class="admin-field__input" name="produto" required placeholder="CODPROD ou SKU"
+               inputmode="numeric" aria-label="CODPROD ou SKU do produto" autocomplete="off">
+        <input class="admin-field__input erp-codvol__input" name="codvol" list="erp-codvol-options"
+               maxlength="6" required placeholder="UN" autocomplete="off" aria-label="Unidade (CODVOL)">
+        <button type="submit" class="admin-btn admin-btn--ghost admin-btn--sm">Gravar unidade</button>
+    </form>
+</details>
 {% if jobs %}
 <div class="erp-table-wrap erp-table-wrap--card">
     <table class="erp-table erp-table--queue">

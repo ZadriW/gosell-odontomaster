@@ -239,7 +239,9 @@ button.payment__back {
         rgba(232, 137, 11, 0.06) 0%,
         transparent 48%
     );
-    margin: 0 -4px;
+    /* Sem margem negativa: a linha ficava 8px mais larga que a lista e, como
+       .payment-wait__items tem overflow-y: auto, gerava scroll lateral. */
+    margin: 0;
     padding-left: 4px;
     padding-right: 4px;
     border-radius: var(--radius-sm);
@@ -1578,4 +1580,22 @@ button.payment__back {
 }
 .payment-item__meta strong {
     color: #16a34a;
+}
+
+/* Linha de brinde (database/gifts.py): entra a R$ 0,00, sem desconto. */
+.payment-item--gift .payment-item__total .line-item__free-tag,
+.payment-item--gift .line-item__promo--gift {
+    color: #9a7400;
+}
+
+/* Brinde sem foto (brinde avulso): ícone de presente no lugar da imagem. */
+.line-item__gift-icon {
+    display: grid;
+    place-items: center;
+    width: 100%;
+    height: 100%;
+    border-radius: inherit;
+    background: rgba(240, 192, 48, 0.18);
+    color: #9a7400;
+    font-size: 22px;
 }

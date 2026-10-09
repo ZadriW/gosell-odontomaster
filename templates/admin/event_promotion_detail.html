@@ -1,389 +1,262 @@
 {% extends "admin/_layout.html" %}
+{% from "macros/promo_rule.html" import PROMO_RULE_META, promo_rule_text, promo_rule_icon %}
 
-{% block title %}{{ promo.name }} — Promoção | {{ event.name }} | Dental Odonto Master{% endblock %}
+{#
+    Promoção: criação (promo = None, rota admin_event_promotion_new) e edição.
+    ``state`` traz os valores do formulário (salvos ou do POST recusado).
+    Comportamento em static/js/admin-promo-form.js; estilos em css/admin-promos.css.
+#}
+
+{% set is_new = promo is none %}
+{% set readonly = not event_ops_open(event) %}
+
+{% block title %}{{ 'Nova promoção' if is_new else promo.name }} — Promoções | {{ event.name }} | Dental Odonto Master{% endblock %}
+
+{% block admin_head %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/admin-promos.css') }}">
+{% endblock %}
+
+{% macro money(value) -%}{{ '%.2f'|format(value) if value is not none else '' }}{%- endmacro %}
+{% macro qty(value, default) -%}{{ value if value is not none else default }}{%- endmacro %}
 
 {% block admin_body %}
-{% set op_noun_l = event|op_noun(lower=True) %}
-<section class="admin-section">
+{% set rt = state.rule_type %}
+<section class="admin-section promo-page">
     <header class="admin-section__header admin-section__header--row">
         <div>
-            <h1 class="admin-section__title">{{ promo.name }}</h1>
+            <h1 class="admin-section__title">{{ 'Nova promoção' if is_new else promo.name }}</h1>
             <p class="admin-section__subtitle">
-                {{ promo.rule_label }}
-                &middot;
-                {% if promo.active %}
-                    <span class="admin-badge admin-badge--success">Ativa</span>
+                {% if is_new %}
+                Dê um nome, escolha a regra e os produtos. O desconto entra sozinho no carrinho.
                 {% else %}
-                    <span class="admin-badge admin-badge--neutral">Inativa</span>
+                <span class="admin-badge {{ 'admin-badge--success' if promo.active else 'admin-badge--neutral' }}">{{ 'Ativa' if promo.active else 'Inativa' }}</span>
+                {{ promo_rule_text(promo) }}
                 {% endif %}
             </p>
         </div>
-        {% if event_ops_open(event) %}
-        <div style="display:flex; gap:8px; align-items:flex-start; flex-wrap:wrap;">
-            <form method="post"
-                  action="{{ url_for('admin_event_promotion_toggle', event_id=event.id, promo_id=promo.id) }}">
+        {% if not is_new and not readonly %}
+        <div class="promo-page__actions">
+            <form method="post" action="{{ url_for('admin_event_promotion_toggle', event_id=event.id, promo_id=promo.id) }}">
                 {% include 'partials/csrf_field.html' %}
-                <button type="submit" class="admin-btn admin-btn--ghost">
-                    <i class="fa-solid {{ 'fa-toggle-on' if promo.active else 'fa-toggle-off' }}" aria-hidden="true"></i>
-                    {{ 'Desativar' if promo.active else 'Ativar' }}
+                <button type="submit" class="promo-switch promo-switch--lg" role="switch" aria-checked="{{ 'true' if promo.active else 'false' }}">
+                    <span class="promo-switch__track" aria-hidden="true"><span class="promo-switch__knob"></span></span>
+                    <span class="promo-switch__label">{{ 'Ativa' if promo.active else 'Inativa' }}</span>
                 </button>
             </form>
-            <form method="post"
-                  action="{{ url_for('admin_event_promotion_delete', event_id=event.id, promo_id=promo.id) }}">
+            <form method="post" action="{{ url_for('admin_event_promotion_delete', event_id=event.id, promo_id=promo.id) }}"
+                  data-confirm="Excluir a promoção «{{ promo.name }}»? Esta ação não pode ser desfeita."
+                  data-confirm-title="Excluir promoção" data-confirm-label="Excluir">
                 {% include 'partials/csrf_field.html' %}
-                <button type="submit"
-                        class="admin-btn admin-btn--ghost admin-btn--danger"
-                        onclick="return confirm('Excluir a promoção «{{ promo.name|e }}»? Esta ação não pode ser desfeita.');">
-                    <i class="fa-solid fa-trash" aria-hidden="true"></i>
-                    Excluir
+                <button type="submit" class="admin-btn admin-btn--ghost promo-card__delete">
+                    <i class="fa-solid fa-trash" aria-hidden="true"></i> Excluir
                 </button>
             </form>
         </div>
         {% endif %}
     </header>
 
-    {# ---- Formulário de edição ---- #}
-    <div class="admin-card admin-card--form admin-promo-form">
-        <h2 class="admin-card__title">
-            <i class="fa-solid fa-pen-to-square" aria-hidden="true"></i>
-            Editar promoção
-        </h2>
+    {% if readonly %}
+    <p class="promo-readonly"><i class="fa-solid fa-lock" aria-hidden="true"></i> As operações deste evento estão encerradas: a promoção pode ser consultada, mas não alterada.</p>
+    {% endif %}
 
-        <form method="post"
-              action="{{ url_for('admin_event_promotion_edit', event_id=event.id, promo_id=promo.id) }}"
-              class="admin-card__form admin-promo-edit-form"
-              id="formEditPromo">
-            {% include 'partials/csrf_field.html' %}
-            <fieldset class="admin-promo-edit-fields" {% if not event_ops_open(event) %}disabled{% endif %}>
+    <form method="post" id="promoForm" class="promo-editor" novalidate data-promo-form
+          action="{{ url_for('admin_event_promotion_create', event_id=event.id) if is_new else url_for('admin_event_promotion_edit', event_id=event.id, promo_id=promo.id) }}">
+        {% include 'partials/csrf_field.html' %}
 
-            {# Nome #}
-            <div class="admin-field">
-                <label class="admin-field__label" for="edit-promo-name">Nome da promoção</label>
-                <input id="edit-promo-name" type="text" name="name"
-                       class="admin-field__input"
-                       value="{{ promo.name }}"
-                       required maxlength="120" autocomplete="off">
-            </div>
+        <div class="promo-editor__main">
+            <fieldset class="promo-editor__fieldset" {% if readonly %}disabled{% endif %}>
 
-            {# Tipo de regra #}
-            <div class="admin-field">
-                <label class="admin-field__label" for="edit-promo-rule-type">Tipo de regra</label>
-                <select id="edit-promo-rule-type" name="rule_type"
-                        class="admin-field__input"
-                        data-promo-rule-select>
-                    {% for value, label in rule_type_labels.items() %}
-                    <option value="{{ value }}" {{ 'selected' if promo.rule_type == value }}>{{ label }}</option>
+            {# ---------------- 1. Nome ---------------- #}
+            <section class="promo-step">
+                <header class="promo-step__head">
+                    <span class="promo-step__num">1</span>
+                    <div>
+                        <h2 class="promo-step__title">Nome</h2>
+                        <p class="promo-step__hint">É como a promoção aparece para o vendedor e no carrinho.</p>
+                    </div>
+                </header>
+                <input type="text" name="name" class="admin-field__input promo-name-input" id="promo-name"
+                       value="{{ state.name }}" maxlength="120" autocomplete="off" required
+                       placeholder="Ex.: Kit Alginato 5 unidades" data-promo-name aria-label="Nome da promoção">
+            </section>
+
+            {# ---------------- 2. Regra ---------------- #}
+            <section class="promo-step">
+                <header class="promo-step__head">
+                    <span class="promo-step__num">2</span>
+                    <div>
+                        <h2 class="promo-step__title">Regra</h2>
+                        <p class="promo-step__hint">Como o preço muda quando os produtos entram no carrinho.</p>
+                    </div>
+                </header>
+
+                <div class="promo-rules" role="radiogroup" aria-label="Tipo de regra">
+                    {% for key, meta in PROMO_RULE_META.items() %}
+                    <label class="promo-rule">
+                        <input type="radio" name="rule_type" value="{{ key }}" {% if rt == key %}checked{% endif %} data-promo-rule>
+                        <span class="promo-rule__icon promo-type--{{ key }}"><i class="fa-solid {{ meta.icon }}" aria-hidden="true"></i></span>
+                        <span class="promo-rule__text">
+                            <strong>{{ meta.title }}</strong>
+                            <small>{{ meta.hint }}</small>
+                        </span>
+                    </label>
                     {% endfor %}
-                </select>
-            </div>
+                </div>
 
-            {# percent / fixed #}
-            <div class="admin-promo-rule-fields" data-rule-fields="percent fixed"
-                 style="display:{{ 'flex' if promo.rule_type in ('percent','fixed') else 'none' }}; gap:16px; flex-wrap:wrap;">
-                <div class="admin-field" style="flex:1; min-width:160px;">
-                    <label class="admin-field__label" for="edit-promo-rule-value">
-                        <span data-rule-label-percent style="display:{{ '' if promo.rule_type == 'percent' else 'none' }}">Percentual (%)</span>
-                        <span data-rule-label-fixed style="display:{{ '' if promo.rule_type == 'fixed' else 'none' }}">Valor fixo (R$)</span>
-                    </label>
-                    <input id="edit-promo-rule-value" type="number" name="rule_value_pf"
-                           class="admin-field__input"
-                           min="0.01" step="0.01"
-                           value="{{ promo.rule_value if promo.rule_type in ('percent','fixed') else '' }}"
-                           placeholder="Ex.: 15">
-                </div>
-            </div>
-
-            {# bogo #}
-            <div class="admin-promo-rule-fields" data-rule-fields="bogo"
-                 style="display:{{ 'flex' if promo.rule_type == 'bogo' else 'none' }}; gap:16px; flex-wrap:wrap;">
-                <div class="admin-field" style="flex:1; min-width:200px;">
-                    <label class="admin-field__label" for="edit-promo-min-qty">Compre (qtd. paga)</label>
-                    <input id="edit-promo-min-qty" type="number" name="min_qty_bogo"
-                           class="admin-field__input"
-                           min="1" step="1"
-                           value="{{ promo.min_qty if promo.rule_type == 'bogo' else '2' }}"
-                           placeholder="Ex.: 2">
-                    <label class="admin-field__label" for="edit-promo-bogo-buy-sku" style="margin-top:10px;">SKU a comprar</label>
-                    <select id="edit-promo-bogo-buy-sku" name="bogo_buy_product_id"
-                            class="admin-field__input"
-                            data-bogo-buy-sku
-                            data-selected="{{ promo.bogo_buy_product_id or '' }}">
-                        <option value="">Marque produtos participantes primeiro</option>
-                    </select>
-                </div>
-                <div class="admin-field" style="flex:1; min-width:200px;">
-                    <label class="admin-field__label" for="edit-promo-free-qty">Leve a mais (grátis)</label>
-                    <input id="edit-promo-free-qty" type="number" name="free_qty"
-                           class="admin-field__input"
-                           min="1" step="1"
-                           value="{{ promo.free_qty if promo.rule_type == 'bogo' else '1' }}"
-                           placeholder="Ex.: 1">
-                    <label class="admin-field__label" for="edit-promo-bogo-free-sku" style="margin-top:10px;">SKU grátis</label>
-                    <select id="edit-promo-bogo-free-sku" name="bogo_free_product_id"
-                            class="admin-field__input"
-                            data-bogo-free-sku
-                            data-selected="{{ promo.bogo_free_product_id or '' }}">
-                        <option value="">Marque produtos participantes primeiro</option>
-                    </select>
-                </div>
-                <div class="admin-promo-bogo-preview admin-field__hint" aria-live="polite" style="width:100%;">
-                    <i class="fa-solid fa-circle-info" aria-hidden="true"></i>
-                    <span data-bogo-summary>Compre {{ promo.min_qty }}, leve {{ promo.min_qty + promo.free_qty }} ({{ promo.free_qty }} grátis)</span>
-                </div>
-            </div>
-
-            {# min_bundle / exact_bundle #}
-            <div class="admin-promo-rule-fields" data-rule-fields="min_bundle exact_bundle"
-                 style="display:{{ 'flex' if promo.rule_type in ('min_bundle','exact_bundle') else 'none' }}; gap:16px; flex-wrap:wrap;">
-                <div class="admin-field" style="flex:1; min-width:140px;">
-                    <label class="admin-field__label" for="edit-promo-bundle-qty">
-                        <span data-rule-label-min-bundle style="display:{{ '' if promo.rule_type == 'min_bundle' else 'none' }}">A partir de (qtd. mínima)</span>
-                        <span data-rule-label-exact-bundle style="display:{{ '' if promo.rule_type == 'exact_bundle' else 'none' }}">Qtd. exata do pacote</span>
-                    </label>
-                    <input id="edit-promo-bundle-qty" type="number" name="min_qty_bundle"
-                           class="admin-field__input"
-                           min="2" step="1"
-                           value="{{ promo.min_qty if promo.rule_type in ('min_bundle','exact_bundle') else '3' }}"
-                           placeholder="Ex.: 3">
-                </div>
-                <div class="admin-field" style="flex:1; min-width:160px;">
-                    <label class="admin-field__label" for="edit-promo-bundle-value">Valor total do pacote (R$)</label>
-                    <input id="edit-promo-bundle-value" type="number" name="rule_value_bundle"
-                           class="admin-field__input"
-                           min="0.01" step="0.01"
-                           value="{{ promo.rule_value if promo.rule_type in ('min_bundle','exact_bundle') else '' }}"
-                           placeholder="Ex.: 50,00">
-                </div>
-                <div class="admin-promo-bundle-preview admin-field__hint" aria-live="polite" style="width:100%;">
-                    <i class="fa-solid fa-circle-info" aria-hidden="true"></i>
-                    <span data-bundle-summary>
-                        {% if promo.rule_type == 'min_bundle' %}
-                        A partir de {{ promo.min_qty }} unidades, cada conjunto de {{ promo.min_qty }} por R$ {{ '%.2f'|format(promo.rule_value)|replace('.',',') }} — excedentes pagam preço normal
-                        {% elif promo.rule_type == 'exact_bundle' %}
-                        Kit de {{ promo.min_qty }} unidades por R$ {{ '%.2f'|format(promo.rule_value)|replace('.',',') }}
-                        {% endif %}
-                    </span>
-                </div>
-            </div>
-
-            {# combo_bundle #}
-            <div class="admin-promo-rule-fields" data-rule-fields="combo_bundle"
-                 style="display:{{ 'flex' if promo.rule_type == 'combo_bundle' else 'none' }}; gap:16px; flex-wrap:wrap;">
-                <div class="admin-field" style="flex:1; min-width:160px;">
-                    <label class="admin-field__label" for="edit-promo-combo-value">Valor total do combo (R$)</label>
-                    <input id="edit-promo-combo-value" type="number" name="rule_value_combo"
-                           class="admin-field__input"
-                           min="0.01" step="0.01"
-                           value="{{ promo.rule_value if promo.rule_type == 'combo_bundle' else '' }}"
-                           placeholder="Ex.: 99,90">
-                </div>
-                <div class="admin-promo-combo-preview admin-field__hint" aria-live="polite" style="width:100%;">
-                    <i class="fa-solid fa-circle-info" aria-hidden="true"></i>
-                    <span data-combo-summary>
-                        {% if promo.rule_type == 'combo_bundle' %}
-                        Combo: na compra de 1 un. de cada produto selecionado, o conjunto sai por R$ {{ '%.2f'|format(promo.rule_value)|replace('.',',') }}
-                        {% else %}
-                        Selecione 2+ produtos e defina o valor do combo
-                        {% endif %}
-                    </span>
-                </div>
-            </div>
-
-            {# Produtos participantes (lista do evento) #}
-            <div class="admin-field">
-                <label class="admin-field__label">Produtos participantes</label>
-                {% if event_products %}
-                <div class="admin-promo-product-list" data-promo-product-list>
-                    <div class="admin-promo-product-list__controls">
-                        <label class="admin-promo-product-filter">
-                            <span class="admin-promo-product-filter__icon" aria-hidden="true">
-                                <i class="fa-solid fa-magnifying-glass"></i>
-                            </span>
-                            <input type="search"
-                                   class="admin-promo-product-filter__input"
-                                   data-promo-product-filter
-                                   placeholder="Buscar por SKU ou ID..."
-                                   autocomplete="off"
-                                   spellcheck="false"
-                                   aria-label="Filtrar produtos por SKU ou ID">
-                        </label>
-                        <div class="admin-promo-product-list__actions">
-                            <button type="button" class="admin-btn admin-btn--ghost admin-btn--xs" data-select-all-promo>
-                                <i class="fa-solid fa-check-double" aria-hidden="true"></i> Todos
-                            </button>
-                            <button type="button" class="admin-btn admin-btn--ghost admin-btn--xs" data-deselect-all-promo>
-                                <i class="fa-solid fa-xmark" aria-hidden="true"></i> Nenhum
-                            </button>
+                <div class="promo-fields">
+                    {# Kit fechado #}
+                    <div class="promo-fields__section" data-rule-section="exact_bundle">
+                        <p class="promo-sentence">
+                            Kit de
+                            <span class="promo-input promo-input--qty"><input type="number" name="min_qty_bundle" min="2" step="1" inputmode="numeric"
+                                   value="{{ qty(state.min_qty if rt == 'exact_bundle' else none, 5) }}" aria-label="Unidades do kit"></span>
+                            unidades por
+                            <span class="promo-input promo-input--money"><span class="promo-input__affix">R$</span><input type="number" name="rule_value_bundle" min="0.01" step="0.01" inputmode="decimal"
+                                   value="{{ money(state.rule_value if rt == 'exact_bundle' else none) }}" placeholder="0,00" aria-label="Valor do kit"></span>
+                        </p>
+                        <p class="promo-fields__hint">Só kits completos têm o preço especial. Ex.: num kit de 5, a 6ª unidade sai pelo preço normal.</p>
+                    </div>
+                    {# A partir de #}
+                    <div class="promo-fields__section" data-rule-section="min_bundle">
+                        <p class="promo-sentence">
+                            A partir de
+                            <span class="promo-input promo-input--qty"><input type="number" name="min_qty_bundle" min="2" step="1" inputmode="numeric"
+                                   value="{{ qty(state.min_qty if rt == 'min_bundle' else none, 3) }}" aria-label="Quantidade mínima"></span>
+                            unidades, cada grupo sai por
+                            <span class="promo-input promo-input--money"><span class="promo-input__affix">R$</span><input type="number" name="rule_value_bundle" min="0.01" step="0.01" inputmode="decimal"
+                                   value="{{ money(state.rule_value if rt == 'min_bundle' else none) }}" placeholder="0,00" aria-label="Valor do grupo"></span>
+                        </p>
+                        <p class="promo-fields__hint">Abaixo do mínimo vale o preço normal; unidades que sobram além dos grupos completos também.</p>
+                    </div>
+                    {# Combo #}
+                    <div class="promo-fields__section" data-rule-section="combo_bundle">
+                        <p class="promo-sentence">
+                            Levando 1 unidade de cada produto participante, o conjunto sai por
+                            <span class="promo-input promo-input--money"><span class="promo-input__affix">R$</span><input type="number" name="rule_value_combo" min="0.01" step="0.01" inputmode="decimal"
+                                   value="{{ money(state.rule_value if rt == 'combo_bundle' else none) }}" placeholder="0,00" aria-label="Valor do combo"></span>
+                        </p>
+                        <p class="promo-fields__hint">Precisa de pelo menos 2 produtos. Cada combo completo sai pelo valor; o que sobrar paga o preço normal.</p>
+                    </div>
+                    {# Compre e leve #}
+                    <div class="promo-fields__section" data-rule-section="bogo">
+                        <p class="promo-sentence">
+                            Compre
+                            <span class="promo-input promo-input--qty"><input type="number" name="min_qty_bogo" min="1" step="1" inputmode="numeric"
+                                   value="{{ qty(state.min_qty if rt == 'bogo' else none, 2) }}" aria-label="Quantidade paga"></span>
+                            e leve mais
+                            <span class="promo-input promo-input--qty"><input type="number" name="free_qty" min="1" step="1" inputmode="numeric"
+                                   value="{{ qty(state.free_qty if rt == 'bogo' else none, 1) }}" aria-label="Quantidade grátis"></span>
+                            grátis
+                        </p>
+                        <div class="promo-bogo">
+                            <label class="admin-field">
+                                <span class="admin-field__label">Produto que o cliente compra</span>
+                                <select name="bogo_buy_product_id" class="admin-field__input" data-bogo-buy
+                                        data-selected="{{ state.bogo_buy_product_id or '' }}"></select>
+                            </label>
+                            <label class="admin-field">
+                                <span class="admin-field__label">Produto que ele ganha</span>
+                                <select name="bogo_free_product_id" class="admin-field__input" data-bogo-free
+                                        data-selected="{{ state.bogo_free_product_id or '' }}"></select>
+                            </label>
                         </div>
+                        <p class="promo-fields__hint">Os dois saem da lista de produtos participantes (passo 3) e podem ser o mesmo produto.</p>
                     </div>
-                    <div class="admin-promo-product-list__grid">
-                        {% for ep in event_products %}
-                        <label class="admin-promo-product-item"
-                               data-promo-pid="{{ ep.product_id }}"
-                               data-promo-sku="{{ (ep.sku or '')|lower }}">
-                            <input type="checkbox" name="product_ids"
-                                   value="{{ ep.product_id }}"
-                                   class="admin-promo-product-item__check"
-                                   {{ 'checked' if ep.product_id in promo.product_ids }}>
-                            <span class="admin-promo-product-item__name">{{ ep.name }}</span>
-                            <span class="admin-promo-product-item__meta">{{ ep.sku or '' }}</span>
-                        </label>
-                        {% endfor %}
+                    {# Desconto % #}
+                    <div class="promo-fields__section" data-rule-section="percent">
+                        <p class="promo-sentence">
+                            Cada unidade com
+                            <span class="promo-input promo-input--qty"><input type="number" name="rule_value_pf" min="0.5" max="100" step="0.5" inputmode="decimal"
+                                   value="{{ ('%g'|format(state.rule_value)) if (rt == 'percent' and state.rule_value is not none) else 10 }}" aria-label="Percentual de desconto"><span class="promo-input__affix">%</span></span>
+                            de desconto
+                        </p>
+                        <p class="promo-fields__hint">Vale em qualquer quantidade, sobre o preço do produto no evento.</p>
+                    </div>
+                    {# Desconto R$ #}
+                    <div class="promo-fields__section" data-rule-section="fixed">
+                        <p class="promo-sentence">
+                            Cada unidade com
+                            <span class="promo-input promo-input--money"><span class="promo-input__affix">R$</span><input type="number" name="rule_value_pf" min="0.01" step="0.01" inputmode="decimal"
+                                   value="{{ money(state.rule_value if rt == 'fixed' else none) }}" placeholder="0,00" aria-label="Desconto em reais"></span>
+                            de desconto
+                        </p>
+                        <p class="promo-fields__hint">Se o desconto passar do preço, a unidade sai por R$ 0,00.</p>
                     </div>
                 </div>
-                {% else %}
-                <p class="admin-field__hint">
-                    <i class="fa-solid fa-circle-info" aria-hidden="true"></i>
-                    Nenhum produto neste {{ op_noun_l }}.
-                </p>
-                {% endif %}
-            </div>
+            </section>
 
+            {# ---------------- 3. Produtos ---------------- #}
+            <section class="promo-step">
+                <header class="promo-step__head">
+                    <span class="promo-step__num">3</span>
+                    <div>
+                        <h2 class="promo-step__title">Produtos participantes</h2>
+                        <p class="promo-step__hint">Busque pelo nome, SKU ou categoria e clique para adicionar. Dá para colar vários SKUs de uma vez.</p>
+                    </div>
+                </header>
+
+                <div class="promo-picker" data-promo-picker data-readonly="{{ '1' if readonly else '0' }}"
+                     data-selected="{{ state.product_ids|tojson|forceescape }}">
+                    <script type="application/json" data-promo-catalog>{{ picker_catalog|tojson }}</script>
+                    {% if not readonly %}
+                    <div class="promo-picker__search">
+                        <i class="fa-solid fa-magnifying-glass" aria-hidden="true"></i>
+                        <input type="search" data-picker-input autocomplete="off" spellcheck="false"
+                               placeholder="Buscar produto do evento… (ou cole SKUs separados por vírgula)"
+                               role="combobox" aria-expanded="false" aria-controls="promoPickerResults"
+                               aria-label="Buscar produto para adicionar">
+                        <kbd class="promo-picker__kbd" aria-hidden="true">Enter</kbd>
+                    </div>
+                    <div class="promo-picker__results" id="promoPickerResults" role="listbox" data-picker-results hidden></div>
+                    {% endif %}
+                    <div class="promo-picker__head">
+                        <strong data-picker-count>0 produtos</strong>
+                        {% if not readonly %}
+                        <button type="button" class="promo-link-btn" data-picker-clear hidden>Remover todos</button>
+                        {% endif %}
+                    </div>
+                    <ul class="promo-picker__selected" data-picker-selected></ul>
+                    <div class="promo-picker__empty" data-picker-empty>
+                        <i class="fa-solid fa-basket-shopping" aria-hidden="true"></i>
+                        <span>Nenhum produto ainda.{% if not readonly %} Use a busca acima para adicionar.{% endif %}</span>
+                    </div>
+                    <div data-picker-inputs hidden></div>
+                </div>
+            </section>
             </fieldset>
-            <div class="admin-card__actions">
-                {% if event_ops_open(event) %}
-                <button type="submit" class="admin-btn admin-btn--primary">
-                    <i class="fa-solid fa-floppy-disk" aria-hidden="true"></i>
-                    Salvar alterações
+        </div>
+
+        {# ---------------- Resumo ---------------- #}
+        <aside class="promo-editor__aside">
+            <div class="promo-summary">
+                <p class="promo-summary__eyebrow">Resumo</p>
+                <div class="promo-summary__head">
+                    <span class="promo-summary__icon promo-type--{{ rt }}" data-summary-icon>
+                        <i class="fa-solid {{ promo_rule_icon(rt) }}" aria-hidden="true"></i>
+                    </span>
+                    <strong class="promo-summary__name" data-summary-name>{{ state.name or 'Sem nome' }}</strong>
+                </div>
+                <p class="promo-summary__sentence" data-summary-sentence></p>
+                <p class="promo-summary__detail" data-summary-detail></p>
+                <p class="promo-summary__count"><i class="fa-solid fa-box-open" aria-hidden="true"></i> <span data-summary-count>0 produtos</span></p>
+                <ul class="promo-summary__missing" data-summary-missing></ul>
+                {% if not readonly %}
+                <button type="submit" class="admin-btn admin-btn--primary promo-summary__save">
+                    <i class="fa-solid {{ 'fa-plus' if is_new else 'fa-floppy-disk' }}" aria-hidden="true"></i>
+                    {{ 'Criar promoção' if is_new else 'Salvar alterações' }}
                 </button>
                 {% endif %}
-                <a href="{{ url_for('admin_event_promotions', event_id=event.id) }}"
-                   class="admin-btn admin-btn--ghost">{{ 'Voltar' if not event_ops_open(event) else 'Cancelar' }}</a>
+                <a class="admin-btn admin-btn--ghost promo-summary__cancel" href="{{ url_for('admin_event_promotions', event_id=event.id) }}">
+                    {{ 'Voltar' if readonly else 'Cancelar' }}
+                </a>
+                <p class="promo-summary__note"><i class="fa-solid fa-shield-halved" aria-hidden="true"></i> O desconto é recalculado no servidor a cada venda.</p>
             </div>
-        </form>
-    </div>
-
-    {# ---- Info: como a promoção é aplicada ---- #}
-    <div class="admin-card admin-promo-info-card" style="margin-top:20px;">
-        <h2 class="admin-card__title">
-            <i class="fa-solid fa-circle-info" aria-hidden="true"></i>
-            Como esta promoção funciona
-        </h2>
-        <div class="admin-promo-info-body">
-            {% if promo.rule_type == 'percent' %}
-            <p>Cada produto participante recebe <strong>{{ promo.rule_value | int }}% de desconto</strong> no preço de lista ao ser adicionado ao carrinho. O preço efetivo é calculado automaticamente na criação do pedido.</p>
-            {% elif promo.rule_type == 'fixed' %}
-            <p>Cada unidade de produto participante tem <strong>R$ {{ '%.2f'|format(promo.rule_value)|replace('.',',') }} de desconto</strong> no preço de lista. Se o desconto ultrapassar o preço, o item é cobrado a R$ 0,00.</p>
-            {% elif promo.rule_type == 'bogo' %}
-            {% if promo.bogo_buy_sku and promo.bogo_free_sku and promo.bogo_buy_sku != promo.bogo_free_sku %}
-            <p>A cada <strong>{{ promo.min_qty }} unidade(s)</strong> do SKU <strong>{{ promo.bogo_buy_sku }}</strong> pagas, o cliente leva <strong>{{ promo.free_qty }} unidade(s)</strong> do SKU <strong>{{ promo.bogo_free_sku }}</strong> gratuitamente. O produto pago continua no preço de lista; o desconto incide só nas unidades grátis do segundo SKU.</p>
-            {% else %}
-            <p>A cada <strong>{{ promo.min_qty }} unidade(s) pagas</strong>, o cliente leva <strong>{{ promo.free_qty }} unidade(s) gratuitamente</strong> — ou seja, leva {{ promo.min_qty + promo.free_qty }} pagando {{ promo.min_qty }}. O desconto é distribuído proporcionalmente no subtotal do pedido.</p>
-            {% endif %}
-            {% elif promo.rule_type == 'min_bundle' %}
-            <p>A partir da compra de <strong>{{ promo.min_qty }} unidade(s)</strong>, cada conjunto de {{ promo.min_qty }} un. custa <strong>R$ {{ '%.2f'|format(promo.rule_value)|replace('.',',') }}</strong>. Abaixo desse mínimo o preço normal é cobrado; unidades que sobrem além dos grupos completos também são cobradas pelo preço normal unitário.</p>
-            {% elif promo.rule_type == 'exact_bundle' %}
-            <p>Cada grupo de exatamente <strong>{{ promo.min_qty }} unidade(s)</strong> do mesmo produto custa <strong>R$ {{ '%.2f'|format(promo.rule_value)|replace('.',',') }}</strong>. Unidades que sobrem além dos grupos completos são cobradas pelo preço normal unitário.</p>
-            {% elif promo.rule_type == 'combo_bundle' %}
-            <p>Na compra de <strong>1 unidade de cada</strong> produto selecionado ({{ promo.product_ids|length }} produtos), o conjunto inteiro sai por <strong>R$ {{ '%.2f'|format(promo.rule_value)|replace('.',',') }}</strong>. Se o cliente comprar mais de um combo completo, cada grupo sai pelo valor promocional. Unidades excedentes que não completam outro combo são cobradas pelo preço normal.</p>
-            {% endif %}
-            <p class="admin-text-muted" style="margin-top:8px; font-size:13px;">
-                <i class="fa-solid fa-shield-halved" aria-hidden="true"></i>
-                O desconto é sempre calculado e auditado no servidor no momento da venda.
-            </p>
-        </div>
-    </div>
+        </aside>
+    </form>
 </section>
-
 {% endblock %}
 
 {% block admin_scripts %}
-<script src="{{ url_for('static', filename='js/admin-promo-product-filter.js') }}"></script>
-<script src="{{ url_for('static', filename='js/admin-promo-rule-fields.js') }}"></script>
-<script>
-(function () {
-    'use strict';
-
-    const form = document.getElementById('formEditPromo');
-    if (!form) return;
-
-    const ruleSelect = form.querySelector('[data-promo-rule-select]');
-    const percentFixedFields = form.querySelector('[data-rule-fields="percent fixed"]');
-    const bogoFields = form.querySelector('[data-rule-fields="bogo"]');
-    const bundleFields = form.querySelector('[data-rule-fields="min_bundle exact_bundle"]');
-    const comboFields = form.querySelector('[data-rule-fields="combo_bundle"]');
-    const labelPercent = form.querySelector('[data-rule-label-percent]');
-    const labelFixed = form.querySelector('[data-rule-label-fixed]');
-    const labelMinBundle = form.querySelector('[data-rule-label-min-bundle]');
-    const labelExactBundle = form.querySelector('[data-rule-label-exact-bundle]');
-    const bogoSummary = form.querySelector('[data-bogo-summary]');
-    const bundleSummary = form.querySelector('[data-bundle-summary]');
-    const comboSummary = form.querySelector('[data-combo-summary]');
-    const minQtyInput = form.querySelector('#edit-promo-min-qty');
-    const freeQtyInput = form.querySelector('#edit-promo-free-qty');
-    const bundleQtyInput = form.querySelector('#edit-promo-bundle-qty');
-    const bundleValueInput = form.querySelector('#edit-promo-bundle-value');
-    const comboValueInput = form.querySelector('#edit-promo-combo-value');
-
-    function updateRuleFields() {
-        if (!ruleSelect) return;
-        const val = ruleSelect.value;
-        if (percentFixedFields) percentFixedFields.style.display = (val === 'percent' || val === 'fixed') ? 'flex' : 'none';
-        if (bogoFields) bogoFields.style.display = val === 'bogo' ? 'flex' : 'none';
-        if (bundleFields) bundleFields.style.display = (val === 'min_bundle' || val === 'exact_bundle') ? 'flex' : 'none';
-        if (comboFields) comboFields.style.display = val === 'combo_bundle' ? 'flex' : 'none';
-        if (labelPercent) labelPercent.style.display = val === 'percent' ? '' : 'none';
-        if (labelFixed) labelFixed.style.display = val === 'fixed' ? '' : 'none';
-        if (labelMinBundle) labelMinBundle.style.display = val === 'min_bundle' ? '' : 'none';
-        if (labelExactBundle) labelExactBundle.style.display = val === 'exact_bundle' ? '' : 'none';
-        updateBundleSummary();
-        updateComboSummary();
-    }
-
-    function updateBogoSummary() {
-        if (!bogoSummary || !minQtyInput || !freeQtyInput) return;
-        const min = Math.max(1, parseInt(minQtyInput.value) || 1);
-        const free = Math.max(1, parseInt(freeQtyInput.value) || 1);
-        bogoSummary.textContent = `Compre ${min}, leve ${min + free} (${free} grátis)`;
-    }
-
-    function updateBundleSummary() {
-        if (!bundleSummary || !bundleQtyInput || !bundleValueInput || !ruleSelect) return;
-        const type = ruleSelect.value;
-        const qty = Math.max(2, parseInt(bundleQtyInput.value) || 2);
-        const val = parseFloat(bundleValueInput.value) || 0;
-        const valFmt = val.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-        const unitFmt = qty > 0 ? (val / qty).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '—';
-        if (type === 'min_bundle') {
-            bundleSummary.textContent = val > 0
-                ? `A partir de ${qty} unidades, cada conjunto de ${qty} por R$ ${valFmt} — excedentes pagam preço normal`
-                : `Informe a quantidade mínima e o valor total do conjunto`;
-        } else if (type === 'exact_bundle') {
-            bundleSummary.textContent = val > 0
-                ? `Kit de ${qty} unidades por R$ ${valFmt}. Unidades além do pacote (ex.: a 6ª de um kit de 5) pagam o preço normal; outro kit só com +${qty} un.`
-                : `Informe a quantidade exata e o valor total do kit`;
-        }
-    }
-
-    function updateComboSummary() {
-        if (!comboSummary || !comboValueInput) return;
-        const val = parseFloat(comboValueInput.value) || 0;
-        const valFmt = val.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-        comboSummary.textContent = val > 0
-            ? `Combo: na compra de 1 un. de cada produto selecionado, o conjunto sai por R$ ${valFmt}`
-            : 'Selecione 2+ produtos e defina o valor do combo';
-    }
-
-    if (ruleSelect) {
-        ruleSelect.addEventListener('change', updateRuleFields);
-    }
-    if (minQtyInput) minQtyInput.addEventListener('input', updateBogoSummary);
-    if (freeQtyInput) freeQtyInput.addEventListener('input', updateBogoSummary);
-    if (bundleQtyInput) { bundleQtyInput.addEventListener('input', updateBundleSummary); }
-    if (bundleValueInput) { bundleValueInput.addEventListener('input', updateBundleSummary); }
-    if (comboValueInput) { comboValueInput.addEventListener('input', updateComboSummary); }
-
-    document.addEventListener('click', function (e) {
-        const f = e.target.closest('#formEditPromo');
-        if (!f) return;
-        if (e.target.closest('[data-select-all-promo]')) {
-            f.querySelectorAll('input[name="product_ids"]').forEach(cb => { cb.checked = true; });
-        }
-        if (e.target.closest('[data-deselect-all-promo]')) {
-            f.querySelectorAll('input[name="product_ids"]').forEach(cb => { cb.checked = false; });
-        }
-    });
-})();
-</script>
-<script src="{{ url_for('static', filename='js/admin-promo-bogo-sku.js') }}"></script>
+<script src="{{ url_for('static', filename='js/admin-promo-picker.js') }}"></script>
+<script src="{{ url_for('static', filename='js/admin-promo-form.js') }}"></script>
 {% endblock %}

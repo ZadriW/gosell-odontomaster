@@ -78,7 +78,20 @@ from werkzeug.security import check_password_hash, generate_password_hash
 
 from data.products import CATEGORIES
 from database import (
+    GIFT_RULE_LABELS,
     RULE_TYPE_LABELS,
+    active_gift_rules_for_cart,
+    create_gift_item,
+    create_gift_rule,
+    delete_gift_item,
+    delete_gift_rule,
+    get_gift_item,
+    get_gift_rule,
+    list_gift_items_for_event,
+    list_gift_rules_for_event,
+    toggle_gift_rule_active,
+    update_gift_item,
+    update_gift_rule,
     active_promotion_names_by_product_id,
     active_promotion_tooltip_by_product_id,
     build_promo_display_map,
@@ -188,6 +201,7 @@ from database import (
     list_sellers_without_codvend,
     normalize_seller_codvend,
     set_product_erp_codprod,
+    set_product_erp_codvol,
     update_event,
     update_event_product_backorder_limit,
     update_event_product_price,
@@ -615,6 +629,23 @@ def _inject_cart_scope():
     return {"totem_cart_scope": _cart_scope}
 
 
+def _cart_gift_rules() -> list:
+    """Brindes ativos do evento do vendedor, para o carrinho mostrar a linha grátis.
+
+    A venda recalcula o brinde no servidor; isto só antecipa o que o pedido ganha.
+    """
+    seller_id = (_seller_auth() or {}).get("seller_id")
+    if not seller_id:
+        return []
+    ev = get_active_event_for_seller(int(seller_id))
+    return active_gift_rules_for_cart(int(ev["id"])) if ev else []
+
+
+@app.context_processor
+def _inject_cart_gift_rules():
+    return {"cart_gift_rules": _cart_gift_rules}
+
+
 # ---------------------------------------------------------------------------
 # Trilha de navegação (breadcrumb) — admin e vendedor
 # ---------------------------------------------------------------------------
@@ -743,12 +774,15 @@ def _trail_entry_for(endpoint: str, view_args: dict | None) -> dict | None:
         if stock_url:
             ancestors.append({"u": stock_url, "l": "Estoque"})
         label = _trail_entity_name("product", args.get("product_id")) or "Produto"
-    elif endpoint == "admin_event_promotion_detail":
+    elif endpoint in ("admin_event_promotion_detail", "admin_event_promotion_new"):
         ancestors = _trail_event_ancestors(event_id)
         promos_url = _trail_url("admin_event_promotions", event_id=event_id) if event_id else ""
         if promos_url:
             ancestors.append({"u": promos_url, "l": "Promoções"})
-        label = _trail_entity_name("promotion", args.get("promo_id")) or "Promoção"
+        if endpoint == "admin_event_promotion_new":
+            label = "Nova promoção"
+        else:
+            label = _trail_entity_name("promotion", args.get("promo_id")) or "Promoção"
     elif endpoint == "admin_product_detail":
         ancestors = [{"u": _trail_url("admin_products"), "l": "Produtos"}]
         label = _trail_entity_name("product", args.get("product_id")) or "Produto"
@@ -4659,6 +4693,9 @@ def admin_erp():
         "admin/erp.html",
         settings=settings,
         payment_grid=erp_db.payment_type_grid(),
+        sankhya_payment_types=erp_db.list_sankhya_payment_types(),
+        sankhya_payment_types_synced_at=erp_db.sankhya_payment_types_synced_at(),
+        unused_payment_types=erp_db.unused_sankhya_payment_types(),
         sellers_without_codvend=list_sellers_without_codvend(),
         **_admin_erp_live_context(settings),
         **_admin_shell_context(active_section="erp"),
@@ -4702,6 +4739,8 @@ def _admin_erp_live_context(settings: dict | None = None) -> dict:
         "sync_running": sync_running,
         "link_summary": get_product_erp_link_summary(50),
         "unsent_total": erp_db.count_unsent_orders(),
+        "codvol_missing": erp_db.products_missing_codvol_in_queue(),
+        "known_codvols": erp_db.known_codvols(),
         "events_unsent": events_unsent,
         # Algo andando: o painel consulta com mais frequência.
         "live_active": bool(sync_running or counts.get("processando") or counts.get("pendente")),
@@ -4778,6 +4817,20 @@ def admin_erp_payment_types():
         flash(str(exc), "error")
         return redirect(url_for("admin_erp") + "#tipos-negociacao")
     flash(f"{saved} tipo(s) de negociação salvo(s).", "success")
+    erp_sync.notify_worker()
+    return redirect(url_for("admin_erp") + "#tipos-negociacao")
+
+
+@app.route("/admin/integracao-erp/tipos-negociacao/atualizar", methods=["POST"])
+@admin_required
+def admin_erp_payment_types_refresh():
+    """Busca no Sankhya (``GET orders/payment``) os tipos de negociação liberados."""
+    try:
+        result = erp_sync.sync_payment_types()
+    except (sankhya_api.SankhyaError, ValueError) as exc:
+        flash(f"Não foi possível consultar os tipos de negociação no Sankhya: {exc}", "error")
+        return redirect(url_for("admin_erp") + "#tipos-negociacao")
+    flash(result["message"], "warning" if result["in_use_removed"] else "success")
     erp_sync.notify_worker()
     return redirect(url_for("admin_erp") + "#tipos-negociacao")
 
@@ -4878,6 +4931,41 @@ def admin_erp_link_product(product_id: int):
         "success",
     )
     return _redirect_back(url_for("admin_erp") + "#vinculos")
+
+
+@app.route("/admin/integracao-erp/produtos/unidade", methods=["POST"])
+@admin_required
+def admin_erp_set_codvol():
+    """Unidade (CODVOL) informada à mão, enquanto o cadastro não vem do Sankhya.
+
+    Aceita ``product_id`` (lista de pendências) ou ``produto`` (CODPROD/SKU
+    digitado). Pedidos parados só por isso voltam para a fila.
+    """
+    target = url_for("admin_erp") + "#fila"
+    pid = _parse_int(request.form.get("product_id") or "", 0)
+    if pid <= 0:
+        code = (request.form.get("produto") or "").strip()
+        pid = erp_db.find_product_id_for_code(code) or 0
+        if not pid:
+            flash(f'Produto "{code}" não encontrado na biblioteca.', "error")
+            return _redirect_back(target)
+    product = get_product(pid)
+    if product is None:
+        flash("Produto não encontrado.", "error")
+        return _redirect_back(target)
+    try:
+        unit = set_product_erp_codvol(int(product["id"]), request.form.get("codvol") or "")
+    except ValueError as exc:
+        flash(str(exc), "error")
+        return _redirect_back(target)
+    requeued = erp_db.requeue_jobs_blocked_by_codvol(int(product["id"]))
+    label = product.get("erp_codprod") or product.get("sku") or product["id"]
+    msg = f"Unidade {unit} gravada em {label} ({product.get('nome') or 'produto'})."
+    if requeued:
+        msg += f" {requeued} pedido(s) voltaram para a fila."
+        erp_sync.notify_worker()
+    flash(msg, "success")
+    return _redirect_back(target)
 
 
 def _redirect_back_admin():
@@ -5599,19 +5687,32 @@ def _get_event_product_stock(event_id: int, product_id: int) -> int:
 # Eventos — sub-página Promoções
 # ---------------------------------------------------------------------------
 
+#: Valor de ``?modo=`` que troca a página de Promoções para a lista de brindes.
+PROMO_MODE_GIFTS = "brindes"
+
+
 @app.route("/admin/eventos/<int:event_id>/promocoes")
 @admin_required
 def admin_event_promotions(event_id: int):
     event = _event_or_404(event_id)
     if event is None:
         return redirect(url_for("admin_events"))
+    mode = PROMO_MODE_GIFTS if request.args.get("modo") == PROMO_MODE_GIFTS else "descontos"
     promotions = list_promotions_for_event(event_id)
-    event_products = list_event_products(event_id)
+    gift_rules = list_gift_rules_for_event(event_id)
+    gift_items = list_gift_items_for_event(event_id)
+    images = {
+        int(ep["product_id"]): ep.get("image") or ""
+        for ep in list_event_products(event_id)
+    }
     return render_template(
         "admin/event_promotions.html",
         event=event,
+        mode=mode,
         promotions=promotions,
-        event_products=event_products,
+        gift_rules=gift_rules,
+        gift_items=gift_items,
+        product_images=images,
         rule_type_labels=RULE_TYPE_LABELS,
         active_event_tab="promocoes",
         **_admin_shell_context(active_section="eventos"),
@@ -5782,7 +5883,7 @@ def _parse_promotion_form_fields(form) -> tuple[str, float, int, int]:
     """
     rule_type = (form.get("rule_type") or "").strip()
     if rule_type in ("percent", "fixed"):
-        rule_value = float(form.get("rule_value_pf") or 0)
+        rule_value = _form_float(form.get("rule_value_pf")) or 0.0
         min_qty = 1
         free_qty = 0
     elif rule_type == "bogo":
@@ -5790,11 +5891,11 @@ def _parse_promotion_form_fields(form) -> tuple[str, float, int, int]:
         min_qty = int(form.get("min_qty_bogo") or 1)
         free_qty = int(form.get("free_qty") or 0)
     elif rule_type in ("min_bundle", "exact_bundle"):
-        rule_value = float(form.get("rule_value_bundle") or 0)
+        rule_value = _form_float(form.get("rule_value_bundle")) or 0.0
         min_qty = int(form.get("min_qty_bundle") or 2)
         free_qty = 0
     elif rule_type == "combo_bundle":
-        rule_value = float(form.get("rule_value_combo") or 0)
+        rule_value = _form_float(form.get("rule_value_combo")) or 0.0
         min_qty = 1
         free_qty = 0
     else:
@@ -5816,6 +5917,134 @@ def _parse_bogo_product_ids(form, rule_type: str):
     return buy_id, free_id
 
 
+#: Tipo de regra pré-selecionado numa promoção nova (o mais usado nos eventos).
+PROMO_DEFAULT_RULE_TYPE = "exact_bundle"
+
+
+def _form_float(raw) -> float | None:
+    try:
+        return float(str(raw).replace(",", ".")) if str(raw or "").strip() else None
+    except ValueError:
+        return None
+
+
+def _form_int(raw) -> int | None:
+    try:
+        return int(str(raw).strip()) if str(raw or "").strip() else None
+    except ValueError:
+        return None
+
+
+def _promo_form_state(promo: dict | None = None, form=None) -> dict:
+    """Valores que preenchem o formulário de promoção.
+
+    ``form`` (POST recusado) tem prioridade: o admin volta à tela com tudo o que
+    digitou. Sem ``form``, usa a promoção salva; sem nenhum, os padrões.
+    """
+    if form is not None:
+        rule_type = (form.get("rule_type") or PROMO_DEFAULT_RULE_TYPE).strip()
+        field_by_type = {
+            "percent": ("rule_value_pf", None, None),
+            "fixed": ("rule_value_pf", None, None),
+            "bogo": (None, "min_qty_bogo", "free_qty"),
+            "min_bundle": ("rule_value_bundle", "min_qty_bundle", None),
+            "exact_bundle": ("rule_value_bundle", "min_qty_bundle", None),
+            "combo_bundle": ("rule_value_combo", None, None),
+        }
+        value_f, min_f, free_f = field_by_type.get(rule_type, (None, None, None))
+        return {
+            "name": (form.get("name") or "").strip(),
+            "rule_type": rule_type,
+            "rule_value": _form_float(form.get(value_f)) if value_f else None,
+            "min_qty": _form_int(form.get(min_f)) if min_f else None,
+            "free_qty": _form_int(form.get(free_f)) if free_f else None,
+            "product_ids": [int(p) for p in form.getlist("product_ids") if str(p).isdigit()],
+            "bogo_buy_product_id": _form_int(form.get("bogo_buy_product_id")),
+            "bogo_free_product_id": _form_int(form.get("bogo_free_product_id")),
+        }
+    if promo is not None:
+        return {
+            "name": promo.get("name") or "",
+            "rule_type": promo.get("rule_type") or PROMO_DEFAULT_RULE_TYPE,
+            "rule_value": promo.get("rule_value"),
+            "min_qty": promo.get("min_qty"),
+            "free_qty": promo.get("free_qty"),
+            "product_ids": list(promo.get("product_ids") or []),
+            "bogo_buy_product_id": promo.get("bogo_buy_product_id"),
+            "bogo_free_product_id": promo.get("bogo_free_product_id"),
+        }
+    return {
+        "name": "",
+        "rule_type": PROMO_DEFAULT_RULE_TYPE,
+        "rule_value": None,
+        "min_qty": None,
+        "free_qty": None,
+        "product_ids": [],
+        "bogo_buy_product_id": None,
+        "bogo_free_product_id": None,
+    }
+
+
+def _promo_picker_catalog(event_id: int, promo: dict | None = None) -> list[dict]:
+    """Produtos que a busca do formulário oferece (os do evento).
+
+    Produto da promoção que já saiu do evento continua na lista, para aparecer
+    entre os participantes e poder ser removido.
+    """
+    out: list[dict] = []
+    seen: set[int] = set()
+    for ep in list_event_products(event_id):
+        pid = int(ep["product_id"])
+        seen.add(pid)
+        price = ep.get("event_price")
+        if price is None:
+            price = ep.get("price") if ep.get("price") is not None else ep.get("library_price")
+        out.append({
+            "id": pid,
+            "name": ep.get("name") or f"Produto #{pid}",
+            "sku": ep.get("sku") or "",
+            "category": ep.get("category") or "",
+            "price": float(price) if price is not None else None,
+            "image": ep.get("image") or "",
+            "stock": int(ep.get("stock") or 0),
+        })
+    for prod in (promo or {}).get("products") or []:
+        pid = int(prod["product_id"])
+        if pid not in seen:
+            out.append({
+                "id": pid, "name": prod.get("name") or f"Produto #{pid}",
+                "sku": prod.get("sku") or "", "category": "", "price": None,
+                "image": "", "stock": 0, "outside_event": True,
+            })
+    return out
+
+
+def _render_promo_form(event: dict, promo: dict | None, state: dict, status: int = 200):
+    """Tela de promoção: nova (``promo`` = None) ou edição."""
+    return render_template(
+        "admin/event_promotion_detail.html",
+        event=event,
+        promo=promo,
+        state=state,
+        picker_catalog=_promo_picker_catalog(int(event["id"]), promo),
+        rule_type_labels=RULE_TYPE_LABELS,
+        active_event_tab="promocoes",
+        **_admin_shell_context(active_section="eventos"),
+    ), status
+
+
+@app.route("/admin/eventos/<int:event_id>/promocoes/nova", methods=["GET"])
+@admin_required
+def admin_event_promotion_new(event_id: int):
+    event = _event_or_404(event_id)
+    if event is None:
+        return redirect(url_for("admin_events"))
+    if not event_ops_open(event):
+        flash(EVENT_OPS_CLOSED_MSG, "error")
+        return redirect(url_for("admin_event_promotions", event_id=event_id))
+    return _render_promo_form(event, None, _promo_form_state())
+
+
 @app.route("/admin/eventos/<int:event_id>/promocoes/nova", methods=["POST"])
 @admin_required
 @require_event_ops_open
@@ -5828,17 +6057,19 @@ def admin_event_promotion_create(event_id: int):
         rule_type, rule_value, min_qty, free_qty = _parse_promotion_form_fields(request.form)
         buy_id, free_id = _parse_bogo_product_ids(request.form, rule_type)
         product_ids = [int(p) for p in request.form.getlist("product_ids") if p]
-        create_promotion(
+        created = create_promotion(
             event_id, name, rule_type,
             rule_value=rule_value, min_qty=min_qty, free_qty=free_qty,
             product_ids=product_ids,
             bogo_buy_product_id=buy_id,
             bogo_free_product_id=free_id,
         )
-        flash("Promoção criada com sucesso.", "success")
     except (ValueError, TypeError) as exc:
+        # Volta ao formulário com o que foi digitado, em vez de uma tela vazia.
         flash(str(exc), "error")
-    return redirect(url_for("admin_event_promotions", event_id=event_id))
+        return _render_promo_form(event, None, _promo_form_state(form=request.form), 422)
+    flash(f"Promoção «{created['name']}» criada.", "success")
+    return redirect(url_for("admin_event_promotions", event_id=event_id) + f"#promo-{created['id']}")
 
 
 @app.route("/admin/eventos/<int:event_id>/promocoes/<int:promo_id>")
@@ -5851,16 +6082,7 @@ def admin_event_promotion_detail(event_id: int, promo_id: int):
     if promo is None or int(promo["event_id"]) != event_id:
         flash("Promoção não encontrada.", "error")
         return redirect(url_for("admin_event_promotions", event_id=event_id))
-    event_products = list_event_products(event_id)
-    return render_template(
-        "admin/event_promotion_detail.html",
-        event=event,
-        promo=promo,
-        event_products=event_products,
-        rule_type_labels=RULE_TYPE_LABELS,
-        active_event_tab="promocoes",
-        **_admin_shell_context(active_section="eventos"),
-    )
+    return _render_promo_form(event, promo, _promo_form_state(promo))
 
 
 @app.route("/admin/eventos/<int:event_id>/promocoes/<int:promo_id>/editar", methods=["POST"])
@@ -5888,9 +6110,10 @@ def admin_event_promotion_edit(event_id: int, promo_id: int):
             bogo_buy_product_id=buy_id,
             bogo_free_product_id=free_id,
         )
-        flash("Promoção atualizada.", "success")
     except (ValueError, TypeError) as exc:
         flash(str(exc), "error")
+        return _render_promo_form(event, promo, _promo_form_state(form=request.form), 422)
+    flash("Promoção atualizada.", "success")
     return redirect(url_for("admin_event_promotion_detail", event_id=event_id, promo_id=promo_id))
 
 
@@ -5925,6 +6148,298 @@ def admin_event_promotion_delete(event_id: int, promo_id: int):
     except ValueError as exc:
         flash(str(exc), "error")
     return redirect(url_for("admin_event_promotions", event_id=event_id))
+
+
+# ---------------------------------------------------------------------------
+# Eventos — Promoções no modo Brindes
+# ---------------------------------------------------------------------------
+
+#: Regra pré-selecionada num brinde novo.
+GIFT_DEFAULT_RULE_TYPE = "min_qty"
+
+
+def _gifts_list_url(event_id: int, rule_id: int | None = None) -> str:
+    url = url_for("admin_event_promotions", event_id=event_id, modo=PROMO_MODE_GIFTS)
+    return url + (f"#brinde-{rule_id}" if rule_id else "")
+
+
+#: Valor de ``gift_item_id`` no formulário que cadastra um brinde avulso novo.
+GIFT_NEW_ITEM = "novo"
+
+
+def _parse_gift_form(form) -> dict:
+    """Campos do POST do formulário de brinde (``admin/event_gift_detail.html``).
+
+    Cada regra tem o próprio campo de quantidade/valor (``min_qty_min``,
+    ``min_qty_kit``, ``min_value``): a seção escondida fica desabilitada e não
+    vai no POST. ``gift_source`` diz se o brinde é produto do estoque
+    (``gift_product_id``) ou avulso (``gift_item_id``, ou ``novo`` com
+    ``new_item_name``/``new_item_stock`` para cadastrá-lo junto).
+    """
+    rule_type = (form.get("rule_type") or GIFT_DEFAULT_RULE_TYPE).strip()
+    qty_field = "min_qty_kit" if rule_type == "kit" else "min_qty_min"
+    source = "avulso" if form.get("gift_source") == "avulso" else "produto"
+    raw_item = (form.get("gift_item_id") or "").strip()
+    return {
+        "name": (form.get("name") or "").strip(),
+        "rule_type": rule_type,
+        "min_qty": _form_int(form.get(qty_field)) if rule_type != "min_total" else None,
+        "min_value": _form_float(form.get("min_value")) if rule_type == "min_total" else None,
+        "gift_source": source,
+        "gift_product_id": _form_int(form.get("gift_product_id")) if source == "produto" else None,
+        "gift_item_id": raw_item if source == "avulso" else "",
+        "new_item_name": (form.get("new_item_name") or "").strip(),
+        "new_item_stock": _form_int(form.get("new_item_stock")),
+        "gift_qty": _form_int(form.get("gift_qty")),
+        "max_per_order": _form_int(form.get("max_per_order")) if rule_type == "kit" else None,
+        "product_ids": [int(p) for p in form.getlist("product_ids") if str(p).isdigit()],
+    }
+
+
+def _gift_form_state(rule: dict | None = None, form=None) -> dict:
+    """Valores do formulário: POST recusado > brinde salvo > padrões."""
+    if form is not None:
+        return _parse_gift_form(form)
+    if rule is not None:
+        return {
+            "name": rule.get("name") or "",
+            "rule_type": rule.get("rule_type") or GIFT_DEFAULT_RULE_TYPE,
+            "min_qty": rule.get("min_qty"),
+            "min_value": rule.get("min_value"),
+            "gift_source": "avulso" if rule.get("gift_item_id") else "produto",
+            "gift_product_id": rule.get("gift_product_id"),
+            "gift_item_id": str(rule.get("gift_item_id") or ""),
+            "new_item_name": "",
+            "new_item_stock": None,
+            "gift_qty": rule.get("gift_qty"),
+            "max_per_order": rule.get("max_per_order"),
+            "product_ids": list(rule.get("product_ids") or []),
+        }
+    return {
+        "name": "",
+        "rule_type": GIFT_DEFAULT_RULE_TYPE,
+        "min_qty": None,
+        "min_value": None,
+        "gift_source": "produto",
+        "gift_product_id": None,
+        "gift_item_id": "",
+        "new_item_name": "",
+        "new_item_stock": None,
+        "gift_qty": None,
+        "max_per_order": None,
+        "product_ids": [],
+    }
+
+
+def _save_gift_args(state: dict) -> dict:
+    args = {
+        "min_qty": state["min_qty"] or 0,
+        "min_value": state["min_value"],
+        "gift_product_id": state["gift_product_id"],
+        "gift_item_id": None,
+        "gift_qty": state["gift_qty"] or 0,
+        "max_per_order": state["max_per_order"],
+        "product_ids": state["product_ids"],
+    }
+    if state["gift_source"] == "avulso":
+        if state["gift_item_id"] == GIFT_NEW_ITEM:
+            args["new_item"] = {"name": state["new_item_name"], "stock": state["new_item_stock"]}
+        elif str(state["gift_item_id"]).isdigit():
+            args["gift_item_id"] = int(state["gift_item_id"])
+    return args
+
+
+def _render_gift_form(event: dict, rule: dict | None, state: dict, status: int = 200):
+    """Tela de brinde: novo (``rule`` = None) ou edição."""
+    picker_extra = dict(rule or {})
+    if rule and rule.get("gift_product_id"):
+        # Brinde que saiu do evento continua visível para poder ser trocado.
+        picker_extra["products"] = list(rule.get("products") or []) + [{
+            "product_id": rule["gift_product_id"],
+            "name": rule.get("gift_name"),
+            "sku": rule.get("gift_sku"),
+        }]
+    return render_template(
+        "admin/event_gift_detail.html",
+        event=event,
+        rule=rule,
+        state=state,
+        picker_catalog=_promo_picker_catalog(int(event["id"]), picker_extra),
+        gift_items=list_gift_items_for_event(int(event["id"])),
+        gift_new_item=GIFT_NEW_ITEM,
+        gift_rule_labels=GIFT_RULE_LABELS,
+        active_event_tab="promocoes",
+        **_admin_shell_context(active_section="eventos"),
+    ), status
+
+
+def _gift_rule_of_event(event_id: int, rule_id: int) -> dict | None:
+    rule = get_gift_rule(rule_id)
+    if rule is None or int(rule["event_id"]) != int(event_id):
+        flash("Brinde não encontrado.", "error")
+        return None
+    return rule
+
+
+@app.route("/admin/eventos/<int:event_id>/promocoes/brindes/novo", methods=["GET"])
+@admin_required
+def admin_event_gift_new(event_id: int):
+    event = _event_or_404(event_id)
+    if event is None:
+        return redirect(url_for("admin_events"))
+    if not event_ops_open(event):
+        flash(EVENT_OPS_CLOSED_MSG, "error")
+        return redirect(_gifts_list_url(event_id))
+    return _render_gift_form(event, None, _gift_form_state())
+
+
+@app.route("/admin/eventos/<int:event_id>/promocoes/brindes/novo", methods=["POST"])
+@admin_required
+@require_event_ops_open
+def admin_event_gift_create(event_id: int):
+    event = _event_or_404(event_id)
+    if event is None:
+        return redirect(url_for("admin_events"))
+    state = _parse_gift_form(request.form)
+    try:
+        created = create_gift_rule(event_id, state["name"], state["rule_type"], **_save_gift_args(state))
+    except (ValueError, TypeError) as exc:
+        flash(str(exc), "error")
+        return _render_gift_form(event, None, state, 422)
+    flash(f"Brinde «{created['name']}» criado.", "success")
+    return redirect(_gifts_list_url(event_id, created["id"]))
+
+
+@app.route("/admin/eventos/<int:event_id>/promocoes/brindes/<int:rule_id>")
+@admin_required
+def admin_event_gift_detail(event_id: int, rule_id: int):
+    event = _event_or_404(event_id)
+    if event is None:
+        return redirect(url_for("admin_events"))
+    rule = _gift_rule_of_event(event_id, rule_id)
+    if rule is None:
+        return redirect(_gifts_list_url(event_id))
+    return _render_gift_form(event, rule, _gift_form_state(rule))
+
+
+@app.route("/admin/eventos/<int:event_id>/promocoes/brindes/<int:rule_id>/editar", methods=["POST"])
+@admin_required
+@require_event_ops_open
+def admin_event_gift_edit(event_id: int, rule_id: int):
+    event = _event_or_404(event_id)
+    if event is None:
+        return redirect(url_for("admin_events"))
+    rule = _gift_rule_of_event(event_id, rule_id)
+    if rule is None:
+        return redirect(_gifts_list_url(event_id))
+    state = _parse_gift_form(request.form)
+    try:
+        update_gift_rule(rule_id, state["name"], state["rule_type"], **_save_gift_args(state))
+    except (ValueError, TypeError) as exc:
+        flash(str(exc), "error")
+        return _render_gift_form(event, rule, state, 422)
+    flash("Brinde atualizado.", "success")
+    return redirect(url_for("admin_event_gift_detail", event_id=event_id, rule_id=rule_id))
+
+
+@app.route("/admin/eventos/<int:event_id>/promocoes/brindes/<int:rule_id>/ativar", methods=["POST"])
+@admin_required
+@require_event_ops_open
+def admin_event_gift_toggle(event_id: int, rule_id: int):
+    rule = _gift_rule_of_event(event_id, rule_id)
+    if rule is None:
+        return redirect(_gifts_list_url(event_id))
+    try:
+        r = toggle_gift_rule_active(rule_id)
+        flash(f"Brinde «{r['name']}» {'ativado' if r['active'] else 'desativado'}.", "success")
+    except ValueError as exc:
+        flash(str(exc), "error")
+    return _redirect_back(_gifts_list_url(event_id))
+
+
+@app.route("/admin/eventos/<int:event_id>/promocoes/brindes/<int:rule_id>/excluir", methods=["POST"])
+@admin_required
+@require_event_ops_open
+def admin_event_gift_delete(event_id: int, rule_id: int):
+    rule = _gift_rule_of_event(event_id, rule_id)
+    if rule is None:
+        return redirect(_gifts_list_url(event_id))
+    try:
+        delete_gift_rule(rule_id)
+        flash(f"Brinde «{rule['name']}» excluído.", "warning")
+    except ValueError as exc:
+        flash(str(exc), "error")
+    return redirect(_gifts_list_url(event_id))
+
+
+# --- Brindes avulsos (não são produtos; cadastrados só no Go Sell) ----------
+
+def _gift_items_url(event_id: int, item_id: int | None = None) -> str:
+    url = url_for("admin_event_promotions", event_id=event_id, modo=PROMO_MODE_GIFTS)
+    return url + (f"#avulso-{item_id}" if item_id else "#avulsos")
+
+
+def _gift_item_of_event(event_id: int, item_id: int) -> dict | None:
+    item = get_gift_item(item_id)
+    if item is None or int(item["event_id"]) != int(event_id):
+        flash("Brinde avulso não encontrado.", "error")
+        return None
+    return item
+
+
+@app.route("/admin/eventos/<int:event_id>/promocoes/brindes/avulsos", methods=["POST"])
+@admin_required
+@require_event_ops_open
+def admin_event_gift_item_create(event_id: int):
+    if _event_or_404(event_id) is None:
+        return redirect(url_for("admin_events"))
+    try:
+        item = create_gift_item(
+            event_id,
+            request.form.get("name") or "",
+            _form_int(request.form.get("stock")),
+            request.form.get("description"),
+        )
+        flash(f"Brinde avulso «{item['name']}» cadastrado.", "success")
+        return redirect(_gift_items_url(event_id, item["id"]))
+    except (ValueError, TypeError) as exc:
+        flash(str(exc), "error")
+    return redirect(_gift_items_url(event_id))
+
+
+@app.route("/admin/eventos/<int:event_id>/promocoes/brindes/avulsos/<int:item_id>/editar", methods=["POST"])
+@admin_required
+@require_event_ops_open
+def admin_event_gift_item_edit(event_id: int, item_id: int):
+    if _gift_item_of_event(event_id, item_id) is None:
+        return redirect(_gift_items_url(event_id))
+    try:
+        item = update_gift_item(
+            item_id,
+            request.form.get("name") or "",
+            _form_int(request.form.get("stock")),
+            request.form.get("description"),
+        )
+        flash(f"Brinde avulso «{item['name']}» atualizado.", "success")
+    except (ValueError, TypeError) as exc:
+        flash(str(exc), "error")
+    return redirect(_gift_items_url(event_id, item_id))
+
+
+@app.route("/admin/eventos/<int:event_id>/promocoes/brindes/avulsos/<int:item_id>/excluir", methods=["POST"])
+@admin_required
+@require_event_ops_open
+def admin_event_gift_item_delete(event_id: int, item_id: int):
+    item = _gift_item_of_event(event_id, item_id)
+    if item is None:
+        return redirect(_gift_items_url(event_id))
+    try:
+        delete_gift_item(item_id)
+        flash(f"Brinde avulso «{item['name']}» excluído.", "warning")
+    except ValueError as exc:
+        flash(str(exc), "error")
+        return redirect(_gift_items_url(event_id, item_id))
+    return redirect(_gift_items_url(event_id))
 
 
 # ---------------------------------------------------------------------------

@@ -526,7 +526,10 @@ a.erp-queue__order-number:hover {
     font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
     font-size: 11.5px;
     line-height: 1.5;
-    white-space: pre;
+    /* Mantém a indentação do JSON, mas quebra textos longos (ex.: OBSINTERNA)
+       em vez de esticar a célula; "anywhere" também reduz a largura mínima. */
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
 }
 
 .erp-queue__none {
@@ -602,6 +605,89 @@ html.admin-theme--dark .erp-filter__chip.is-active .erp-filter__count {
 }
 
 /* Celular: cada item da fila vira um cartão */
+/* ---------- Unidade (CODVOL) informada à mão — partials/erp_queue.html ---------- */
+
+.erp-codvol {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 14px 16px;
+    border: 1px solid rgba(232, 137, 11, 0.35);
+    border-radius: 10px;
+    background: rgba(232, 137, 11, 0.07);
+}
+
+.erp-codvol__title {
+    margin: 0;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-weight: 700;
+    color: var(--admin-warn, #a5620a);
+}
+
+.erp-codvol__hint {
+    margin: 0;
+    font-size: 13px;
+    color: var(--color-text-muted);
+}
+
+.erp-codvol__list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+}
+
+.erp-codvol__list li {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px 16px;
+    padding: 8px 0;
+    border-top: 1px solid rgba(232, 137, 11, 0.2);
+}
+
+.erp-codvol__product small {
+    display: block;
+    font-size: 12px;
+    color: var(--color-text-muted);
+}
+
+.erp-codvol__form {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+}
+
+.erp-codvol__form .admin-field__input {
+    width: auto;
+    min-width: 0;
+}
+
+.erp-codvol__input {
+    max-width: 90px;
+    text-transform: uppercase;
+}
+
+.erp-codvol-other summary {
+    cursor: pointer;
+    font-size: 13px;
+    color: var(--color-text-muted);
+}
+
+.erp-codvol-other[open] summary {
+    margin-bottom: 10px;
+}
+
+html.admin-theme--dark .erp-codvol {
+    background: rgba(251, 191, 36, 0.06);
+    border-color: rgba(251, 191, 36, 0.3);
+}
+
 /* ---------- Painel ao vivo (static/js/admin-erp-live.js) ---------- */
 
 /* O wrapper só marca a área do JS: sem caixa própria, as seções continuam
@@ -866,4 +952,61 @@ html.admin-theme--dark .erp-sync-progress__head { color: inherit; }
     .erp-queue__row:has(.erp-queue__actions.is-empty) .erp-queue__detail {
         border-bottom: none;
     }
+}
+
+/* Tipos de negociação: lista liberada no Sankhya (GET orders/payment) */
+.erp-tv__header {
+    align-items: flex-start;
+    gap: 16px;
+}
+
+.erp-tv__header form { margin: 0; flex: 0 0 auto; }
+
+.erp-tv__source {
+    margin: 8px 0 0;
+    color: var(--color-text-muted);
+    font-size: 13px;
+}
+
+.erp-tv__source .fa-circle-check { color: var(--admin-success, #0c8a4d); }
+
+.erp-tv__select {
+    min-width: 260px;
+    max-width: 100%;
+}
+
+.erp-tv__select.is-suggested {
+    border-color: var(--color-primary);
+    box-shadow: 0 0 0 3px var(--admin-tint, rgba(14, 22, 122, 0.12));
+}
+
+.erp-tv__name { color: var(--color-text); }
+
+.erp-tv__none { color: var(--color-text-muted); }
+
+.erp-tv__warn {
+    color: var(--admin-warn, #a5620a);
+    font-weight: 600;
+}
+
+.erp-table tr.is-stale td { background: var(--admin-warn-bg, rgba(232, 137, 11, 0.08)); }
+
+.erp-tv__unused {
+    margin: 12px 0 0;
+    color: var(--color-text-muted);
+    font-size: 13px;
+}
+
+.erp-tv__unused span { color: var(--color-text); font-weight: 600; }
+
+.erp-tv__actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin-top: 14px;
+}
+
+@media (max-width: 720px) {
+    .erp-tv__header { flex-direction: column; }
+    .erp-tv__select { min-width: 0; width: 100%; }
 }

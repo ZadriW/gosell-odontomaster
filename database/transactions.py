@@ -24,6 +24,7 @@ from .payment_methods import (
     normalize_payment_method,
 )
 from .event_stock import _apply_event_movement
+from .gifts import AVULSO_ID_PREFIX, is_gift_line, reapply_gifts_for_charged_total
 from .promotions import (
     apply_list_prices_to_normalized_items,
     apply_promotions_to_items_in_conn,
@@ -158,7 +159,7 @@ def _public_items_from_normalized(
     out: List[Dict] = []
     for i in normalized:
         pid = i.get("product_id")
-        if pid is None:
+        if pid is None and not i.get("gift_item_id"):
             continue
         qty = int(i.get("quantity") or 0)
         list_p = float(i.get("original_price") or i.get("unit_price") or 0)
@@ -170,7 +171,7 @@ def _public_items_from_normalized(
         )
         out.append(
             {
-                "id": int(pid),
+                "id": int(pid) if pid is not None else f"{AVULSO_ID_PREFIX}{int(i['gift_item_id'])}",
                 "quantidade": qty,
                 "preco_lista": list_p,
                 "preco": float(i.get("unit_price") or 0),
@@ -179,6 +180,12 @@ def _public_items_from_normalized(
                 "em_promocao": has_promo,
                 "promo_nome": names.get(int(promo_id), "") if promo_id is not None else "",
                 "economia": round(max(0.0, list_p * qty - subtotal), 2),
+                "bogo_auto_free": is_gift,
+                "brinde": is_gift_line(i),
+                "gift_rule_id": i.get("gift_rule_id"),
+                "gift_item_id": i.get("gift_item_id"),
+                "brinde_avulso": bool(i.get("gift_item_id")),
+                "brinde_nome": i.get("gift_rule_name") or "",
             }
         )
     return out
@@ -246,6 +253,8 @@ def create_transaction(
     """
     normalized: List[Dict] = []
     for raw in items or []:
+        if is_gift_line(raw):
+            continue  # brinde é recalculado no servidor (apply_promotions_to_items_in_conn)
         try:
             qty = int(raw.get("quantidade", 0) or 0)
         except (TypeError, ValueError):
@@ -365,6 +374,9 @@ def create_transaction(
         # Recalcula total e items_count após promoções.
         total = round(sum(i["subtotal"] for i in normalized), 2)
         total = _coerce_seller_total(total, seller_total)
+        if event_id is not None:
+            # Brinde por valor do pedido olha o que foi cobrado, não a lista.
+            normalized = reapply_gifts_for_charged_total(conn, event_id, normalized, total)
         items_count = sum(i["quantity"] for i in normalized)
         card_installments_store = _normalize_card_installments_for_db(
             payment_method, total, card_installments if card_installments is not None else 1,
@@ -402,8 +414,9 @@ def create_transaction(
             """
             INSERT INTO transaction_items
                 (transaction_id, product_id, product_name, category,
-                 unit_price, quantity, subtotal, product_sku, original_price, promotion_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 unit_price, quantity, subtotal, product_sku, original_price, promotion_id,
+                 gift_rule_id, gift_item_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 (
@@ -417,6 +430,8 @@ def create_transaction(
                     i.get("product_sku"),
                     i.get("original_price"),
                     i.get("promotion_id"),
+                    i.get("gift_rule_id"),
+                    i.get("gift_item_id"),
                 )
                 for i in normalized
             ],
@@ -443,6 +458,7 @@ def create_transaction(
                 float(i.get("original_price") or i.get("unit_price") or 0)
                 * int(i.get("quantity") or 0)
                 for i in normalized
+                if not is_gift_line(i)
             ),
             2,
         ),
@@ -453,6 +469,7 @@ def create_transaction(
                     float(i.get("original_price") or i.get("unit_price") or 0)
                     * int(i.get("quantity") or 0)
                     for i in normalized
+                    if not is_gift_line(i)
                 )
                 - total,
             ),
@@ -515,6 +532,8 @@ def update_pending_transaction(
     """
     normalized: List[Dict] = []
     for raw in items or []:
+        if is_gift_line(raw):
+            continue  # brinde é recalculado no servidor (apply_promotions_to_items_in_conn)
         try:
             qty = int(raw.get("quantidade", 0) or 0)
         except (TypeError, ValueError):
@@ -680,6 +699,9 @@ def update_pending_transaction(
 
         total = round(sum(i["subtotal"] for i in normalized), 2)
         total = _coerce_seller_total(total, seller_total)
+        if event_id is not None:
+            # Brinde por valor do pedido olha o que foi cobrado, não a lista.
+            normalized = reapply_gifts_for_charged_total(conn, event_id, normalized, total)
         items_count = sum(i["quantity"] for i in normalized)
         card_installments_store = _normalize_card_installments_for_db(
             payment_method, total,
@@ -729,8 +751,9 @@ def update_pending_transaction(
             """
             INSERT INTO transaction_items
                 (transaction_id, product_id, product_name, category,
-                 unit_price, quantity, subtotal, product_sku, original_price, promotion_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 unit_price, quantity, subtotal, product_sku, original_price, promotion_id,
+                 gift_rule_id, gift_item_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 (
@@ -744,6 +767,8 @@ def update_pending_transaction(
                     i.get("product_sku"),
                     i.get("original_price"),
                     i.get("promotion_id"),
+                    i.get("gift_rule_id"),
+                    i.get("gift_item_id"),
                 )
                 for i in normalized
             ],
@@ -768,6 +793,7 @@ def update_pending_transaction(
                 float(i.get("original_price") or i.get("unit_price") or 0)
                 * int(i.get("quantity") or 0)
                 for i in normalized
+                if not is_gift_line(i)
             ),
             2,
         ),
@@ -778,6 +804,7 @@ def update_pending_transaction(
                     float(i.get("original_price") or i.get("unit_price") or 0)
                     * int(i.get("quantity") or 0)
                     for i in normalized
+                    if not is_gift_line(i)
                 )
                 - total,
             ),
@@ -1026,6 +1053,11 @@ def confirm_transaction_with_aut(tx_id: int, aut: str, *, created_by: str = "tot
                     created_by=created_by,
                 )
 
+        conn.execute(
+            "UPDATE transaction_items SET quantity_delivered = quantity "
+            "WHERE transaction_id = ? AND gift_item_id IS NOT NULL",
+            (tx_id,),
+        )
         delivery_status = _delivery_status_for_tx(conn, tx_id)
         conn.execute(
             "UPDATE transactions SET status = 'confirmado', aut = ?, delivery_status = ? "
@@ -1380,7 +1412,7 @@ def replace_transaction_item_product(
                 """
                 SELECT id, product_id, product_name, product_sku, category,
                        unit_price, original_price, quantity, subtotal,
-                       quantity_delivered, promotion_id
+                       quantity_delivered, promotion_id, gift_rule_id, gift_item_id
                   FROM transaction_items
                  WHERE transaction_id = ?
                 """,
@@ -1394,7 +1426,7 @@ def replace_transaction_item_product(
             for row in all_items_rows:
                 up = float(row["unit_price"] or 0)
                 op = float(row["original_price"] or row["unit_price"] or 0)
-                is_bogo_free = (up < 0.001 and op > 0.01)
+                is_bogo_free = (up < 0.001 and op > 0.01) or row["gift_rule_id"] is not None
                 item_dict = {
                     "id": int(row["id"]),
                     "product_id": int(row["product_id"]) if row["product_id"] is not None else None,
@@ -1419,7 +1451,7 @@ def replace_transaction_item_product(
                 if delivered > 0:
                     fpid = free_it.get("product_id")
                     if fpid is not None:
-                        _stock_in(int(fpid), delivered, mov_reason="Alteração de item: unidade grátis da promoção Compre X, Leve Y removida")
+                        _stock_in(int(fpid), delivered, mov_reason="Alteração de item: unidade grátis (Compre X, Leve Y ou brinde) removida")
                 conn.execute(
                     "DELETE FROM transaction_items WHERE id = ? AND transaction_id = ?",
                     (int(free_it["id"]), int(tx_id)),
@@ -1451,25 +1483,39 @@ def replace_transaction_item_product(
                         ),
                     )
                 else:
-                    # Novo item BOGO grátis — inserir no DB.
+                    # Novo item grátis (Compre X, Leve Y ou brinde) — inserir no DB.
                     gift_pid = priced_item.get("product_id")
                     gift_qty = int(priced_item.get("quantity") or 0)
-                    if gift_pid is None or gift_qty <= 0:
+                    gift_item_id = priced_item.get("gift_item_id")
+                    if (gift_pid is None and not gift_item_id) or gift_qty <= 0:
                         continue
-                    gift_sku = (priced_item.get("product_sku") or "").strip()
-                    if not gift_sku:
-                        gift_sku = _default_sku_for_id(int(gift_pid))
+                    if gift_item_id:
+                        # Brinde avulso: sem estoque de produto, entregue na hora.
+                        gift_sku = None
+                        delivered_now = gift_qty
+                    else:
+                        gift_sku = (priced_item.get("product_sku") or "").strip()
+                        if not gift_sku:
+                            gift_sku = _default_sku_for_id(int(gift_pid))
+                        gift_reason = (
+                            "Alteração de item: brinde"
+                            if priced_item.get("gift_rule_id")
+                            else "Alteração de item: unidade grátis da promoção Compre X, Leve Y"
+                        )
+                        # O que saiu do estoque agora conta como entregue; o resto fica pendente.
+                        delivered_now = _stock_out(int(gift_pid), gift_qty, mov_reason=gift_reason)
                     conn.execute(
                         """
                         INSERT INTO transaction_items
                             (transaction_id, product_id, product_name, category,
                              unit_price, quantity, subtotal, product_sku,
-                             original_price, promotion_id, quantity_delivered)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                             original_price, promotion_id, quantity_delivered,
+                             gift_rule_id, gift_item_id)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             int(tx_id),
-                            str(gift_pid),
+                            str(gift_pid) if gift_pid is not None else None,
                             priced_item.get("product_name") or "Produto",
                             priced_item.get("category"),
                             0.0,
@@ -1478,11 +1524,11 @@ def replace_transaction_item_product(
                             gift_sku,
                             float(priced_item.get("original_price") or 0),
                             priced_item.get("promotion_id"),
-                            0,
+                            delivered_now,
+                            priced_item.get("gift_rule_id"),
+                            gift_item_id,
                         ),
                     )
-                    # Baixar estoque do novo brinde.
-                    _stock_out(int(gift_pid), gift_qty, mov_reason="Alteração de item: unidade grátis da promoção Compre X, Leve Y")
 
         totals = conn.execute(
             """
@@ -2262,6 +2308,8 @@ def get_pending_transaction_restore_payload(tx_id: int, seller_id: int) -> Optio
     cart_items: List[Dict] = []
     with get_conn() as conn:
         for it in tx.get("items") or []:
+            if it.get("gift_rule_id") is not None:
+                continue  # o carrinho recalcula o brinde a partir dos itens pagos
             pid_raw = it.get("product_id")
             try:
                 pid = int(pid_raw)
@@ -2411,10 +2459,13 @@ def _items_for(conn: sqlite3.Connection, tx_id: int) -> List[Dict]:
         SELECT ti.id, ti.product_id, ti.product_name, ti.category,
                ti.unit_price, ti.quantity, ti.subtotal, ti.product_sku,
                ti.quantity_delivered,
-               ti.original_price, ti.promotion_id,
-               pr.name AS promotion_name
+               ti.original_price, ti.promotion_id, ti.gift_rule_id, ti.gift_item_id,
+               CASE WHEN ti.gift_rule_id IS NOT NULL
+                    THEN 'Brinde' || COALESCE(' · ' || gr.name, '')
+                    ELSE pr.name END AS promotion_name
           FROM transaction_items ti
           LEFT JOIN promotions pr ON pr.id = ti.promotion_id
+          LEFT JOIN gift_rules gr ON gr.id = ti.gift_rule_id
          WHERE ti.transaction_id = ?
          ORDER BY ti.id
         """,

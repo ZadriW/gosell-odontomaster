@@ -43,7 +43,7 @@ A interface é responsiva e funciona em navegadores modernos em desktop, tablet 
 | **Estoque por evento** | Produtos do evento, entradas, saídas, ajustes, estoque mínimo, remoção. |
 | **Importação** | Adicionar produtos por SKU/ID ou importar planilha `.xls` (com consulta ao Sankhya quando necessário). |
 | **Vendedores** | Cadastro, edição, vínculo a eventos, histórico de transações. |
-| **Promoções** | Por evento, com regras: desconto %, desconto fixo, compre X leve Y, **A partir de** (pacote mínimo), **Na compra de** (pacote exato). |
+| **Promoções** | Por evento, com regras: desconto %, desconto fixo, compre X leve Y, **A partir de** (pacote mínimo), **Na compra de** (pacote exato). A chave **Descontos / Brindes** troca a página para os brindes. O brinde é um produto do estoque do evento ou um **brinde avulso** (cadastrado só no Go Sell, sem CODPROD: caneca, squeeze...). Regras: N unidades dos participantes (uma vez por pedido), cada kit de N unidades do mesmo produto (limite opcional por pedido) ou **valor do pedido** a partir de R$ X (pedido inteiro ou só os participantes; usa o valor cobrado, com desconto manual). |
 | **Movimentações** | Histórico por evento, com exportação CSV. |
 | **Transações** | Vendas por evento, estornos, detalhes com preço original e promoção. |
 | **Financeiro** | Relatório por período (vendas, itens, totais) e exportação PDF. |
@@ -59,14 +59,15 @@ A interface é responsiva e funciona em navegadores modernos em desktop, tablet 
 4. Vendedor informa o **AUT** retornado pela maquininha.
 5. Confirmação baixa estoque do evento e registra a venda.
 
-Promoções são aplicadas na cotação do carrinho (`POST /api/carrinho/cotacao`) e na persistência da transação, garantindo o mesmo valor exibido e cobrado.
+Promoções são aplicadas na cotação do carrinho (`POST /api/carrinho/cotacao`) e na persistência da transação, garantindo o mesmo valor exibido e cobrado. Brindes (`database/gifts.py`) entram depois das promoções como linha a R$ 0,00 com `transaction_items.gift_rule_id`; o servidor descarta o brinde enviado pelo navegador e recalcula. O brinde de produto sai do estoque do evento (sem saldo, fica para retirada; se o produto não aceita venda futura, o brinde se limita ao saldo) e vai ao Sankhya com 100% de desconto. O brinde avulso grava `transaction_items.gift_item_id` sem `product_id`, é entregue na confirmação, não vai como item ao Sankhya (só na `OBSINTERNA`, "Brindes avulsos entregues, fora do Sankhya") e fica fora dos rankings de produto; o saldo é `gift_items.stock` menos o que saiu em vendas confirmadas, então estorno devolve sozinho. Os dois aparecem como "(BRINDE)" na nota.
 
 ### Integração Sankhya (ERP)
 
 Acesso pelo gateway da 4R Tech (`sankhya_api.py`), com credenciais só no `.env`. Painel em **Admin → Integração ERP**, com o botão **Testar conexão** (faz um login e mostra o motivo exato de uma falha).
 
 - **Catálogo:** o gateway expõe filas de alterações (manual FTAPI/Odontomaster): `GET /products/price` e `GET /products` devolvem lotes de 20 itens "Aguard. Integração", e `POST` no mesmo caminho com `{"códigos": [...]}` marca o lote como integrado. A sincronização esvazia primeiro a fila de preços (guardados em `erp_prices`) e depois a de cadastro (`DESCRPROD`, grupo, marca, unidade, imagem), confirmando cada lote só depois de gravá-lo. A fila de estoque (`/products/stock`) só alimenta `erp_stock` (lotes por local, para o pedido); o estoque do evento continua sendo do Totem. Cada fila roda mesmo que outra falhe. O vínculo é `products.erp_codprod`; o `id` local, estoque, eventos, vendas e promoções não mudam. Produto que some da lista continua ativo; sem preço, mantém o último; sem imagem, mantém a foto. Produto **novo** sem preço entra inativo e é ativado na sincronização que trouxer o preço.
-- **Pedidos:** toda venda confirmada entra na fila `erp_outbox` e é enviada em segundo plano (cliente via `clientes/create-update-geral`, com o CRO só com o número no campo `CRO`, que o gateway grava em `AD_CRO`; depois o pedido como orçamento). Endpoint `orders/create-order`. O cabeçalho leva `IDPEDIDO` = sequencial inteiro da venda (o campo no Sankhya é numérico; `transactions.erp_idpedido`, contador em `erp_counters` que o reset não volta; `TOTEM_IDPEDIDO_BASE` muda a faixa em bancos de teste); cada item leva `SEQITEMPED` ("1", "2"...), `CODLOCALORIG` (local configurado no painel) e `CONTROLE` (lote, da fila `/products/stock`; `" "` para produto sem controle de lote). Como no Sankhya, cada unidade sai de um lote com saldo no local: o item é dividido em uma linha por lote (começando pelo de maior saldo, desconto repartido pela quantidade) e, sem saldo suficiente, o pedido fica com erro. O que cada pedido enviado tirou de cada lote fica em `erp_stock_allocations` e é abatido até a sincronização seguinte trazer o saldo novo; cancelamento ou descarte devolve. Sem internet, a fila espera; recusas do ERP ficam com erro para o admin reenviar ou descartar. Login recusado ou `SANKHYA_API_URL` errado pausam a fila inteira por 5 minutos, sem gastar as tentativas das vendas ("Enviar agora" no painel tira a pausa). Estorno de venda já enviada gera um cancelamento na fila.
+- **Tipos de negociação:** `GET orders/payment` devolve a lista completa (não é fila) dos CODTIPVENDA liberados no portal: `{CODTIPVENDA, DESCRTIPVENDA, DHALTER}`. Fica em `erp_tipvenda` (código que some da lista vira inativo) e é atualizada junto com a sincronização do catálogo ou pelo botão "Atualizar do Sankhya" no painel. Com a lista consultada, a grade forma de pagamento → CODTIPVENDA (`erp_payment_types`) vira seleção só entre os liberados, com a descrição do Sankhya e "Preencher vazios pelos nomes"; pedido cujo código deixou de ser liberado para na fila antes do envio.
+- **Pedidos:** toda venda confirmada entra na fila `erp_outbox` e é enviada em segundo plano (cliente via `clientes/create-update-geral`, com o CRO só com o número no campo `CRO`, que o gateway grava em `AD_CRO`; depois o pedido como orçamento). Endpoint `orders/create-order`. O cabeçalho leva `IDPEDIDO` = sequencial inteiro da venda (o campo no Sankhya é numérico; `transactions.erp_idpedido`, contador em `erp_counters` que o reset não volta; `TOTEM_IDPEDIDO_BASE` muda a faixa em bancos de teste) e `NUMAUT` = AUT registrado na confirmação do pagamento (texto; dinheiro e faturado levam o AUT interno `DINHEIRO`/`FATURADO`); cada item leva `SEQITEMPED` ("1", "2"...), `CODLOCALORIG` (local configurado no painel) e `CONTROLE` (lote, da fila `/products/stock`; `" "` para produto sem controle de lote). Como no Sankhya, cada unidade sai de um lote com saldo no local: o item é dividido em uma linha por lote (começando pelo de maior saldo, desconto repartido pela quantidade) e, sem saldo suficiente, o pedido fica com erro. Venda com retirada pendente leva no cabeçalho `OBSINTERNA` (observação interna) com uma linha por produto: `Itens com retirada pendente (Go Sell, pedido OM...):` + `CODPROD - nome - N un.`, com a situação no momento do envio. O que cada pedido enviado tirou de cada lote fica em `erp_stock_allocations` e é abatido até a sincronização seguinte trazer o saldo novo; cancelamento ou descarte devolve. Sem internet, a fila espera; recusas do ERP ficam com erro para o admin reenviar ou descartar. Login recusado ou `SANKHYA_API_URL` errado pausam a fila inteira por 5 minutos, sem gastar as tentativas das vendas ("Enviar agora" no painel tira a pausa). Estorno de venda já enviada gera um cancelamento na fila.
 - **Vendas anteriores à integração** ficam como "não enviadas" e só vão ao Sankhya por ação no painel.
 - A migração do banco faz um backup automático em `database/backups/` antes de rodar.
 
@@ -209,7 +210,8 @@ Arquivos lidos na inicialização (sem sobrescrever variáveis já definidas no 
 |------|-----------|
 | `/admin/eventos` | Gestão de eventos |
 | `/admin/eventos/<id>/estoque` | Estoque do evento |
-| `/admin/eventos/<id>/promocoes` | Promoções |
+| `/admin/eventos/<id>/promocoes` | Promoções (`?modo=brindes` para os brindes) |
+| `/admin/eventos/<id>/promocoes/brindes/novo` | Novo brinde (edição em `/brindes/<id>`) |
 | `/admin/eventos/<id>/transacoes` | Vendas do evento |
 | `/admin/eventos/<id>/movimentacoes` | Movimentações |
 | `/admin/financeiro` | Relatório financeiro |
@@ -223,6 +225,8 @@ Arquivos lidos na inicialização (sem sobrescrever variáveis já definidas no 
 - **products** — catálogo global (SKU, preço, categoria, imagem, estoque de referência).
 - **events** / **event_products** / **event_sellers** — operação por evento (estoque e equipe separados).
 - **promotions** / **promotion_products** — regras promocionais por evento.
+- **gift_rules** / **gift_rule_products** — brindes por evento (regra `min_qty`/`kit`/`min_total`, produto ou brinde avulso, quantidade, limite por pedido).
+- **gift_items** — brindes avulsos por evento (nome, quantidade disponível; vazio = sem limite).
 - **transactions** / **transaction_items** — pedidos com snapshot de preços e promoções.
 - **stock_movements** — auditoria de alterações de estoque (global e por evento).
 
